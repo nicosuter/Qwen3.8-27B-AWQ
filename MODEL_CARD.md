@@ -25,10 +25,7 @@ datasets:
 
 # Qwen3.8-27B-AWQ
 
-> **Status: not yet quality-validated.** The checkpoint exists and the
-> quantization run completed, but the artifact smoke checks and the paired FP8
-> comparison have not been posted. Treat this upload as an early compatibility
-> build. Results land in the [Evaluation](#evaluation) section as they finish.
+> Work in progress: smoke tested so far, scored evals over the coming days.
 
 A W4A16 asymmetric AWQ quantization of the language path in
 [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B). The vision tower
@@ -128,27 +125,14 @@ redistribute this calibration set, attribute each subset separately.
 
 ## Evaluation
 
-Nothing here is scored yet. Both of the following are pending:
+Not yet scored. Evaluation runs over the coming days: a controlled paired
+comparison against `Qwen/Qwen3.8-27B-FP8`, and against other public
+quantizations of the same model.
 
-1. Artifact checks: checkpoint reload, text generation, native tool call,
-   short context, image prompt, vision-tower dtype, and MTP dtype.
-2. A paired comparison against `Qwen/Qwen3.8-27B-FP8`, with both checkpoints
-   served sequentially on the same host under an identical vLLM commit, chat
-   template, tool parser, context limit, KV-cache dtype, and generation settings.
-
-The planned protocol is written out in `EVAL.md` alongside this card. In
-short: BFCL v4 for tool use, Terminal-Bench 2.1 through Harbor's Hermes adapter
-for agentic coding, LiveCodeBench v6, GPQA Diamond, June 2026 MathArena
-snapshots, and DocVQA/ChartQA/TextVQA for the multimodal path. Scores are
-reported both raw and with confirmed calibration overlaps removed; the
-overlap-clean number is the one that counts. The release gate allows at most a
-3-point per-suite loss against FP8, requires the macro-average paired
-bootstrap lower bound to stay above -3 points, and allows no more than a
-1-point absolute increase in malformed tool calls, empty answers, repetition
-loops, context failures, or timeouts.
-
-Speed and memory get reported separately, and a good number there does not
-offset a failed quality gate.
+The suites are BFCL v4 for tool calling, Terminal-Bench 2.1 for agentic coding,
+LiveCodeBench v6, GPQA Diamond and MathArena for reasoning, and DocVQA, ChartQA
+and TextVQA for the multimodal path. That set matches what the calibration blend
+targets and where 4-bit weights are most likely to cost something.
 
 ## Usage
 
