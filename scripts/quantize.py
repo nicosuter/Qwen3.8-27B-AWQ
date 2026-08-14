@@ -14,7 +14,7 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-from compressed_tensors.offload import init_dist
+from compressed_tensors.offload import OffloadCache, init_dist, to_accelerate
 from llmcompressor import oneshot
 from llmcompressor.modifiers.quantization import QuantizationModifier
 from llmcompressor.modifiers.transform.awq import AWQMapping, AWQModifier
@@ -445,7 +445,31 @@ def main() -> None:
         )
         print(json.dumps(metadata, indent=2))
 
-    run_rank0_after_group_teardown(rank, dist, save_checkpoint)
+    def prepare_checkpoint_model() -> None:
+        # oneshot leaves DistributedDeviceCache objects installed even though
+        # each rank owns a complete GPU replica. The compression wrapper mutates
+        # those caches during save and their __setitem__ broadcasts. Convert them
+        # to Accelerate's local representation while WORLD is still available.
+        to_accelerate(model)
+        remaining_caches = [
+            name
+            for name, module in model.named_modules(remove_duplicate=False)
+            if isinstance(module._parameters, OffloadCache)
+            or isinstance(module._buffers, OffloadCache)
+        ]
+        if remaining_caches:
+            raise RuntimeError(
+                "distributed offload caches remain before process-group teardown: "
+                f"{remaining_caches[:10]}"
+            )
+        print(f"checkpoint-model=local rank={rank}", flush=True)
+
+    run_rank0_after_group_teardown(
+        rank,
+        dist,
+        prepare_checkpoint_model,
+        save_checkpoint,
+    )
 
 
 if __name__ == "__main__":

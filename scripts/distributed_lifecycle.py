@@ -7,15 +7,18 @@ from typing import Any
 def run_rank0_after_group_teardown(
     rank: int,
     distributed: Any,
+    prepare: Callable[[], None],
     action: Callable[[], None],
 ) -> bool:
-    """Synchronize all ranks, destroy the group, then run ``action`` on rank 0.
+    """Prepare every replica, tear down the group, then act only on rank 0.
 
+    ``prepare`` runs while distributed communication is still available and
+    must remove any model state whose later mutation would issue collectives.
     This is valid only when rank 0 owns a complete model replica. Destroying the
-    group before serialization prevents save-time helpers from accidentally
-    selecting distributed algorithms whose collectives cannot be matched while
-    the other ranks wait for rank 0 to write.
+    group before ``action`` prevents save-time helpers from selecting distributed
+    algorithms whose collectives cannot be matched while other ranks wait.
     """
+    prepare()
     distributed.barrier()
     distributed.destroy_process_group()
     if rank != 0:
