@@ -45,12 +45,14 @@ inputs run through an unquantized encoder and a quantized decoder.
 | Format | `compressed-tensors` |
 | Quantized with | [`llm-compressor`](https://github.com/vllm-project/llm-compressor) @ `623c8ce`, `compressed-tensors` 0.18.1a20260806, Transformers @ `a597f97`, PyTorch 2.10.0 |
 | Calibration | 256 pinned public text, long-context, and vision samples, up to 4,096 tokens |
-| Hardware | 8x NVIDIA H200, one BF16 replica per GPU, disjoint 32-row calibration partitions with AWQ statistics reduced across ranks |
-| Recipe source | the `scripts/` and `slurm/` directories in this repository |
+| Hardware | 4x NVIDIA H200, one BF16 replica per GPU, disjoint 64-row calibration partitions with AWQ statistics reduced across ranks |
+| Recipe source | [`nicosuter/qwen3.8-27b-awq`](https://github.com/nicosuter/qwen3.8-27b-awq) — the `scripts/` and `slurm/` directories |
 
+The full recipe, calibration builder, and evaluation protocol live in the
+[GitHub repository](https://github.com/nicosuter/qwen3.8-27b-awq).
 `run-metadata.json`, `pip-freeze.txt`, the exact calibration `manifest.jsonl`
-and its SHA256 ship in this repository. Anything you want to reproduce or
-audit should start there rather than from this card.
+and its SHA256 ship alongside the weights in this model repository. Anything you
+want to reproduce or audit should start from those rather than from this card.
 
 ## What is and is not quantized
 

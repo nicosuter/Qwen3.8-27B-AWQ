@@ -76,11 +76,14 @@ an existing valid manifest backfills those caches without another Hub read.
 
 Require at least 250 GB free on fast scratch: roughly 55 GB for the source
 cache, up to another source-sized temporary/offload footprint, calibration and
-environment artifacts, and 15-20 GB for the result. A warm-cache H200 run is
-expected to take roughly 1-2 hours on eight GPUs; first download and environment
+environment artifacts, and roughly 26 GB for the result. The conservative
+exclusion set leaves about 8B parameters in BF16, so the checkpoint is larger
+than a fully quantized W4 model of this size would be. A warm-cache H200 run is
+expected to take roughly 1-2 hours; first download and environment
 creation can add 10-30 minutes. The job reserves whole-node host memory and 12
-hours to leave production margin. DDP gives each rank a disjoint 32-row
-calibration partition and synchronizes AWQ activation statistics and
+hours to leave production margin. DDP gives each rank a disjoint
+calibration partition (64 rows at four ranks) and synchronizes AWQ activation
+statistics and
 scale-search errors.
 
 Qwen3.8 is new. `scripts/preflight.py` intentionally fails before the expensive
