@@ -1,0 +1,17 @@
+Bootstrap: docker
+From: {{ VLLM_BASE }}
+
+%labels
+    org.opencontainers.image.title "qwen38-awq evaluation server"
+    org.opencontainers.image.description "Pinned vLLM runtime for the EVAL.md paired protocol"
+
+%environment
+    export PYTHONUNBUFFERED=1
+    export TOKENIZERS_PARALLELISM=true
+    export VLLM_WORKER_MULTIPROC_METHOD=spawn
+
+%test
+    python3 -c 'import torch, transformers, vllm; print(vllm.__version__)'
+
+%runscript
+    exec vllm serve "$@"

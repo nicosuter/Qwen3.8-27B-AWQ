@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "served_model_name": "openai/qwen38-eval",
+  "order_seed": 38027,
+  "seeds": [38027, 38028, 38029, 38030],
+  "baseline": {
+    "model": "Qwen/Qwen3.8-27B-FP8",
+    "revision": "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
+  },
+  "candidate": {
+    "model": "${OUTPUT_DIR}"
+  },
+  "calibration_manifest": "${RUN_BASE}/v2/calibration/manifest.jsonl",
+  "overlap_review": null,
+  "server": {
+    "host": "0.0.0.0",
+    "health_host": "127.0.0.1",
+    "port": 8000,
+    "startup_timeout_seconds": 1800,
+    "flags": [
+      "--tensor-parallel-size", "1",
+      "--data-parallel-size", "8",
+      "--max-model-len", "262144",
+      "--kv-cache-dtype", "auto",
+      "--reasoning-parser", "qwen3",
+      "--enable-auto-tool-choice",
+      "--tool-call-parser", "qwen3_coder"
+    ]
+  },
+  "generation": {
+    "enable_thinking": true,
+    "reasoning_effort": "xhigh",
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0
+  },
+  "suites": [
+    {
+      "name": "bfcl_v4",
+      "replicates": 1,
+      "prepare": ["REPLACE_WITH_PINNED_BFCL_ADAPTER", "prepare"],
+      "run": ["REPLACE_WITH_PINNED_BFCL_ADAPTER", "run"]
+    },
+    {
+      "name": "terminal_bench_2_1",
+      "replicates": 3,
+      "prepare": ["REPLACE_WITH_PINNED_HARBOR_ADAPTER", "prepare", "--dataset", "terminal-bench/terminal-bench-2-1@PINNED_VERSION", "--agent", "hermes"],
+      "run": ["REPLACE_WITH_PINNED_HARBOR_ADAPTER", "run", "--concurrency", "8"]
+    },
+    {
+      "name": "livecodebench_v6",
+      "replicates": 4,
+      "prepare": ["REPLACE_WITH_PINNED_LCB_ADAPTER", "prepare", "--release", "v6", "--lite"],
+      "run": ["REPLACE_WITH_PINNED_LCB_ADAPTER", "run"]
+    },
+    {
+      "name": "gpqa_diamond",
+      "replicates": 4,
+      "prepare": ["REPLACE_WITH_PINNED_GPQA_ADAPTER", "prepare", "--split", "gpqa_diamond"],
+      "run": ["REPLACE_WITH_PINNED_GPQA_ADAPTER", "run"]
+    },
+    {
+      "name": "matharena_2026_06",
+      "replicates": 4,
+      "prepare": ["REPLACE_WITH_PINNED_MATHARENA_ADAPTER", "prepare", "--snapshots", "arxivmath-2026-06,brokenarxiv-2026-06"],
+      "run": ["REPLACE_WITH_PINNED_MATHARENA_ADAPTER", "run"]
+    },
+    {
+      "name": "multimodal",
+      "replicates": 1,
+      "prepare": ["REPLACE_WITH_PINNED_MULTIMODAL_ADAPTER", "prepare", "--sets", "docvqa,chartqa,textvqa,private-ui"],
+      "run": ["REPLACE_WITH_PINNED_MULTIMODAL_ADAPTER", "run"]
+    }
+  ],
+  "mtp": {
+    "run": ["REPLACE_WITH_PINNED_MTP_ADAPTER"],
+    "concurrencies": [1, 8],
+    "enabled_server_flags": [
+      "--speculative-config", "{\"method\":\"mtp\",\"num_speculative_tokens\":1}"
+    ]
+  }
+}

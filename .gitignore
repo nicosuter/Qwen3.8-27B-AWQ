@@ -1,0 +1,7 @@
+.venv/
+.env
+.omc/
+artifacts/
+logs/
+__pycache__/
+*.pyc
