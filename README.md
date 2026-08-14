@@ -98,6 +98,12 @@ The release recipe uses 256 pinned public samples at up to 4,096 tokens. All
 decoder is calibrated on actual visual embeddings while the vision tower
 itself remains in source precision.
 
+Those 48 rows are 19% of the samples but 3.7% of the calibration tokens: 29,594
+visual against 767,596 text. Cauldron images average 616 visual tokens per row,
+well under the 2,304 a 1536px image would produce, while text rows average 3,690
+against a 4,096 cap. Raising image resolution is the cheapest way to shift that
+ratio, and it tops out near 12%.
+
 | Samples | Source |
 |---:|---|
 | 104 | Open-SWE-Traces, Qwen direct, split evenly across OpenHands/SWE-agent |
