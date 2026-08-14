@@ -86,7 +86,7 @@ on visual embeddings while the vision tower itself remains source precision.
 Image rows are 48 of 256 samples but only 29,594 of 797,190 calibration tokens,
 or 3.7%. Cauldron images average 616 visual tokens per row against 3,690 tokens
 per text row, so text dominates the activation statistics AWQ uses to pick
-per-channel scales. A text-only calibration would put the visual share at zero.
+per-channel scales.
 
 | Samples | Source | Config / split |
 |---:|---|---|
