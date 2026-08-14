@@ -11,7 +11,7 @@ Usage: scripts/build_eval_apptainer.sh BASE_IMAGE OUTPUT.sif
 BASE_IMAGE must be an immutable docker:// reference ending in @sha256:<64 hex>.
 Example:
   scripts/build_eval_apptainer.sh \
-    docker://vllm/vllm-openai@sha256:REPLACE_WITH_VERIFIED_DIGEST \
+    docker://vllm/vllm-openai@sha256:d392f621bb3e372ecc09f0b0cb88099afe9fa05d37a0450de45eeb8c12b6787e \
     /scratch/$USER/containers/qwen38-eval-vllm.sif
 EOF
 }
@@ -32,9 +32,18 @@ if ! command -v apptainer >/dev/null 2>&1; then
     exit 69
 fi
 
-mkdir -p "$(dirname "$OUTPUT_IMAGE")"
+OUTPUT_DIR="$(dirname "$OUTPUT_IMAGE")"
+mkdir -p "$OUTPUT_DIR"
 VLLM_BASE="${BASE_IMAGE#docker://}"
-apptainer build --build-arg "VLLM_BASE=$VLLM_BASE" "$OUTPUT_IMAGE" "$DEFINITION"
+PARTIAL_IMAGE="$OUTPUT_IMAGE.partial.$$"
+cleanup() {
+    rm -f "$PARTIAL_IMAGE"
+}
+trap cleanup EXIT
+
+apptainer build --build-arg "VLLM_BASE=$VLLM_BASE" "$PARTIAL_IMAGE" "$DEFINITION"
+apptainer test "$PARTIAL_IMAGE"
+mv -f "$PARTIAL_IMAGE" "$OUTPUT_IMAGE"
 sha256sum "$OUTPUT_IMAGE" > "$OUTPUT_IMAGE.sha256"
-apptainer test "$OUTPUT_IMAGE"
+trap - EXIT
 echo "eval-image=$OUTPUT_IMAGE"

@@ -11,7 +11,12 @@ set -euo pipefail
 PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
 cd "$PROJECT_DIR"
 
-: "${EVAL_VLLM_BASE_IMAGE:?set EVAL_VLLM_BASE_IMAGE to docker://...@sha256:...}"
-: "${EVAL_APPTAINER_IMAGE:?set EVAL_APPTAINER_IMAGE to the output .sif path}"
+source ./scripts/load_env.sh
+
+# Cache the 7+ GiB OCI download and the expanded build workspace on persistent
+# scratch. A retry should reuse layers instead of starting from zero.
+export APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-$RUN_BASE/cache/apptainer}"
+export APPTAINER_TMPDIR="${APPTAINER_TMPDIR:-$RUN_BASE/tmp/apptainer}"
+mkdir -p "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR"
 
 ./scripts/build_eval_apptainer.sh "$EVAL_VLLM_BASE_IMAGE" "$EVAL_APPTAINER_IMAGE"

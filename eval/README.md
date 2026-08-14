@@ -14,14 +14,28 @@ runner refuses placeholders.
 
 ## Build and run
 
-Resolve a Qwen3.8-capable official vLLM image to an immutable registry digest,
-then build the SIF on a node with Apptainer:
+The repository defaults to the official Qwen3.8-specific vLLM image for
+linux/amd64/CUDA 13.0, pinned to its platform manifest digest. Build the SIF on
+a node with Apptainer:
 
 ```bash
-export EVAL_VLLM_BASE_IMAGE='docker://vllm/vllm-openai@sha256:<64-hex-digest>'
-export EVAL_APPTAINER_IMAGE="/scratch/$USER/containers/qwen38-eval-vllm.sif"
-sbatch --export=ALL slurm/build-eval-apptainer.sbatch
+sbatch slurm/build-eval-apptainer.sbatch
 ```
+
+The default output is `$RUN_BASE/containers/qwen38-eval-vllm.sif`. OCI layers
+and the expanded build workspace are cached under `$RUN_BASE`, so a retry does
+not download the roughly 7 GiB compressed image again. The builder tests the
+SIF before atomically installing it and writes a sibling `.sha256` file.
+
+Once the AWQ checkpoint exists, the short end-to-end serving gate is:
+
+```bash
+sbatch slurm/serve-smoke.sbatch
+```
+
+It rejects an unpacked checkpoint before starting vLLM, serves one H200 with a
+4K context window, checks `/v1/models`, and verifies one chat completion. This
+is a load/generation smoke only, not the scored protocol below.
 
 After filling the protocol lock file, choose an address on the inference host
 that Harbor task containers can reach. `localhost` is normally wrong from
@@ -30,7 +44,6 @@ inside those containers.
 ```bash
 export RUN_BASE="/scratch/$USER/qwen38-27b-awq"
 export EVAL_CONFIG="$RUN_BASE/eval/protocol.json"
-export EVAL_APPTAINER_IMAGE="/scratch/$USER/containers/qwen38-eval-vllm.sif"
 export EVAL_BASE_URL='http://<inference-host-address>:8000/v1'
 sbatch --export=ALL slurm/eval.sbatch
 ```
