@@ -15,6 +15,7 @@
   "server": {
     "host": "0.0.0.0",
     "health_host": "127.0.0.1",
+    "public_base_url": "${EVAL_BASE_URL}",
     "port": 8000,
     "startup_timeout_seconds": 1800,
     "flags": [
@@ -41,42 +42,51 @@
     {
       "name": "bfcl_v4",
       "replicates": 1,
+      "pins": {"dataset": "REPLACE_WITH_BFCL_DATA_REVISION", "harness": "REPLACE_WITH_BFCL_COMMIT", "verifier": "REPLACE_WITH_BFCL_VERIFIER_REVISION", "adapter": "REPLACE_WITH_ADAPTER_COMMIT"},
       "prepare": ["REPLACE_WITH_PINNED_BFCL_ADAPTER", "prepare"],
       "run": ["REPLACE_WITH_PINNED_BFCL_ADAPTER", "run"]
     },
     {
       "name": "terminal_bench_2_1",
       "replicates": 3,
+      "pins": {"dataset": "REPLACE_WITH_TERMINAL_BENCH_REVISION", "harness": "REPLACE_WITH_HARBOR_COMMIT", "verifier": "REPLACE_WITH_TASK_IMAGE_DIGEST_SET", "adapter": "REPLACE_WITH_HERMES_AND_ADAPTER_REVISIONS"},
       "prepare": ["REPLACE_WITH_PINNED_HARBOR_ADAPTER", "prepare", "--dataset", "terminal-bench/terminal-bench-2-1@PINNED_VERSION", "--agent", "hermes"],
-      "run": ["REPLACE_WITH_PINNED_HARBOR_ADAPTER", "run", "--concurrency", "8"]
+      "run": ["REPLACE_WITH_PINNED_HARBOR_ADAPTER", "run", "--concurrency", "8"],
+      "pilot_prepare": ["REPLACE_WITH_PINNED_HARBOR_ADAPTER", "prepare-pilot", "--items", "30", "--dataset", "terminal-bench/terminal-bench-2-1@PINNED_VERSION", "--agent", "hermes"],
+      "pilot_run": ["REPLACE_WITH_PINNED_HARBOR_ADAPTER", "run", "--concurrency", "4"]
     },
     {
       "name": "livecodebench_v6",
       "replicates": 4,
+      "pins": {"dataset": "REPLACE_WITH_LCB_V6_LITE_REVISION", "harness": "REPLACE_WITH_LCB_COMMIT", "verifier": "REPLACE_WITH_EXECUTION_IMAGE_DIGEST", "adapter": "REPLACE_WITH_ADAPTER_COMMIT"},
       "prepare": ["REPLACE_WITH_PINNED_LCB_ADAPTER", "prepare", "--release", "v6", "--lite"],
       "run": ["REPLACE_WITH_PINNED_LCB_ADAPTER", "run"]
     },
     {
       "name": "gpqa_diamond",
       "replicates": 4,
+      "pins": {"dataset": "REPLACE_WITH_GPQA_REVISION", "harness": "REPLACE_WITH_HARNESS_COMMIT", "verifier": "exact-choice-v1", "adapter": "REPLACE_WITH_ADAPTER_COMMIT"},
       "prepare": ["REPLACE_WITH_PINNED_GPQA_ADAPTER", "prepare", "--split", "gpqa_diamond"],
       "run": ["REPLACE_WITH_PINNED_GPQA_ADAPTER", "run"]
     },
     {
       "name": "matharena_2026_06",
       "replicates": 4,
+      "pins": {"dataset": "REPLACE_WITH_JUNE_2026_SNAPSHOT_HASHES", "harness": "REPLACE_WITH_MATHARENA_COMMIT", "verifier": "REPLACE_WITH_JUDGE_AND_PROMPT_REVISION", "adapter": "REPLACE_WITH_ADAPTER_COMMIT"},
       "prepare": ["REPLACE_WITH_PINNED_MATHARENA_ADAPTER", "prepare", "--snapshots", "arxivmath-2026-06,brokenarxiv-2026-06"],
       "run": ["REPLACE_WITH_PINNED_MATHARENA_ADAPTER", "run"]
     },
     {
       "name": "multimodal",
       "replicates": 1,
+      "pins": {"dataset": "REPLACE_WITH_PUBLIC_AND_PRIVATE_SNAPSHOT_HASHES", "harness": "REPLACE_WITH_HARNESS_COMMIT", "verifier": "REPLACE_WITH_SCORER_REVISION", "adapter": "REPLACE_WITH_ADAPTER_COMMIT"},
       "prepare": ["REPLACE_WITH_PINNED_MULTIMODAL_ADAPTER", "prepare", "--sets", "docvqa,chartqa,textvqa,private-ui"],
       "run": ["REPLACE_WITH_PINNED_MULTIMODAL_ADAPTER", "run"]
     }
   ],
   "mtp": {
-    "run": ["REPLACE_WITH_PINNED_MTP_ADAPTER"],
+    "pins": {"request_set": "REPLACE_WITH_REQUEST_SET_HASH", "adapter": "REPLACE_WITH_ADAPTER_COMMIT"},
+    "run": ["REPLACE_WITH_PINNED_MTP_ADAPTER", "run"],
     "concurrencies": [1, 8],
     "enabled_server_flags": [
       "--speculative-config", "{\"method\":\"mtp\",\"num_speculative_tokens\":1}"

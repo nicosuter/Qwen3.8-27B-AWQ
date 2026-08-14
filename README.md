@@ -152,6 +152,17 @@ image, vision-dtype, and MTP-dtype checks on the AWQ artifact. The scored phase
 has a 15-minute hard timeout and the artifact phase has a 5-minute timeout.
 Results are written under `v2/smoke-eval/`.
 
+## Full paired evaluation
+
+The complete `EVAL.md` protocol is implemented by the fail-closed Apptainer
+runner in [`eval/README.md`](eval/README.md). It freezes and audits prompts
+before inference, alternates checkpoint order across seeds, serves both models
+with the same eight-replica vLLM SIF, validates adapter output, produces full
+and calibration-clean paired reports, and runs the separate MTP gate. The
+benchmark adapters and their dataset/verifier revisions must be supplied and
+pinned in a copy of `eval/protocol.example.json`; unresolved placeholders are
+rejected rather than silently selecting moving benchmark versions.
+
 If a distributed run reaches serialization but fails due to mismatched save
 collectives, recover on one H200 without rebuilding calibration:
 

@@ -20,7 +20,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--calibration", type=Path, required=True)
     parser.add_argument("--eval", type=Path, action="append", required=True)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--calibration-field", default="text")
+    parser.add_argument(
+        "--calibration-field",
+        default="auto",
+        help="field containing calibration text, or auto for text/user/instruction",
+    )
     parser.add_argument("--eval-field", default="text")
     parser.add_argument("--shingle-size", type=int, default=8)
     parser.add_argument("--anchors", type=int, default=6)
@@ -77,6 +81,17 @@ def row_id(row: dict[str, Any], fallback: str) -> str:
     return fallback
 
 
+def text_value(row: dict[str, Any], field: str) -> str | None:
+    if field != "auto":
+        value = row.get(field)
+        return value if isinstance(value, str) else None
+    for candidate in ("text", "user", "instruction", "question"):
+        value = row.get(candidate)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
 def main() -> int:
     args = parse_args()
     if args.shingle_size < 2 or args.anchors < 1:
@@ -86,7 +101,7 @@ def main() -> int:
 
     calibration: list[tuple[str, str, list[str]]] = []
     for index, row in enumerate(read_json_rows(args.calibration)):
-        raw = row.get(args.calibration_field)
+        raw = text_value(row, args.calibration_field)
         if isinstance(raw, str) and raw.strip():
             calibration.append((row_id(row, f"calibration:{index}"), normalize(raw), tokens(raw)))
     if not calibration:
@@ -96,7 +111,7 @@ def main() -> int:
     anchor_to_eval: dict[int, set[int]] = defaultdict(set)
     for path in args.eval:
         for index, row in enumerate(read_json_rows(path)):
-            raw = row.get(args.eval_field)
+            raw = text_value(row, args.eval_field)
             if not isinstance(raw, str) or not raw.strip():
                 continue
             words = tokens(raw)

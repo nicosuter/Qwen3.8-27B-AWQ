@@ -4,6 +4,7 @@ From: {{ VLLM_BASE }}
 %labels
     org.opencontainers.image.title "qwen38-awq evaluation server"
     org.opencontainers.image.description "Pinned vLLM runtime for the EVAL.md paired protocol"
+    org.opencontainers.image.base.name "{{ VLLM_BASE }}"
 
 %environment
     export PYTHONUNBUFFERED=1

@@ -1,5 +1,10 @@
 # FP8 vs W4A16 AWQ evaluation
 
+The executable implementation is the Apptainer runner documented in
+[`eval/README.md`](eval/README.md). It deliberately rejects the checked-in
+example until every external benchmark adapter, dataset, harness, verifier,
+request set, and container image has an immutable revision or digest.
+
 This is a paired non-inferiority evaluation, not a model leaderboard. Its
 question is: **does the AWQ checkpoint retain the official FP8 model's quality in the
 text workloads for which this repository is intended?** Speed and memory are

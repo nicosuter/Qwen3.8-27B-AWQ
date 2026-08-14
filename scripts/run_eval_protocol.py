@@ -57,6 +57,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image", type=Path)
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument(
+        "--overlap-review",
+        type=Path,
+        help="manual audit decisions; may be added when resuming a locked run",
+    )
+    parser.add_argument(
         "--phase", choices=("prepare", "run", "all"), default="all"
     )
     parser.add_argument("--dry-run", action="store_true")
@@ -117,6 +122,24 @@ def load_config(path: Path) -> dict[str, Any]:
             raise ProtocolError(
                 f"{name}: replicates must be {expected_replicates[name]}"
             )
+        pins = suite.get("pins")
+        if not isinstance(pins, dict) or set(pins) != {
+            "dataset",
+            "harness",
+            "verifier",
+            "adapter",
+        }:
+            raise ProtocolError(
+                f"{name}: pins must contain dataset, harness, verifier, and adapter"
+            )
+        if any(
+            not isinstance(value, str)
+            or not value
+            or "REPLACE_" in value
+            or "PINNED_" in value
+            for value in pins.values()
+        ):
+            raise ProtocolError(f"{name}: all revision pins must be resolved")
         for action in ("prepare", "run"):
             command = suite.get(action)
             if not isinstance(command, list) or not command or any(
@@ -125,6 +148,19 @@ def load_config(path: Path) -> dict[str, Any]:
                 raise ProtocolError(f"{name}: {action} must be a non-empty argv list")
             if any("REPLACE_" in part or "PINNED_" in part for part in command):
                 raise ProtocolError(f"{name}: {action} still contains a placeholder")
+        if name == "terminal_bench_2_1":
+            for action in ("pilot_prepare", "pilot_run"):
+                command = suite.get(action)
+                if not isinstance(command, list) or not command:
+                    raise ProtocolError(f"{name}: {action} must be a non-empty argv list")
+                if any(
+                    not isinstance(part, str)
+                    or not part
+                    or "REPLACE_" in part
+                    or "PINNED_" in part
+                    for part in command
+                ):
+                    raise ProtocolError(f"{name}: {action} is invalid or unpinned")
     for variant in ("baseline", "candidate"):
         entry = config.get(variant)
         if not isinstance(entry, dict) or not entry.get("model"):
@@ -152,6 +188,9 @@ def load_config(path: Path) -> dict[str, Any]:
             raise ProtocolError(f"{flag} must be {expected}, got {actual}")
     if "--enable-auto-tool-choice" not in flags:
         raise ProtocolError("server.flags must enable automatic tool choice")
+    public_base = server.get("public_base_url")
+    if not isinstance(public_base, str) or not public_base.startswith("http") or not public_base.endswith("/v1"):
+        raise ProtocolError("server.public_base_url must be a reachable http(s) URL ending in /v1")
     forbidden = {"--speculative-config", "--speculative-model", "--enable-chunked-prefill"}
     if forbidden & set(flags):
         raise ProtocolError(
@@ -172,6 +211,36 @@ def load_config(path: Path) -> dict[str, Any]:
         raise ProtocolError("generation policy does not exactly match EVAL.md")
     if not config.get("calibration_manifest"):
         raise ProtocolError("calibration_manifest is required")
+    mtp = config.get("mtp")
+    if not isinstance(mtp, dict):
+        raise ProtocolError("mtp configuration is required")
+    if mtp.get("concurrencies") != [1, 8]:
+        raise ProtocolError("mtp.concurrencies must be [1, 8]")
+    if mtp.get("enabled_server_flags") != [
+        "--speculative-config",
+        '{"method":"mtp","num_speculative_tokens":1}',
+    ]:
+        raise ProtocolError("mtp.enabled_server_flags must enable one native MTP token")
+    mtp_pins = mtp.get("pins")
+    if not isinstance(mtp_pins, dict) or set(mtp_pins) != {"request_set", "adapter"}:
+        raise ProtocolError("mtp.pins must contain request_set and adapter")
+    if any(
+        not isinstance(value, str)
+        or not value
+        or "REPLACE_" in value
+        or "PINNED_" in value
+        for value in mtp_pins.values()
+    ):
+        raise ProtocolError("all MTP revision pins must be resolved")
+    mtp_command = mtp.get("run")
+    if not isinstance(mtp_command, list) or not mtp_command or any(
+        not isinstance(part, str)
+        or not part
+        or "REPLACE_" in part
+        or "PINNED_" in part
+        for part in mtp_command
+    ):
+        raise ProtocolError("mtp.run must be a pinned argv list")
     return config
 
 
@@ -208,6 +277,8 @@ def adapter_environment(
 ) -> dict[str, str]:
     prompts = run_dir / "materialized" / f"{suite}.jsonl"
     order = run_dir / "orders" / f"{suite}.json"
+    config_suite = "terminal_bench_2_1" if suite == "terminal_bench_2_1_pilot" else suite
+    suite_config = next(item for item in config["suites"] if item["name"] == config_suite)
     env = os.environ.copy()
     env.update(
         {
@@ -218,6 +289,7 @@ def adapter_environment(
             "EVAL_ORDER_SEED": str(config["order_seed"]),
             "EVAL_SERVED_MODEL": config["served_model_name"],
             "EVAL_GENERATION_JSON": canonical_json(config["generation"]),
+            "EVAL_PINS_JSON": canonical_json(suite_config["pins"]),
         }
     )
     return env
@@ -308,9 +380,40 @@ def prepare_suites(config: dict[str, Any], run_dir: Path, dry_run: bool) -> None
         rng = random.Random(config["order_seed"])
         rng.shuffle(ids)
         write_json(Path(env["EVAL_TASK_ORDER_JSON"]), ids)
+    terminal = next(
+        suite for suite in config["suites"] if suite["name"] == "terminal_bench_2_1"
+    )
+    pilot_name = "terminal_bench_2_1_pilot"
+    env = adapter_environment(config, run_dir, pilot_name)
+    env["EVAL_ACTION"] = "prepare-pilot"
+    run_logged(
+        terminal["pilot_prepare"],
+        env=env,
+        log_path=run_dir / "logs" / "prepare-terminal-bench-pilot.log",
+        dry_run=dry_run,
+    )
+    if not dry_run:
+        path = Path(env["EVAL_PROMPTS_JSONL"])
+        rows = read_jsonl(path)
+        ids = validate_prompts(path, pilot_name)
+        if len(rows) != 30:
+            raise ProtocolError(f"{path}: locked Terminal-Bench pilot must have 30 tasks")
+        for index, row in enumerate(rows, 1):
+            if not row.get("category") or row.get("difficulty") is None:
+                raise ProtocolError(
+                    f"{path}:{index}: pilot rows require category and difficulty"
+                )
+        rng = random.Random(config["order_seed"])
+        rng.shuffle(ids)
+        write_json(Path(env["EVAL_TASK_ORDER_JSON"]), ids)
 
 
-def audit_overlap(config: dict[str, Any], run_dir: Path, dry_run: bool) -> set[tuple[str, str]]:
+def audit_overlap(
+    config: dict[str, Any],
+    run_dir: Path,
+    dry_run: bool,
+    review_override: Path | None = None,
+) -> set[tuple[str, str]]:
     calibration = Path(config["calibration_manifest"])
     if not dry_run and not calibration.is_file():
         raise ProtocolError(f"missing calibration manifest: {calibration}")
@@ -326,6 +429,9 @@ def audit_overlap(config: dict[str, Any], run_dir: Path, dry_run: bool) -> set[t
         path = run_dir / "materialized" / f"{suite['name']}.jsonl"
         command += ["--eval", str(path)]
         prompt_to_suite[str(path)] = suite["name"]
+    pilot_path = run_dir / "materialized" / "terminal_bench_2_1_pilot.jsonl"
+    command += ["--eval", str(pilot_path)]
+    prompt_to_suite[str(pilot_path)] = "terminal_bench_2_1_pilot"
     command += ["--output", str(report_path)]
     run_logged(
         command,
@@ -340,7 +446,7 @@ def audit_overlap(config: dict[str, Any], run_dir: Path, dry_run: bool) -> set[t
     matches = report["matches"]
     if not matches:
         return set()
-    review_value = config.get("overlap_review")
+    review_value = review_override or config.get("overlap_review")
     if not review_value:
         raise ProtocolError(
             f"overlap audit flagged {len(matches)} pairs; review {report_path}, "
@@ -462,6 +568,17 @@ def wait_for_server(base_url: str, process: subprocess.Popen[Any], timeout: int)
     raise ProtocolError(f"vLLM did not become ready: {last_error}")
 
 
+def validate_models_response(response: Any, served_model: str) -> None:
+    try:
+        model_ids = {str(row["id"]) for row in response["data"]}
+    except (KeyError, TypeError) as error:
+        raise ProtocolError(f"/v1/models returned malformed output: {error}") from error
+    if served_model not in model_ids:
+        raise ProtocolError(
+            f"/v1/models does not expose {served_model!r}; got {sorted(model_ids)}"
+        )
+
+
 def tool_smoke(base_url: str, served_model: str) -> dict[str, Any]:
     payload = {
         "model": served_model,
@@ -508,6 +625,9 @@ def start_server(
     run_dir: Path,
     variant: str,
     replicate: int,
+    *,
+    tag: str | None = None,
+    extra_flags: list[str] | None = None,
 ) -> tuple[subprocess.Popen[Any], Any, str, str]:
     server = config["server"]
     model = config[variant]["model"]
@@ -530,11 +650,12 @@ def start_server(
         str(server.get("host", "0.0.0.0")),
         "--port",
         str(server.get("port", 8000)),
-    ] + [str(value) for value in server["flags"]]
+    ] + [str(value) for value in server["flags"]] + list(extra_flags or [])
     revision = config[variant].get("revision")
     if revision:
         command += ["--revision", revision]
-    log_path = run_dir / "logs" / f"server-{replicate}-{variant}.log"
+    server_tag = tag or f"{replicate}-{variant}"
+    log_path = run_dir / "logs" / f"server-{server_tag}.log"
     log_handle = log_path.open("w", encoding="utf-8")
     print("start: " + " ".join(json.dumps(part) for part in command), flush=True)
     process = subprocess.Popen(
@@ -548,6 +669,9 @@ def start_server(
     )
     try:
         wait_for_server(health_base, process, int(server.get("startup_timeout_seconds", 1800)))
+        validate_models_response(
+            http_json(health_base + "/models"), config["served_model_name"]
+        )
     except Exception:
         stop_server(process, log_handle)
         raise
@@ -637,19 +761,147 @@ def run_primary(config: dict[str, Any], image: Path, run_dir: Path) -> None:
                 stop_server(process, log_handle)
 
 
-def merge_results(run_dir: Path, variant: str) -> Path:
-    paths = sorted((run_dir / "raw" / variant).glob("*.jsonl"))
+def run_terminal_pilot(config: dict[str, Any], image: Path, run_dir: Path) -> int:
+    terminal = next(
+        suite for suite in config["suites"] if suite["name"] == "terminal_bench_2_1"
+    )
+    name = "terminal_bench_2_1_pilot"
+    expected = set(
+        validate_prompts(run_dir / "materialized" / f"{name}.jsonl", name)
+    )
+    for replicate, seed in enumerate(config["seeds"][:3]):
+        variants = ("baseline", "candidate") if replicate % 2 == 0 else ("candidate", "baseline")
+        for variant in variants:
+            process, log_handle, health_base, public_base = start_server(
+                config,
+                image,
+                run_dir,
+                variant,
+                replicate,
+                tag=f"pilot-{replicate}-{variant}",
+            )
+            try:
+                smoke = tool_smoke(health_base, config["served_model_name"])
+                write_json(
+                    run_dir / "smoke" / f"pilot-{replicate}-{variant}-tool.json",
+                    smoke,
+                )
+                output = run_dir / "pilot" / "raw" / variant / f"r{replicate}.jsonl"
+                env = adapter_environment(config, run_dir, name)
+                env.update(
+                    {
+                        "EVAL_ACTION": "run-pilot",
+                        "EVAL_VARIANT": variant,
+                        "EVAL_REPLICATE": str(replicate),
+                        "EVAL_SEED": str(seed),
+                        "EVAL_RESULTS_JSONL": str(output),
+                        "OPENAI_API_KEY": "EMPTY",
+                        "OPENAI_BASE_URL": public_base,
+                    }
+                )
+                run_logged(
+                    terminal["pilot_run"],
+                    env=env,
+                    log_path=run_dir
+                    / "logs"
+                    / f"pilot-{replicate}-{variant}.log",
+                    dry_run=False,
+                )
+                validate_results(output, name, replicate, expected)
+            finally:
+                stop_server(process, log_handle)
+    baseline = merge_directory_results(
+        run_dir / "pilot" / "raw" / "baseline",
+        run_dir / "pilot" / "baseline.jsonl",
+    )
+    candidate = merge_directory_results(
+        run_dir / "pilot" / "raw" / "candidate",
+        run_dir / "pilot" / "candidate.jsonl",
+    )
+    return compare_results(run_dir, baseline, candidate, "terminal-bench-pilot")
+
+
+def run_mtp(config: dict[str, Any], image: Path, run_dir: Path) -> dict[str, int]:
+    statuses = {}
+    mtp = config["mtp"]
+    for concurrency in mtp["concurrencies"]:
+        outputs = {}
+        for mode in ("disabled", "enabled"):
+            extra_flags = mtp["enabled_server_flags"] if mode == "enabled" else []
+            process, log_handle, health_base, public_base = start_server(
+                config,
+                image,
+                run_dir,
+                "candidate",
+                0,
+                tag=f"mtp-c{concurrency}-{mode}",
+                extra_flags=extra_flags,
+            )
+            try:
+                tool_smoke(health_base, config["served_model_name"])
+                output = run_dir / "mtp" / f"c{concurrency}-{mode}.jsonl"
+                outputs[mode] = output
+                env = os.environ.copy()
+                env.update(
+                    {
+                        "EVAL_ACTION": "run-mtp",
+                        "EVAL_MTP_MODE": mode,
+                        "EVAL_CONCURRENCY": str(concurrency),
+                        "EVAL_RESULTS_JSONL": str(output),
+                        "EVAL_RUN_DIR": str(run_dir),
+                        "EVAL_SERVED_MODEL": config["served_model_name"],
+                        "EVAL_GENERATION_JSON": canonical_json(config["generation"]),
+                        "EVAL_PINS_JSON": canonical_json(mtp["pins"]),
+                        "OPENAI_API_KEY": "EMPTY",
+                        "OPENAI_BASE_URL": public_base,
+                    }
+                )
+                run_logged(
+                    mtp["run"],
+                    env=env,
+                    log_path=run_dir / "logs" / f"mtp-c{concurrency}-{mode}.log",
+                    dry_run=False,
+                )
+            finally:
+                stop_server(process, log_handle)
+        command = [
+            sys.executable,
+            str(PROJECT_DIR / "scripts" / "compare_mtp_results.py"),
+            "--disabled",
+            str(outputs["disabled"]),
+            "--enabled",
+            str(outputs["enabled"]),
+            "--output",
+            str(run_dir / "mtp" / f"comparison-c{concurrency}.json"),
+        ]
+        statuses[str(concurrency)] = run_logged(
+            command,
+            env=os.environ.copy(),
+            log_path=run_dir / "logs" / f"mtp-compare-c{concurrency}.log",
+            dry_run=False,
+            acceptable=(0, 2),
+        )
+    return statuses
+
+
+def merge_directory_results(source_dir: Path, output: Path) -> Path:
+    paths = sorted(source_dir.glob("*.jsonl"))
     if not paths:
-        raise ProtocolError(f"no raw {variant} results")
+        raise ProtocolError(f"no raw results in {source_dir}")
     rows = [row for path in paths for row in read_jsonl(path)]
     rows.sort(key=lambda row: (row["suite"], str(row["id"]), row["replicate"]))
-    output = run_dir / "results" / f"{variant}.jsonl"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
         encoding="utf-8",
     )
     return output
+
+
+def merge_results(run_dir: Path, variant: str) -> Path:
+    return merge_directory_results(
+        run_dir / "raw" / variant, run_dir / "results" / f"{variant}.jsonl"
+    )
 
 
 def clean_results(source: Path, output: Path, excluded: set[tuple[str, str]]) -> None:
@@ -692,6 +944,21 @@ def compare_results(
 def capture_metadata(config_path: Path, image: Path, run_dir: Path) -> None:
     commands = {
         "apptainer": ["apptainer", "version"],
+        "apptainer_inspect": ["apptainer", "inspect", "--json", str(image)],
+        "container_packages": [
+            "apptainer",
+            "exec",
+            "--cleanenv",
+            str(image),
+            "python3",
+            "-c",
+            (
+                "import importlib.metadata as m; "
+                "print('vllm=' + m.version('vllm')); "
+                "print('transformers=' + m.version('transformers')); "
+                "print('torch=' + m.version('torch'))"
+            ),
+        ],
         "nvidia_smi": ["nvidia-smi", "-q"],
         "git_commit": ["git", "rev-parse", "HEAD"],
     }
@@ -720,7 +987,49 @@ def capture_metadata(config_path: Path, image: Path, run_dir: Path) -> None:
             "path": str(calibration),
             "sha256": sha256_file(calibration),
         }
+    candidate = Path(
+        json.loads((run_dir / "protocol.lock.json").read_text())["candidate"]["model"]
+    )
+    for filename in (
+        "config.json",
+        "run-metadata.json",
+        "model.safetensors.index.json",
+    ):
+        path = candidate / filename
+        if path.is_file():
+            captured["files"][f"candidate_{filename}"] = {
+                "path": str(path),
+                "sha256": sha256_file(path),
+            }
     write_json(run_dir / "metadata" / "environment.json", captured)
+
+
+def require_eight_gpus() -> None:
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible is not None:
+        devices = [item.strip() for item in visible.split(",") if item.strip()]
+        if len(devices) != 8:
+            raise ProtocolError(
+                f"paired serving requires exactly eight visible GPUs; got {len(devices)}"
+            )
+        return
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+    except OSError as error:
+        raise ProtocolError(f"cannot inventory GPUs: {error}") from error
+    devices = [line for line in result.stdout.splitlines() if line.strip()]
+    if result.returncode != 0 or len(devices) != 8:
+        raise ProtocolError(
+            "paired serving requires exactly eight visible GPUs; "
+            f"nvidia-smi exit={result.returncode} count={len(devices)}"
+        )
 
 
 def write_artifact_manifest(run_dir: Path) -> None:
@@ -749,7 +1058,12 @@ def main() -> int:
     if args.dry_run:
         print("protocol-dry-run=ok")
         return 0
-    confirmed_overlaps = audit_overlap(config, run_dir, False)
+    confirmed_overlaps = audit_overlap(
+        config,
+        run_dir,
+        False,
+        args.overlap_review.resolve() if args.overlap_review else None,
+    )
     if args.phase == "prepare":
         write_artifact_manifest(run_dir)
         print("protocol-prepare=ok")
@@ -762,12 +1076,27 @@ def main() -> int:
         raise ProtocolError(f"missing Apptainer image: {image}")
     if shutil.which("apptainer") is None:
         raise ProtocolError("apptainer is not available")
+    require_eight_gpus()
     candidate_path = Path(config["candidate"]["model"])
     if not (candidate_path / "config.json").is_file():
         raise ProtocolError(f"candidate checkpoint is incomplete: {candidate_path}")
 
     check_compatibility(config, image, run_dir, False)
     capture_metadata(config_path, image, run_dir)
+    pilot_status = run_terminal_pilot(config, image, run_dir)
+    if pilot_status != 0:
+        write_json(
+            run_dir / "results" / "decision.json",
+            {
+                "automated_quality_gate": "not-run",
+                "terminal_bench_pilot_comparison_exit_code": pilot_status,
+                "full_run_skipped": "paired Terminal-Bench pilot failed",
+                "manual_regression_cluster_review_required": True,
+            },
+        )
+        write_artifact_manifest(run_dir)
+        print("terminal-bench-pilot=FAIL; full evaluation skipped")
+        return 2
     run_primary(config, image, run_dir)
     baseline = merge_results(run_dir, "baseline")
     candidate = merge_results(run_dir, "candidate")
@@ -780,13 +1109,16 @@ def main() -> int:
     clean_status = compare_results(
         run_dir, clean_baseline, clean_candidate, "calibration-clean"
     )
+    mtp_statuses = run_mtp(config, image, run_dir)
     write_json(
         run_dir / "results" / "decision.json",
         {
             "automated_quality_gate": "pass" if clean_status == 0 else "fail",
             "manual_regression_cluster_review_required": True,
+            "terminal_bench_pilot_comparison_exit_code": pilot_status,
             "full_comparison_exit_code": full_status,
             "calibration_clean_comparison_exit_code": clean_status,
+            "mtp_comparison_exit_codes": mtp_statuses,
             "confirmed_overlap_items": len(confirmed_overlaps),
         },
     )
@@ -795,7 +1127,7 @@ def main() -> int:
         "automated-quality-gate=" + ("PASS" if clean_status == 0 else "FAIL")
     )
     print("manual-regression-cluster-review=REQUIRED")
-    return clean_status
+    return 0 if clean_status == 0 and all(code == 0 for code in mtp_statuses.values()) else 2
 
 
 if __name__ == "__main__":
