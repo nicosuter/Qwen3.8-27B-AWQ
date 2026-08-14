@@ -26,6 +26,10 @@ export TOKENIZERS_PARALLELISM=true
 export HF_HUB_DISABLE_XET=1
 export HF_HUB_DOWNLOAD_TIMEOUT=120
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# FlightRecorder. A collective timeout otherwise reports only a sequence number;
+# with this set the watchdog dumps the Python stack of the failed collective on
+# every rank, which is what a save-phase divergence needs to be diagnosable.
+export TORCH_NCCL_TRACE_BUFFER_SIZE=1048576
 
 source .venv/bin/activate
 nvidia-smi

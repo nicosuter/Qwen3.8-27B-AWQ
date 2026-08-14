@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,8 @@ from llmcompressor.modifiers.transform.awq import AWQMapping, AWQModifier
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForImageTextToText, AutoProcessor
+
+from distributed_lifecycle import run_rank0_after_group_teardown
 
 MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen3.8-27B")
 MODEL_REVISION = os.environ.get(
@@ -94,6 +97,24 @@ def single_item_collator(batch: list[dict[str, torch.Tensor]]):
     if len(batch) != 1:
         raise ValueError(f"calibration requires batch size 1, got {len(batch)}")
     return batch[0]
+
+
+def capture_pip_freeze() -> str:
+    """Capture dependency versions without invalidating a completed checkpoint."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "freeze"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return "# pip freeze timed out after 60 seconds\n"
+    if result.returncode:
+        detail = result.stderr.strip().replace("\n", " ")
+        return f"# pip freeze failed with exit {result.returncode}: {detail}\n"
+    return result.stdout
 
 
 def shard_records(
@@ -379,17 +400,23 @@ def main() -> None:
         torch.bfloat16
     }:
         raise RuntimeError("vision tower dtype changed during quantization")
-    # All ranks must enter the distributed-aware save wrapper in the same
-    # collective order. The wrapper's is_source_process() guard ensures that
-    # only rank 0 writes model files.
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(OUTPUT_DIR, save_compressed=True, safe_serialization=True)
-    if rank == 0:
+    def save_checkpoint() -> None:
+        # The direct per-rank device map above gives rank 0 a complete replica.
+        # Tear down WORLD before entering the compression wrapper so its
+        # save-time recompression selects compressed-tensors' supported serial
+        # branch. The distributed branch deadlocks while recoupling this direct,
+        # non-offloaded Qwen replica. The final barrier is load-bearing: every
+        # rank must finish oneshot collectives before any rank destroys WORLD.
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        model.save_pretrained(
+            OUTPUT_DIR,
+            save_compressed=True,
+            safe_serialization=True,
+        )
         processor.save_pretrained(OUTPUT_DIR)
-        freeze = subprocess.run(
-            ["python", "-m", "pip", "freeze"], check=True, capture_output=True, text=True
-        ).stdout
-        (OUTPUT_DIR / "pip-freeze.txt").write_text(freeze, encoding="utf-8")
+        (OUTPUT_DIR / "pip-freeze.txt").write_text(
+            capture_pip_freeze(), encoding="utf-8"
+        )
         metadata = {
             "model_id": MODEL_ID,
             "model_revision": MODEL_REVISION,
@@ -417,8 +444,8 @@ def main() -> None:
             json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
         )
         print(json.dumps(metadata, indent=2))
-    dist.barrier()
-    dist.destroy_process_group()
+
+    run_rank0_after_group_teardown(rank, dist, save_checkpoint)
 
 
 if __name__ == "__main__":
