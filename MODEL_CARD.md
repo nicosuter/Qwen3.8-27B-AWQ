@@ -10,6 +10,9 @@ tags:
   - qwen3_8
   - awq
   - w4a16
+  - 4-bit
+  - int4
+  - quantized
   - compressed-tensors
   - llm-compressor
   - multimodal
