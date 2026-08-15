@@ -139,7 +139,15 @@ def build_payload(
     missing = [key for key in REQUIRED_GENERATION_KEYS if key not in generation]
     if missing:
         raise AdapterError(f"EVAL_GENERATION_JSON is missing {missing}")
-    payload = {
+    # Qwen3.8's chat template reads reasoning_effort as a template variable and
+    # defaults it to xhigh. Sent as a top-level field it is accepted by the
+    # server and silently ignored, so a protocol asking for medium would run at
+    # xhigh and record itself as compliant.
+    template_kwargs: dict[str, Any] = {"enable_thinking": bool(generation["enable_thinking"])}
+    effort = generation.get("reasoning_effort")
+    if effort:
+        template_kwargs["reasoning_effort"] = effort
+    return {
         "model": model,
         "messages": [{"role": "user", "content": f"{text}\n\n{instruction}"}],
         "max_tokens": max_tokens,
@@ -150,12 +158,8 @@ def build_payload(
         "min_p": generation["min_p"],
         "presence_penalty": generation["presence_penalty"],
         "repetition_penalty": generation["repetition_penalty"],
-        "chat_template_kwargs": {"enable_thinking": bool(generation["enable_thinking"])},
+        "chat_template_kwargs": template_kwargs,
     }
-    effort = generation.get("reasoning_effort")
-    if effort:
-        payload["reasoning_effort"] = effort
-    return payload
 
 
 def post_chat(
@@ -287,6 +291,28 @@ def unpack_choice(item_id: str, response: dict[str, Any]) -> tuple[str, str, str
         str(choice.get("finish_reason") or ""),
         response.get("usage") or {},
     )
+
+
+THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+
+
+def split_reasoning(content: str, reasoning: str) -> tuple[str, str]:
+    """Return (reasoning, answer) even when the server did not separate them.
+
+    Qwen3.8's template opens `<think>` in the prompt itself, so a server whose
+    reasoning parser is not splitting hands back one blob whose only marker is
+    the closing tag. Scoring that blob as the answer would credit values the
+    model merely considered while thinking.
+    """
+    if reasoning:
+        return reasoning, content
+    match = THINK_BLOCK_RE.search(content)
+    if match:
+        return match.group(1), THINK_BLOCK_RE.sub("", content)
+    if "</think>" in content:
+        head, _, tail = content.partition("</think>")
+        return head, tail
+    return "", content
 
 
 def has_repetition_loop(

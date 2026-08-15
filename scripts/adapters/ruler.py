@@ -35,6 +35,7 @@ try:
         post_chat,
         raw_response_path as _raw_response_path,
         read_jsonl,
+        split_reasoning,
         reasoning_tokens,
         request_with_retries,
         require_pin,
@@ -58,6 +59,7 @@ except ModuleNotFoundError:  # loading by file spec puts the repo root on sys.pa
         post_chat,
         raw_response_path as _raw_response_path,
         read_jsonl,
+        split_reasoning,
         reasoning_tokens,
         request_with_retries,
         require_pin,
@@ -568,8 +570,9 @@ def score_response(
     replicate: int,
     thinking: bool,
 ) -> dict[str, Any]:
-    content, reasoning, finish_reason, usage = unpack_choice(item_id, response)
-    segment = answer_segment(content)
+    content, raw_reasoning, finish_reason, usage = unpack_choice(item_id, response)
+    reasoning, answer = split_reasoning(content, raw_reasoning)
+    segment = answer_segment(answer)
     score = score_answer(entry["expected"], segment)
     thought = reasoning_tokens(usage, reasoning)
 
@@ -577,11 +580,11 @@ def score_response(
     row.update(
         {
             "score": score,
-            "empty_answer": not content.strip(),
-            "repetition_loop": has_repetition_loop(content or reasoning),
+            "empty_answer": not answer.strip(),
+            "repetition_loop": has_repetition_loop(answer or reasoning),
             # RULER is served without tools, so a malformed call cannot occur.
             "malformed_tool_call": False,
-            "premature_final_answer": bool(thinking and content.strip() and thought == 0),
+            "premature_final_answer": bool(thinking and answer.strip() and thought == 0),
             # Prompts are built to fit the window, so this is output truncation only.
             "context_failure": finish_reason == "length",
             "task": entry["task"],

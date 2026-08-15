@@ -35,6 +35,7 @@ try:
         post_chat,
         raw_response_path as _raw_response_path,
         read_jsonl,
+        split_reasoning,
         reasoning_tokens,
         request_with_retries,
         require_pin,
@@ -60,6 +61,7 @@ except ModuleNotFoundError:  # loading by file spec puts the repo root on sys.pa
         post_chat,
         raw_response_path as _raw_response_path,
         read_jsonl,
+        split_reasoning,
         reasoning_tokens,
         request_with_retries,
         require_pin,
@@ -101,9 +103,15 @@ MODEL_CARD_GENERATION = {
     "repetition_penalty": 1.0,
 }
 
+# Deliberately not a fact the model can answer by recall: an easy question can
+# legitimately produce an empty think block, which is indistinguishable from
+# thinking never being switched on.
 PROBE_QUESTION = (
-    "Which particle mediates the electromagnetic interaction?\n\n"
-    "A) gluon\nB) photon\nC) W boson\nD) graviton"
+    "A 0.40 kg block slides down a frictionless incline of height 1.8 m, then "
+    "crosses a rough patch with coefficient of kinetic friction 0.25 before "
+    "compressing a spring of constant 320 N/m by 12 cm at maximum compression. "
+    "How long is the rough patch?\n\n"
+    "A) 1.06 m\nB) 2.42 m\nC) 3.18 m\nD) 4.75 m"
 )
 
 FINAL_ANSWER_RE = re.compile(
@@ -316,8 +324,9 @@ def score_response(
     replicate: int,
     thinking: bool,
 ) -> dict[str, Any]:
-    content, reasoning, finish_reason, usage = unpack_choice(item_id, response)
-    predicted = extract_answer(content)
+    content, raw_reasoning, finish_reason, usage = unpack_choice(item_id, response)
+    reasoning, answer = split_reasoning(content, raw_reasoning)
+    predicted = extract_answer(answer)
     thought = reasoning_tokens(usage, reasoning)
 
     row = base_row(SUITE, item_id, replicate)
@@ -325,7 +334,7 @@ def score_response(
         {
             "score": 1.0 if predicted == expected else 0.0,
             "empty_answer": predicted is None,
-            "repetition_loop": has_repetition_loop(content or reasoning),
+            "repetition_loop": has_repetition_loop(answer or reasoning),
             # GPQA is served without tools, so a malformed call cannot occur.
             "malformed_tool_call": False,
             # Thinking was requested but the server returned no reasoning at all.
@@ -498,24 +507,37 @@ def command_probe(
             f"server rejected the generation policy, {describe_http_error(error)}"
         ) from error
 
-    content, reasoning, finish_reason, usage = unpack_choice("probe", response)
+    content, raw_reasoning, finish_reason, usage = unpack_choice("probe", response)
+    reasoning, answer_text = split_reasoning(content, raw_reasoning)
     thought = reasoning_tokens(usage, reasoning)
-    answer = extract_answer(content)
+    answer = extract_answer(answer_text)
+    separated = bool(raw_reasoning)
     report = {
-        "accepted_fields": sorted(payload),
+        "sent_chat_template_kwargs": payload["chat_template_kwargs"],
         "finish_reason": finish_reason,
-        "reasoning_returned": bool(reasoning) or thought > 0,
+        "reasoning_returned": bool(reasoning),
+        "reasoning_separated_by_server": separated,
         "reasoning_tokens": thought,
         "parsed_answer": answer,
+        "content_preview": content[:200],
+        "reasoning_preview": reasoning[:200],
     }
-    print(json.dumps(report, indent=2))
+    print(json.dumps(report, indent=2, ensure_ascii=False))
 
     if answer is None:
         raise AdapterError("the reply had no parsable answer line; check the cap and template")
-    if generation.get("enable_thinking") and not report["reasoning_returned"]:
+    if generation.get("enable_thinking") and not reasoning:
         raise AdapterError(
-            "thinking was requested but no reasoning was returned; "
-            "chat_template_kwargs or the reasoning parser is not taking effect"
+            "thinking was requested but the reply contains no reasoning at all: "
+            "chat_template_kwargs is not reaching the template"
+        )
+    if reasoning and not separated:
+        # Recoverable: split_reasoning salvages it, but the server is not doing
+        # the job --reasoning-parser was meant to do, so say so loudly.
+        print(
+            "warning: reasoning arrived inside content, not reasoning_content; "
+            "the reasoning parser is not splitting this model's output",
+            file=sys.stderr,
         )
     return 0
 

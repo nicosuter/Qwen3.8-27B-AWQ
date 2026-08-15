@@ -192,6 +192,19 @@ class PayloadTests(unittest.TestCase):
             "repetition_penalty": 1.0,
         }
 
+    def test_reasoning_effort_goes_to_the_template_not_the_api(self) -> None:
+        # Qwen3.8 reads reasoning_effort as a template variable and defaults it
+        # to xhigh. Sent top-level it is accepted and ignored, so a policy
+        # asking for medium would silently run at xhigh.
+        payload = adapter.build_payload(
+            "Q?", self.generation, model="m", seed=1, max_tokens=16, instruction="x"
+        )
+        self.assertNotIn("reasoning_effort", payload)
+        self.assertEqual(
+            payload["chat_template_kwargs"],
+            {"enable_thinking": True, "reasoning_effort": "xhigh"},
+        )
+
     def test_generation_policy_is_applied(self) -> None:
         payload = adapter.build_payload(
             "Q?",
@@ -204,8 +217,8 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(payload["temperature"], 1.0)
         self.assertEqual(payload["top_k"], 20)
         self.assertEqual(payload["repetition_penalty"], 1.0)
-        self.assertEqual(payload["reasoning_effort"], "xhigh")
-        self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": True})
+        self.assertEqual(payload["chat_template_kwargs"]["reasoning_effort"], "xhigh")
+        self.assertTrue(payload["chat_template_kwargs"]["enable_thinking"])
         self.assertEqual(payload["seed"], 38027)
         self.assertTrue(payload["messages"][0]["content"].startswith("Q?"))
         self.assertIn(adapter.ANSWER_INSTRUCTION, payload["messages"][0]["content"])
@@ -216,6 +229,37 @@ class PayloadTests(unittest.TestCase):
             adapter.build_payload(
                 "Q?", self.generation, model="m", seed=1, max_tokens=16, instruction="x"
             )
+
+
+class LeakedReasoningTests(unittest.TestCase):
+    """The template opens <think> in the prompt, so an unsplitting server
+    returns one blob whose only marker is the closing tag."""
+
+    def test_reasoning_in_content_is_recovered(self) -> None:
+        reasoning, answer = adapter.split_reasoning("thinking hard</think>\n\nAnswer: C", "")
+        self.assertEqual(reasoning, "thinking hard")
+        self.assertEqual(answer.strip(), "Answer: C")
+
+    def test_full_think_block_is_stripped(self) -> None:
+        reasoning, answer = adapter.split_reasoning("<think>weighing</think>Answer: B", "")
+        self.assertEqual(reasoning, "weighing")
+        self.assertEqual(answer.strip(), "Answer: B")
+
+    def test_separated_reasoning_is_left_alone(self) -> None:
+        self.assertEqual(adapter.split_reasoning("Answer: A", "sep"), ("sep", "Answer: A"))
+
+    def test_no_reasoning_at_all(self) -> None:
+        self.assertEqual(adapter.split_reasoning("Answer: A", ""), ("", "Answer: A"))
+
+    def test_answer_considered_while_thinking_is_not_scored(self) -> None:
+        # Without the split, the last "Answer:" match would come from the
+        # discarded line of reasoning.
+        response = completion("Maybe Answer: A\u2026 no.</think>\n\nAnswer: B", reasoning="")
+        row = adapter.score_response(
+            "rec0", response, expected="B", replicate=0, thinking=True
+        )
+        self.assertEqual(row["score"], 1.0)
+        self.assertEqual(row["predicted"], "B")
 
 
 class ScoringTests(unittest.TestCase):
@@ -269,8 +313,10 @@ class ProbeTests(unittest.TestCase):
             return completion("Answer: B")
 
         self.assertEqual(adapter.command_probe(self.args(), client=client), 0)
-        self.assertEqual(seen[0]["reasoning_effort"], "xhigh")
-        self.assertEqual(seen[0]["chat_template_kwargs"], {"enable_thinking": True})
+        self.assertEqual(
+            seen[0]["chat_template_kwargs"],
+            {"enable_thinking": True, "reasoning_effort": "xhigh"},
+        )
 
     def test_rejected_policy_field_is_reported(self) -> None:
         def client(base_url, api_key, payload, timeout):
