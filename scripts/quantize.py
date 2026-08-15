@@ -16,7 +16,6 @@ import torch
 import torch.distributed as dist
 from compressed_tensors.offload import OffloadCache, init_dist, to_accelerate
 from llmcompressor import oneshot
-from compressed_tensors.quantization import QuantizationArgs
 from llmcompressor.modifiers.quantization import QuantizationModifier
 from llmcompressor.modifiers.transform.awq import AWQMapping, AWQModifier
 from PIL import Image
@@ -377,18 +376,10 @@ def main() -> None:
     ]
     recipe = [
         AWQModifier(duo_scaling="both", n_grid=20, mappings=mappings),
-        QuantizationModifier(
-            targets=["Linear"],
-            scheme="W4A16_ASYM",
-            ignore=ignores,
-            # Calibrated FP8 KV scales for downstream servers run with
-            # --kv-cache-dtype fp8. Inert for this protocol, which serves auto.
-            # Only the 16 full-attention layers get scales; the 48 DeltaNet
-            # layers hold a fixed recurrent state, not a growing cache.
-            kv_cache_scheme=QuantizationArgs(
-                num_bits=8, type="float", strategy="tensor", symmetric=True
-            ),
-        ),
+        # No kv_cache_scheme: it attaches quantization to the attention module
+        # itself, and the distributed branch bin-packs scheme-bearing modules by
+        # mod.weight.numel(), which Qwen3_5Attention does not have.
+        QuantizationModifier(targets=["Linear"], scheme="W4A16_ASYM", ignore=ignores),
     ]
     oneshot(
         model=model,
