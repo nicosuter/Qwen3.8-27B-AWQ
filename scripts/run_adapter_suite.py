@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import json
 import random
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="scale the suite's configured --concurrency, for a smaller server than "
              "the config assumes. Preferred over --concurrency across suites, whose "
              "KV footprints differ by an order of magnitude at long context",
+    )
+    parser.add_argument(
+        "--request-timeout-scale",
+        type=float,
+        help="scale the suite's --request-timeout for slower hardware. A cap the "
+             "card cannot reach inside the timeout turns model behavior into a "
+             "zero: five matharena items hit exactly 4200s on A100 and scored 0 "
+             "with no output, where the same config is safe on H200",
     )
     parser.add_argument(
         "--limit",
@@ -106,6 +115,44 @@ def replicate_seed(config: dict[str, Any], replicate: int, override: int | None)
     return int.from_bytes(digest[:4], "big")
 
 
+def describe_hardware() -> dict[str, Any]:
+    """What this run actually executed on.
+
+    A varying factor that is not recorded cannot be accounted for afterwards,
+    and hardware is the factor that decides whether a request timeout is
+    generous or fatal. The same config that is safe on H200 scored five
+    matharena items zero on A100 purely by running out of wall clock.
+    """
+    try:
+        completed = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {"gpus": None, "gpu": None}
+    names = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    return {"gpus": len(names), "gpu": names[0] if names else None}
+
+
+def annotate_metadata(
+    run_dir: Path, suite: str, variant: str, replicate: int, extra: dict[str, Any]
+) -> None:
+    """Fold run-level facts into the metadata the adapter already wrote.
+
+    Done here rather than inside the adapters so that recording more about a run
+    never changes an adapter's self-pin, which would invalidate every config.
+    """
+    path = run_dir / "metadata" / f"{suite}-{variant}-r{replicate}.json"
+    if not path.is_file():
+        return
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record.update(extra)
+    protocol.write_json(path, record)
+
+
 def do_prepare(config: dict[str, Any], suite: str, run_dir: Path) -> list[str]:
     entry = next(item for item in config["suites"] if item["name"] == suite)
     env = protocol.adapter_environment(config, run_dir, suite)
@@ -138,6 +185,11 @@ def do_run(config: dict[str, Any], suite: str, run_dir: Path, args: argparse.Nam
         else:
             command += ["--concurrency", str(args.concurrency)]
         print(f"concurrency overridden to {args.concurrency}", flush=True)
+    if args.request_timeout_scale and "--request-timeout" in command:
+        index = command.index("--request-timeout") + 1
+        scaled = float(command[index]) * args.request_timeout_scale
+        command[index] = str(scaled)
+        print(f"request timeout scaled to {scaled:.0f}s", flush=True)
     order = json.loads(order_path(run_dir, suite).read_text(encoding="utf-8"))
     if args.limit:
         order = order[: args.limit]
@@ -170,6 +222,22 @@ def do_run(config: dict[str, Any], suite: str, run_dir: Path, args: argparse.Nam
         dry_run=False,
     )
     protocol.validate_results(output, suite, args.replicate, set(order))
+    rows = protocol.read_jsonl(output)
+    annotate_metadata(
+        run_dir,
+        suite,
+        args.variant,
+        args.replicate,
+        {
+            "hardware": describe_hardware(),
+            "request_timeout_scale": args.request_timeout_scale,
+            "concurrency_scale": args.concurrency_scale,
+            # Surfaced next to the hardware because together they say whether a
+            # zero was the model's answer or the wall clock's.
+            "timeouts": sum(1 for row in rows if row.get("timeout")),
+            "context_failures": sum(1 for row in rows if row.get("context_failure")),
+        },
+    )
     return output
 
 

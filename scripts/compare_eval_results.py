@@ -40,6 +40,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--suite-confident-drop", type=float, default=0.05)
     # Reported for the manual regression review, never a failure by itself.
     parser.add_argument("--review-suite-drop", type=float, default=0.03)
+    # The near-lossless claim, judged on the point estimate with its interval
+    # published beside it. Separate from the ship/no-ship gate above: this is
+    # what the model card is allowed to say, not whether the run passed.
+    parser.add_argument("--near-lossless-recovery", type=float, default=0.99)
     parser.add_argument("--max-failure-increase", type=float, default=0.01)
     parser.add_argument("--must-pass-retention", type=float, default=0.95)
     # Agent verifiers award partial credit, so "score > 0" is not a pass.
@@ -111,6 +115,31 @@ def percentile(values: list[float], probability: float) -> float:
     return ordered[lower] * (1 - fraction) + ordered[upper] * fraction
 
 
+def recovery(baseline: float, candidate: float) -> float:
+    """Candidate score as a fraction of the baseline's.
+
+    A zero baseline means the harness failed for both checkpoints, so the ratio
+    carries no information. Return the geometric identity and leave
+    --baseline-floor to be the thing that reports it.
+    """
+    if baseline <= 0:
+        return 1.0
+    return candidate / baseline
+
+
+def geometric_mean(values: list[float]) -> float:
+    """The only average of ratios that has an interpretation.
+
+    Zero survives as zero: a suite the candidate scores nothing on should sink
+    the summary rather than be averaged away by the others.
+    """
+    if not values:
+        return 1.0
+    if any(value <= 0 for value in values):
+        return 0.0
+    return math.exp(statistics.fmean(math.log(value) for value in values))
+
+
 def summarize(
     baseline: dict[Key, dict[str, Any]],
     candidate: dict[Key, dict[str, Any]],
@@ -147,17 +176,28 @@ def summarize(
     rng = random.Random(seed)
     suite_results: dict[str, Any] = {}
     bootstrap_suite_deltas: dict[str, list[float]] = {}
+    bootstrap_suite_recovery: dict[str, list[float]] = {}
     for suite in sorted(suites):
         items = suites[suite]
         replicate_counts = [len(by_item[(suite, item_id)]) for item_id, _, _ in items]
-        deltas = [candidate_score - baseline_score for _, baseline_score, candidate_score in items]
+        pairs = [(baseline_score, candidate_score) for _, baseline_score, candidate_score in items]
+        deltas = [candidate_score - baseline_score for baseline_score, candidate_score in pairs]
         bootstrap = []
+        recovery_bootstrap = []
         for _ in range(samples):
-            drawn = [deltas[rng.randrange(len(deltas))] for _ in items]
-            bootstrap.append(statistics.fmean(drawn))
+            # Resample items, not deltas: recovery needs both sides of the pair
+            # from the same draw, and the delta stays exactly what it was.
+            drawn = [pairs[rng.randrange(len(pairs))] for _ in pairs]
+            drawn_baseline = statistics.fmean(pair[0] for pair in drawn)
+            drawn_candidate = statistics.fmean(pair[1] for pair in drawn)
+            bootstrap.append(drawn_candidate - drawn_baseline)
+            recovery_bootstrap.append(recovery(drawn_baseline, drawn_candidate))
         bootstrap_suite_deltas[suite] = bootstrap
-        regressions = sum(candidate_score < baseline_score for _, baseline_score, candidate_score in items)
-        improvements = sum(candidate_score > baseline_score for _, baseline_score, candidate_score in items)
+        bootstrap_suite_recovery[suite] = recovery_bootstrap
+        regressions = sum(candidate_score < baseline_score for baseline_score, candidate_score in pairs)
+        improvements = sum(candidate_score > baseline_score for baseline_score, candidate_score in pairs)
+        baseline_mean = statistics.fmean(pair[0] for pair in pairs)
+        candidate_mean = statistics.fmean(pair[1] for pair in pairs)
         suite_results[suite] = {
             "items": len(items),
             "observations": sum(replicate_counts),
@@ -165,10 +205,17 @@ def summarize(
                 "min": min(replicate_counts),
                 "max": max(replicate_counts),
             },
-            "baseline": statistics.fmean(item[1] for item in items),
-            "candidate": statistics.fmean(item[2] for item in items),
+            "baseline": baseline_mean,
+            "candidate": candidate_mean,
             "delta": statistics.fmean(deltas),
             "ci95": [percentile(bootstrap, 0.025), percentile(bootstrap, 0.975)],
+            # Reported beside the absolute scores, never instead of them: a ratio
+            # without its base case is uninterpretable.
+            "recovery": recovery(baseline_mean, candidate_mean),
+            "recovery_ci95": [
+                percentile(recovery_bootstrap, 0.025),
+                percentile(recovery_bootstrap, 0.975),
+            ],
             "improved_items": improvements,
             "regressed_items": regressions,
             "tied_items": len(items) - improvements - regressions,
@@ -179,8 +226,15 @@ def summarize(
         statistics.fmean(bootstrap_suite_deltas[suite][index] for suite in suite_names)
         for index in range(samples)
     ]
+    macro_recovery_bootstrap = [
+        geometric_mean([bootstrap_suite_recovery[suite][index] for suite in suite_names])
+        for index in range(samples)
+    ]
     macro_baseline = statistics.fmean(suite_results[suite]["baseline"] for suite in suite_names)
     macro_candidate = statistics.fmean(suite_results[suite]["candidate"] for suite in suite_names)
+    macro_recovery = geometric_mean(
+        [suite_results[suite]["recovery"] for suite in suite_names]
+    )
     return {
         "suites": suite_results,
         "macro": {
@@ -189,6 +243,14 @@ def summarize(
             "candidate": macro_candidate,
             "delta": macro_candidate - macro_baseline,
             "ci95": [percentile(macro_bootstrap, 0.025), percentile(macro_bootstrap, 0.975)],
+            # Geometric, not arithmetic: averaging ratios arithmetically has no
+            # meaningful interpretation (Hoefler & Belli, SC15, rules 3 and 4).
+            # The absolute baseline and candidate above are what it summarizes.
+            "recovery_geomean": macro_recovery,
+            "recovery_ci95": [
+                percentile(macro_recovery_bootstrap, 0.025),
+                percentile(macro_recovery_bootstrap, 0.975),
+            ],
         },
         "bootstrap": {"samples": samples, "seed": seed, "cluster": "item"},
     }
@@ -330,6 +392,10 @@ def main() -> int:
         "max_macro_drop": args.max_macro_drop,
         "suite_confident_drop": args.suite_confident_drop,
         "review_suite_drop": args.review_suite_drop,
+        # Deliberately absent from "passed": this decides what the model card may
+        # claim, not whether the checkpoint ships.
+        "near_lossless": report["macro"]["recovery_geomean"] >= args.near_lossless_recovery,
+        "near_lossless_recovery": args.near_lossless_recovery,
         "macro_point_failure": macro_failure,
         "suite_confident_failures": suite_failures,
         "suite_review_flags": suite_reviews,
@@ -338,14 +404,18 @@ def main() -> int:
         **auxiliary,
     }
 
-    print("suite                         n baseline candidate delta       95% CI")
+    print("suite                         n baseline candidate delta       95% CI"
+          "        recovery  recovery 95% CI")
     for suite, result in report["suites"].items():
         interval = result["ci95"]
+        recovery_interval = result["recovery_ci95"]
         print(
             f"{suite[:28]:28} {result['items']:4d} "
             f"{100 * result['baseline']:7.2f} {100 * result['candidate']:7.2f} "
             f"{format_points(result['delta']):>7} "
             f"[{format_points(interval[0])}, {format_points(interval[1])}]"
+            f"  {100 * result['recovery']:7.2f}%"
+            f"  [{100 * recovery_interval[0]:6.2f}, {100 * recovery_interval[1]:6.2f}]"
         )
     macro = report["macro"]
     print(
@@ -353,8 +423,16 @@ def main() -> int:
         f"{100 * macro['baseline']:7.2f} {100 * macro['candidate']:7.2f} "
         f"{format_points(macro['delta']):>7} "
         f"[{format_points(macro['ci95'][0])}, {format_points(macro['ci95'][1])}]"
+        f"  {100 * macro['recovery_geomean']:7.2f}%"
+        f"  [{100 * macro['recovery_ci95'][0]:6.2f}, {100 * macro['recovery_ci95'][1]:6.2f}]"
     )
     gate = report["gate"]
+    print(
+        f"near-lossless-claim="
+        f"{'PASS' if gate['near_lossless'] else 'FAIL'}"
+        f" (geometric mean recovery {100 * macro['recovery_geomean']:.2f}%"
+        f" against a {100 * args.near_lossless_recovery:.2f}% bar)"
+    )
     if gate["suite_review_flags"]:
         print("review (not a failure): " + ", ".join(gate["suite_review_flags"]))
     for field in gate["failure_rate_failures"]:

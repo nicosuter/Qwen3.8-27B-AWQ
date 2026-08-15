@@ -62,6 +62,32 @@ if (( DP > VISIBLE_GPUS )); then
     exit 1
 fi
 echo "gpus=$VISIBLE_GPUS data-parallel=$DP"
+
+# Request timeouts in the config are written for the reference card (H200). A
+# slower one needs proportionally longer, or the token cap stops being what
+# bounds a reply and the clock starts scoring items zero: on A100 five matharena
+# items stopped at exactly 4200s having produced no output at all, which
+# measures the card and not the checkpoint. Measured per-stream decode was
+# 51.8 tok/s on H200 against 25.3 on A100, so H200's headroom only survives at
+# roughly twice the timeout. An over-generous timeout costs nothing unless a
+# request genuinely hangs, so these round upwards.
+GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)"
+case "$GPU_NAME" in
+    *H200*|*B200*|*GB200*) TIMEOUT_SCALE_DEFAULT=1.0 ;;
+    *H100*)                TIMEOUT_SCALE_DEFAULT=1.5 ;;
+    *A100*)                TIMEOUT_SCALE_DEFAULT=2.5 ;;
+    *)                     TIMEOUT_SCALE_DEFAULT=2.5 ;;   # unknown card, assume slow
+esac
+TIMEOUT_SCALE="${PAIRED_TIMEOUT_SCALE:-$TIMEOUT_SCALE_DEFAULT}"
+echo "gpu=${GPU_NAME:-unknown} timeout-scale=$TIMEOUT_SCALE"
+# Every suite is one wave of requests trailed by a long tail: gpqa averaged 37 of
+# 192 streams busy because a single 100k-token reply outlived the other 197, and
+# multimodal spent 485 of its 502 seconds on one runaway item. Scoring jobs
+# therefore run concurrently, so one job's tail is filled by another's body.
+# Replicates fill it best -- the comparator already averages them per item, and
+# they are what the recovery interval actually needs.
+REPLICATES="${PAIRED_REPLICATES:-1}"
+PARALLEL="${PAIRED_PARALLEL:-0}"   # 0 means "as many lanes as there are jobs"
 CONCURRENCY="${PAIRED_CONCURRENCY:-}"
 # Default to scaling each suite's configured concurrency by how much of the
 # protocol's eight-replica server this job actually has. One absolute number
@@ -85,6 +111,35 @@ mkdir -p "$LOG_DIR"
 test -s "$CONFIG"
 test -s "$OUTPUT_DIR/config.json"
 test -s "$BASELINE_DIR/config.json"
+
+# Several checkpoints sit side by side under v2/ and OUTPUT_DIR has a default, so
+# a submit that forgets to set it evaluates the wrong one and says nothing. Name
+# what is actually about to be served.
+echo "candidate=$OUTPUT_DIR"
+python3 -c "
+import json, sys
+q = json.load(open(sys.argv[1] + '/config.json')).get('quantization_config') or {}
+print('candidate-quant format=%s groups=%d ignored=%d' % (
+    q.get('format'), len(q.get('config_groups') or {}), len(q.get('ignore') or [])))
+" "$OUTPUT_DIR"
+
+# Scoring somebody else's quantization is the same paired measurement with a
+# different candidate, so the baseline half is identical work. Seed it from a
+# finished run rather than buying it again. The inherited baseline must have been
+# scored on THIS cluster: A100 dequantizes the FP8 baseline where H200 runs it
+# natively, and a comparison across that boundary is not paired.
+if [[ -n "${PAIRED_INHERIT_BASELINE_FROM:-}" ]]; then
+    INHERIT="$PAIRED_INHERIT_BASELINE_FROM"
+    test -d "$INHERIT" || { echo "PAIRED_INHERIT_BASELINE_FROM=$INHERIT not found" >&2; exit 1; }
+    mkdir -p "$RUN_DIR"/{orders,materialized,metadata,raw/baseline}
+    # -n so a rerun never clobbers results this job already produced.
+    cp -n "$INHERIT"/orders/*.json          "$RUN_DIR/orders/"        2>/dev/null || true
+    cp -n "$INHERIT"/materialized/*         "$RUN_DIR/materialized/"  2>/dev/null || true
+    cp -n "$INHERIT"/raw/baseline/*.jsonl   "$RUN_DIR/raw/baseline/"  2>/dev/null || true
+    cp -n "$INHERIT"/metadata/*-baseline-r*.json "$RUN_DIR/metadata/" 2>/dev/null || true
+    echo "inherited baseline and frozen order from $INHERIT"
+fi
+
 for suite in $SUITES; do
     test -s "$RUN_DIR/orders/$suite.json"
 done
@@ -138,9 +193,11 @@ start_server() {
 }
 
 variant_is_scored() {
-    local variant="$1"
+    local variant="$1" rep
     for suite in $SUITES; do
-        suite_is_current "$variant" "$suite" || return 1
+        for (( rep = 0; rep < REPLICATES; rep++ )); do
+            suite_is_current "$variant" "$suite" "$rep" || return 1
+        done
     done
     return 0
 }
@@ -152,44 +209,115 @@ variant_is_scored() {
 # 16384-cap run against a 65536 config would invent an improvement. Concurrency
 # is deliberately not compared: it changes scheduling, not the distribution.
 suite_is_current() {
-    local variant="$1" suite="$2"
-    local out="$RUN_DIR/raw/$variant/$suite-r0.jsonl"
-    local meta="$RUN_DIR/metadata/$suite-$variant-r0.json"
+    local variant="$1" suite="$2" rep="${3:-0}"
+    local out="$RUN_DIR/raw/$variant/$suite-r$rep.jsonl"
+    local meta="$RUN_DIR/metadata/$suite-$variant-r$rep.json"
     [[ -s "$out" && -s "$meta" ]] || return 1
-    "$PYTHON" - "$CONFIG" "$suite" "$meta" <<'PY'
+    "$PYTHON" - "$CONFIG" "$suite" "$meta" "$TIMEOUT_SCALE" <<'PY'
 import json, sys
 
-config_path, suite, meta_path = sys.argv[1], sys.argv[2], sys.argv[3]
+config_path, suite, meta_path, timeout_scale = sys.argv[1:5]
 run = next(s["run"] for s in json.load(open(config_path))["suites"] if s["name"] == suite)
 recorded = json.load(open(meta_path))
-FIELDS = {"--max-tokens": "max_tokens", "--request-timeout": "request_timeout_seconds"}
-for flag, key in FIELDS.items():
-    if flag not in run:
-        continue
-    have, want = recorded.get(key), float(run[run.index(flag) + 1])
+
+# The cap decides what was measured, so it has to match exactly.
+if "--max-tokens" in run:
+    want = float(run[run.index("--max-tokens") + 1])
+    have = recorded.get("max_tokens")
     if have is None or float(have) != want:
-        print(f"{suite}: {flag} config {want}, recorded {have}", file=sys.stderr)
+        print(f"{suite}: --max-tokens config {want}, recorded {have}", file=sys.stderr)
+        sys.exit(1)
+
+# The timeout only decides what was measured when it actually fired. A run under
+# a shorter timeout that never hit it produced exactly the results a longer one
+# would have, so it stays reusable; a run that timed out did not.
+if "--request-timeout" in run:
+    want = float(run[run.index("--request-timeout") + 1]) * float(timeout_scale)
+    have = recorded.get("request_timeout_seconds")
+    fired = recorded.get("timeouts")
+    if have is None or (float(have) < want and fired != 0):
+        print(
+            f"{suite}: --request-timeout wants {want:.0f}s, recorded {have}"
+            f" with timeouts={fired}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 sys.exit(0)
 PY
 }
 
 score_variant() {
-    local variant="$1"
+    local variant="$1" suite rep job label log rc failed=0
     echo "=== generation policy probe ($variant) ==="
     "$PYTHON" scripts/adapters/gpqa_diamond.py probe --base-url "$BASE_URL" --model "$SERVED_NAME"
+
+    local pending=()
     for suite in $SUITES; do
-        if [[ "${PAIRED_FORCE:-0}" != "1" ]] && suite_is_current "$variant" "$suite"; then
-            echo "=== $suite ($variant) already scored under this policy; reusing ==="
-            continue
-        fi
-        echo "=== $suite ($variant) ==="
-        "$PYTHON" scripts/run_adapter_suite.py \
-            --config "$CONFIG" --suite "$suite" --run-dir "$RUN_DIR" \
-            --phase run --variant "$variant" --base-url "$BASE_URL" \
-            ${CONCURRENCY:+--concurrency "$CONCURRENCY"} \
-            ${CONCURRENCY:-${CONCURRENCY_SCALE:+--concurrency-scale "$CONCURRENCY_SCALE"}}
+        for (( rep = 0; rep < REPLICATES; rep++ )); do
+            if [[ "${PAIRED_FORCE:-0}" != "1" ]] && suite_is_current "$variant" "$suite" "$rep"; then
+                echo "=== $suite r$rep ($variant) already scored under this policy; reusing ==="
+                continue
+            fi
+            pending+=("$suite:$rep")
+        done
     done
+    (( ${#pending[@]} > 0 )) || return 0
+
+    local lanes=${#pending[@]}
+    if (( PARALLEL > 0 && PARALLEL < lanes )); then
+        lanes=$PARALLEL
+    fi
+    # Divide the request budget across lanes, so the server holds the same number
+    # in flight as a sequential run would. The win comes from item supply keeping
+    # the batch full, not from asking the server to carry more at once.
+    local lane_conc="" lane_scale=""
+    if [[ -n "$CONCURRENCY" ]]; then
+        lane_conc=$(( CONCURRENCY / lanes ))
+        (( lane_conc > 0 )) || lane_conc=1
+    elif [[ -n "$CONCURRENCY_SCALE" ]]; then
+        lane_scale="$(python3 -c "print($CONCURRENCY_SCALE/$lanes)")"
+    fi
+
+    local lane_dir="$RUN_DIR/logs/lanes-$variant"
+    mkdir -p "$lane_dir"
+    echo "scoring ${#pending[@]} job(s) for $variant across $lanes lane(s); live logs in $lane_dir"
+
+    for job in "${pending[@]}"; do
+        suite="${job%%:*}"
+        rep="${job##*:}"
+        label="$suite-r$rep"
+        rm -f "$lane_dir/$label.rc"
+        # Hold at `lanes` running jobs. `wait -n` returns the exit status of
+        # whichever finished, which is why each job records its own into a file.
+        while (( $(jobs -rp | wc -l) >= lanes )); do wait -n || true; done
+        (
+            "$PYTHON" scripts/run_adapter_suite.py \
+                --config "$CONFIG" --suite "$suite" --run-dir "$RUN_DIR" \
+                --phase run --variant "$variant" --replicate "$rep" \
+                --base-url "$BASE_URL" \
+                --request-timeout-scale "$TIMEOUT_SCALE" \
+                ${lane_conc:+--concurrency "$lane_conc"} \
+                ${lane_conc:-${lane_scale:+--concurrency-scale "$lane_scale"}} \
+                > "$lane_dir/$label.log" 2>&1
+            echo $? > "$lane_dir/$label.rc"
+        ) &
+    done
+    wait
+
+    # Replay the lanes in a fixed order; concurrent stdout would be unreadable.
+    for job in "${pending[@]}"; do
+        suite="${job%%:*}"
+        rep="${job##*:}"
+        label="$suite-r$rep"
+        echo "=== $label ($variant) ==="
+        cat "$lane_dir/$label.log" 2>/dev/null || true
+        rc="$(cat "$lane_dir/$label.rc" 2>/dev/null || echo 1)"
+        if [[ "$rc" != "0" ]]; then
+            echo "$label ($variant) failed with exit $rc" >&2
+            failed=1
+        fi
+    done
+    return "$failed"
 }
 
 # A cancelled run leaves one side already scored. Reusing it costs nothing in
