@@ -26,7 +26,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent
+SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 
 try:
     from _common import (
@@ -61,7 +61,7 @@ except ModuleNotFoundError:  # loading by file spec puts the repo root on sys.pa
         write_jsonl,
     )
 
-sys.path.insert(0, str(PROJECT_DIR / "scripts"))
+sys.path.insert(0, str(SCRIPTS_DIR))
 from check_mtp_metrics import metric_total, ACCEPTED_NAMES, DRAFTED_NAMES  # noqa: E402
 
 
