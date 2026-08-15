@@ -17,6 +17,9 @@ PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
 cd "$PROJECT_DIR"
 
 source ./scripts/load_env.sh
+
+# See paired-suite-eval.sbatch: a leaked host CC breaks Triton's startup JIT.
+unset CC CXX
 export OUTPUT_DIR="${OUTPUT_DIR:-$RUN_BASE/v2/model}"
 : "${EVAL_APPTAINER_IMAGE:?set EVAL_APPTAINER_IMAGE to the pinned vLLM .sif}"
 
@@ -54,6 +57,11 @@ du -sh "$OUTPUT_DIR"
 
 PORT="$(( 8000 + (SLURM_JOB_ID % 1000) ))"
 SERVED_NAME=qwen38-awq-smoke
+# Worth setting to the data-parallel size the evaluation will actually use: a
+# broken kv_cache_scheme once loaded fine on one rank and failed only when eight
+# workers bin-packed the layers, so a single-rank smoke can pass a checkpoint
+# that cannot serve. Requires --gres to match.
+SMOKE_DP="${SMOKE_DP:-}"
 MTP_MIN_ACCEPTANCE="${MTP_MIN_ACCEPTANCE:-0.40}"
 # Keep the server log next to the run, not in a node-local /tmp that disappears
 # with the allocation.
@@ -87,6 +95,7 @@ start_server() {
         --port "$PORT" \
         --max-model-len 4096 \
         --enforce-eager \
+        ${SMOKE_DP:+--data-parallel-size "$SMOKE_DP"} \
         "$@" \
         > "$SERVER_LOG" 2>&1 &
     SERVER_PID=$!
