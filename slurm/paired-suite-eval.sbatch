@@ -25,6 +25,21 @@ source ./scripts/load_env.sh
 export OUTPUT_DIR="${OUTPUT_DIR:-$RUN_BASE/v2/model}"
 : "${EVAL_APPTAINER_IMAGE:?set EVAL_APPTAINER_IMAGE to the pinned vLLM .sif}"
 
+# At data-parallel size 8, eight workers share one squashfuse mount and it has
+# dropped out mid-startup, surfacing as ENOTCONN on libc reads and a confusing
+# "NVCC compilation failed" from the DeepGEMM warmup. An unpacked sandbox takes
+# FUSE out of the path. It is derived from the pinned image, so record which
+# image it came from: the sandbox itself carries no hash of its own.
+IMAGE="$EVAL_APPTAINER_IMAGE"
+SANDBOX="${EVAL_APPTAINER_SANDBOX:-${EVAL_APPTAINER_IMAGE%.sif}-sandbox}"
+if [[ -d "$SANDBOX" ]]; then
+    IMAGE="$SANDBOX"
+    echo "container=sandbox path=$SANDBOX derived_from=$EVAL_APPTAINER_IMAGE"
+    sha256sum "$EVAL_APPTAINER_IMAGE" || true
+else
+    echo "container=sif path=$EVAL_APPTAINER_IMAGE"
+fi
+
 RUN_DIR="${PAIRED_RUN_DIR:-$RUN_BASE/v2/paired-1}"
 CONFIG="${PAIRED_CONFIG:-$RUN_BASE/eval/paired-1.json}"
 SUITES="${PAIRED_SUITES:-gpqa_diamond ruler}"
@@ -66,7 +81,7 @@ start_server() {
     # behavior can branch on which model is loaded.
     apptainer run --nv \
         --bind "$bind_src:/mnt/model:ro" \
-        "$EVAL_APPTAINER_IMAGE" \
+        "$IMAGE" \
         "$model_path" \
         --served-model-name "$SERVED_NAME" \
         --host 127.0.0.1 \
