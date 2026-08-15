@@ -28,6 +28,23 @@ from typing import Any
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
+try:
+    from preserve_mtp import (
+        QWEN38_MTP_KEYS,
+        QWEN38_MTP_LINEAR_MODULES,
+        QWEN38_MTP_SHAPES,
+        validate_mtp_artifact,
+    )
+except ModuleNotFoundError:
+    # Importing this file by module spec in the local unit tests puts the
+    # repository root, rather than scripts/, on sys.path.
+    from scripts.preserve_mtp import (
+        QWEN38_MTP_KEYS,
+        QWEN38_MTP_LINEAR_MODULES,
+        QWEN38_MTP_SHAPES,
+        validate_mtp_artifact,
+    )
+
 REQUIRED_SUITES = {
     "bfcl_v4",
     "terminal_bench_2_1",
@@ -35,6 +52,7 @@ REQUIRED_SUITES = {
     "gpqa_diamond",
     "matharena_2026_06",
     "multimodal",
+    "ruler",
 }
 RESULT_BOOL_FIELDS = (
     "must_pass",
@@ -49,6 +67,19 @@ RESULT_BOOL_FIELDS = (
 
 class ProtocolError(RuntimeError):
     pass
+
+
+def validate_candidate_checkpoint(path: Path) -> dict[str, Any]:
+    """Fail before GPU allocation if the AWQ/MTP export is structurally unsafe."""
+    try:
+        return validate_mtp_artifact(
+            path,
+            expected_keys=QWEN38_MTP_KEYS,
+            expected_modules=QWEN38_MTP_LINEAR_MODULES,
+            expected_shapes=QWEN38_MTP_SHAPES,
+        )
+    except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as error:
+        raise ProtocolError(f"candidate checkpoint is invalid: {path}: {error}") from error
 
 
 def parse_args() -> argparse.Namespace:
@@ -115,6 +146,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "gpqa_diamond": 4,
         "matharena_2026_06": 4,
         "multimodal": 1,
+        "ruler": 1,
     }
     for suite in suites:
         name = suite["name"]
@@ -1001,6 +1033,23 @@ def capture_metadata(config_path: Path, image: Path, run_dir: Path) -> None:
                 "path": str(path),
                 "sha256": sha256_file(path),
             }
+    candidate_index_path = candidate / "model.safetensors.index.json"
+    if candidate_index_path.is_file():
+        candidate_index = json.loads(candidate_index_path.read_text())
+        mtp_shards = sorted(
+            {
+                shard
+                for name, shard in candidate_index.get("weight_map", {}).items()
+                if name.startswith("mtp.")
+            }
+        )
+        for shard in mtp_shards:
+            path = candidate / shard
+            if path.is_file():
+                captured["files"][f"candidate_mtp_{shard}"] = {
+                    "path": str(path),
+                    "sha256": sha256_file(path),
+                }
     write_json(run_dir / "metadata" / "environment.json", captured)
 
 
@@ -1053,6 +1102,9 @@ def main() -> int:
     config = load_config(config_path)
     lock_config(run_dir, config)
 
+    if not args.dry_run and args.phase in ("run", "all"):
+        validate_candidate_checkpoint(Path(config["candidate"]["model"]).resolve())
+
     if args.phase in ("prepare", "all"):
         prepare_suites(config, run_dir, args.dry_run)
     if args.dry_run:
@@ -1077,10 +1129,6 @@ def main() -> int:
     if shutil.which("apptainer") is None:
         raise ProtocolError("apptainer is not available")
     require_eight_gpus()
-    candidate_path = Path(config["candidate"]["model"])
-    if not (candidate_path / "config.json").is_file():
-        raise ProtocolError(f"candidate checkpoint is incomplete: {candidate_path}")
-
     check_compatibility(config, image, run_dir, False)
     capture_metadata(config_path, image, run_dir)
     pilot_status = run_terminal_pilot(config, image, run_dir)

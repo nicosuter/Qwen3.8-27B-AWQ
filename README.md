@@ -65,6 +65,26 @@ included when the source row provides them. Quantization does not run source or
 generation smoke tests; submit `slurm/paired-smoke-eval.sbatch` separately after
 the checkpoint has been saved.
 
+The quantization workflow preserves and validates the source-precision MTP head
+automatically. For an artifact created through another export path, add MTP
+without recalibration or requantization:
+
+```bash
+source .venv/bin/activate
+source scripts/load_env.sh
+export HF_HOME="${HF_HOME:-$RUN_BASE/huggingface}"
+python scripts/preserve_mtp.py "$RUN_BASE/v2/model" \
+  --model-id Qwen/Qwen3.8-27B \
+  --revision 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
+```
+
+If the artifact already contains the MTP tensors but not their vLLM
+quantization exclusions, update only `config.json`:
+
+```bash
+python scripts/preserve_mtp.py "$RUN_BASE/v2/model" --ignore-only
+```
+
 Reruns reuse the persistent virtual environment and calibration manifest after
 validating its row count, exact source allocations, pinned
 revisions, reasoning/tool gates, and SHA256. Set
@@ -76,9 +96,13 @@ an existing valid manifest backfills those caches without another Hub read.
 
 Require at least 250 GB free on fast scratch: roughly 55 GB for the source
 cache, up to another source-sized temporary/offload footprint, calibration and
-environment artifacts, and roughly 26 GB for the result. The conservative
-exclusion set leaves about 8B parameters in BF16, so the checkpoint is larger
-than a fully quantized W4 model of this size would be. A warm-cache H200 run is
+environment artifacts, and roughly 28 GB for the result. The conservative
+exclusion set leaves about 8.9B of the model's 27.8B parameters in BF16, so the
+checkpoint is larger than a fully quantized W4 model of this size would be:
+about 2.0x compression against the 55.6 GB BF16 source, against 2.5x for
+QuantTrio's less conservative `Qwen3.6-27B-AWQ` (21.9 GB, same architecture) and
+3.4x for a hypothetical W4A16 group-128 quantization of every `Linear`. A
+warm-cache H200 run is
 expected to take roughly 1-2 hours; first download and environment
 creation can add 10-30 minutes. The job reserves whole-node host memory and 12
 hours to leave production margin. DDP gives each rank a disjoint
@@ -140,11 +164,15 @@ tower and splices those real visual embeddings into the token stream. Text and
 image rows then share one `inputs_embeds` schema, avoiding the sequential FX
 tracer's static optional-pixel branch without discarding vision calibration.
 The full BF16 model and rank-local AWQ cache remain on each H200. The
-conservative target set follows QuantTrio's exclusions: vision, MTP, layer 0,
-DeltaNet `in_proj_{a,b,qkv,z}`, and full-attention `q/k/v` stay in source
-precision. AWQ mappings are restricted to the MLP paths, so calibration never
-wraps `Qwen3_5GatedDeltaNet`; this avoids the positional-`hidden_states` bug in
-compressed-tensors cache offload.
+target set is deliberately more conservative than QuantTrio's: vision, MTP,
+layer 0, DeltaNet `in_proj_{a,b,qkv,z}`, and full-attention `q/k/v` stay in
+source precision. QuantTrio's `Qwen3.6-27B-AWQ` excludes only `in_proj_a` and
+`in_proj_b` from the DeltaNet input projection and quantizes `in_proj_qkv` and
+`in_proj_z`. Holding those two in BF16 across the 47 quantizable linear-attention
+layers is 3.9B parameters, or roughly 5.8 GB of checkpoint size, and it is the
+entire difference between this artifact and theirs. AWQ mappings are restricted
+to the MLP paths, so calibration never wraps `Qwen3_5GatedDeltaNet`; this avoids
+the positional-`hidden_states` bug in compressed-tensors cache offload.
 
 ## Rapid paired release smoke
 

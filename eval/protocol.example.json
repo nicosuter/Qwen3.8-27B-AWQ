@@ -82,6 +82,13 @@
       "pins": {"dataset": "REPLACE_WITH_PUBLIC_AND_PRIVATE_SNAPSHOT_HASHES", "harness": "REPLACE_WITH_HARNESS_COMMIT", "verifier": "REPLACE_WITH_SCORER_REVISION", "adapter": "REPLACE_WITH_ADAPTER_COMMIT"},
       "prepare": ["REPLACE_WITH_PINNED_MULTIMODAL_ADAPTER", "prepare", "--sets", "docvqa,chartqa,textvqa,private-ui"],
       "run": ["REPLACE_WITH_PINNED_MULTIMODAL_ADAPTER", "run"]
+    },
+    {
+      "name": "ruler",
+      "replicates": 1,
+      "pins": {"dataset": "REPLACE_WITH_RULER_HAYSTACK_CORPUS_REVISION", "harness": "REPLACE_WITH_RULER_COMMIT", "verifier": "REPLACE_WITH_RULER_SCORER_REVISION", "adapter": "REPLACE_WITH_ADAPTER_COMMIT"},
+      "prepare": ["REPLACE_WITH_PINNED_RULER_ADAPTER", "prepare", "--lengths", "4096,32768,131072", "--synthesis-seed", "38027", "--corpus", "REPLACE_WITH_HAYSTACK_CORPUS_PATH"],
+      "run": ["REPLACE_WITH_PINNED_RULER_ADAPTER", "run", "--concurrency", "8"]
     }
   ],
   "mtp": {

@@ -14,6 +14,8 @@ import torch.distributed as dist
 from datasets import load_dataset
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
+from fp8_runtime import configure_triton_fp8_baseline
+
 BASELINE_MODEL = os.environ.get("EVAL_BASELINE_MODEL_ID", "Qwen/Qwen3.8-27B-FP8")
 BASELINE_REVISION = os.environ.get(
     "EVAL_BASELINE_MODEL_REVISION", "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
@@ -79,6 +81,9 @@ def main() -> None:
         kwargs["revision"] = revision
     model = AutoModelForImageTextToText.from_pretrained(model_path, **kwargs)
     model.eval()
+    if variant == "fp8":
+        fp8_modules = configure_triton_fp8_baseline(model)
+        print(f"fp8-kernel-path=triton modules={fp8_modules}", flush=True)
 
     results = []
     for index, row in enumerate(rows):

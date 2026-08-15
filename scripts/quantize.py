@@ -23,6 +23,13 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
 from distributed_lifecycle import run_rank0_after_group_teardown
+from preserve_mtp import (
+    QWEN38_MTP_KEYS,
+    QWEN38_MTP_LINEAR_MODULES,
+    QWEN38_MTP_SHAPES,
+    preserve_mtp_weights,
+    validate_mtp_artifact,
+)
 
 MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen3.8-27B")
 MODEL_REVISION = os.environ.get(
@@ -413,6 +420,22 @@ def main() -> None:
             save_compressed=True,
             safe_serialization=True,
         )
+        # Qwen stores its inference-only speculative head as top-level mtp.*
+        # weights. Transformers does not instantiate that module, so its normal
+        # save_pretrained path silently omits the weights. Copy them verbatim
+        # from the pinned source checkpoint and extend the output index before
+        # calling this export complete.
+        mtp_metadata = preserve_mtp_weights(
+            MODEL_ID,
+            MODEL_REVISION,
+            OUTPUT_DIR,
+        )
+        validate_mtp_artifact(
+            OUTPUT_DIR,
+            expected_keys=QWEN38_MTP_KEYS,
+            expected_modules=QWEN38_MTP_LINEAR_MODULES,
+            expected_shapes=QWEN38_MTP_SHAPES,
+        )
         processor.save_pretrained(OUTPUT_DIR)
         (OUTPUT_DIR / "pip-freeze.txt").write_text(
             capture_pip_freeze(), encoding="utf-8"
@@ -432,6 +455,8 @@ def main() -> None:
             "calibration_input_schema": "precomputed-bf16-text-and-vision-embeddings",
             "vision_tower_dtype": "torch.bfloat16",
             "vision_tower_quantized": False,
+            "mtp_preserved": True,
+            **mtp_metadata,
             "awq_cache_device": "cuda",
             "world_size": world_size,
             "loading_strategy": "one BF16 model replica per H200; no offload wrapper",

@@ -67,10 +67,15 @@ restricted to two MLP mappings, `post_attention_layernorm → gate_proj/up_proj`
 and `up_proj → down_proj`, with `duo_scaling="both"` over a 20-point grid. The
 remaining quantized projections are quantized without smoothing.
 
-The exclusion set follows QuantTrio's conservative target list. Confining AWQ
-mappings to the MLP paths also keeps calibration from ever wrapping
-`Qwen3_5GatedDeltaNet`, which sidesteps a compressed-tensors offload-wrapper
-bug that drops the positional `hidden_states` argument during replay.
+This exclusion set is more conservative than QuantTrio's `Qwen3.6-27B-AWQ`,
+which shares the architecture. That release excludes only `in_proj_a` and
+`in_proj_b` from the DeltaNet input projection and quantizes `in_proj_qkv` and
+`in_proj_z`; this one holds both in source precision. That is 3.9B parameters
+and roughly 5.8 GB, and it accounts for essentially all of the size difference
+between the two checkpoints. Confining AWQ mappings to the MLP paths also keeps
+calibration from ever wrapping `Qwen3_5GatedDeltaNet`, which sidesteps a
+compressed-tensors offload-wrapper bug that drops the positional
+`hidden_states` argument during replay.
 
 ## Calibration data
 
@@ -155,7 +160,12 @@ trigger repetition loops, and that warning carries over here.
 
 ### MTP / speculative decoding
 
-The MTP tensors are preserved in source precision, so speculation should load:
+The 15 MTP tensors are copied unchanged from the pinned source checkpoint into
+a dedicated BF16 shard after AWQ serialization. The export fails if their
+keyset, dtype, or values differ, or if the main model contains no packed
+weights. All eight MTP projection modules are also added to the compressed
+tensors ignore list so vLLM constructs them as BF16 Linears. Native speculation
+can be enabled with:
 
 ```bash
 --speculative-config '{"method":"mtp","num_speculative_tokens":1}'

@@ -33,9 +33,11 @@ Once the AWQ checkpoint exists, the short end-to-end serving gate is:
 sbatch slurm/serve-smoke.sbatch
 ```
 
-It rejects an unpacked checkpoint before starting vLLM, serves one H200 with a
-4K context window, checks `/v1/models`, and verifies one chat completion. This
-is a load/generation smoke only, not the scored protocol below.
+It rejects an unpacked checkpoint before starting vLLM, then serves one H200
+twice with a 4K context window: once without speculation and once with native
+MTP. Both modes must pass `/v1/models` and a chat completion. The MTP run also
+uses a longer request to require nonzero draft tokens and at least 40% draft
+acceptance. This is a load/generation smoke, not the scored protocol below.
 
 After filling the protocol lock file, choose an address on the inference host
 that Harbor task containers can reach. `localhost` is normally wrong from
@@ -93,6 +95,137 @@ For Slurm, export the review path as `EVAL_OVERLAP_REVIEW`. A review path may
 also be locked in `overlap_review` before preparation, but changing a protocol
 JSON after its run directory is created is intentionally rejected.
 
+## Reference adapter: GPQA Diamond
+
+`scripts/adapters/gpqa_diamond.py` implements the contract below and is the
+worked example for the remaining suites. `prepare` materializes one row per
+question with a per-item deterministic option order, keeps the shared
+answer-format instruction out of the prompt text so the overlap audit sees only
+the question and its options, and writes the answer key to
+`materialized/gpqa_diamond.key.json` inside the run directory. `run` replays the
+frozen task order, applies the generation policy, and emits the paired result
+schema plus category, timings, token counts, and a retained raw response per
+item.
+
+Its pins are self-checked and fail closed. `dataset` must be the 40-character
+GPQA commit, not a branch; `harness` is `builtin-gpqa-mcq-v1` because the
+adapter is its own harness; `verifier` is `exact-choice-v1`; and `adapter` is
+the adapter's own source hash, so editing the file without repinning stops the
+run. Print the current value with:
+
+```bash
+python3 scripts/adapters/gpqa_diamond.py pin
+```
+
+Then replace the `gpqa_diamond` suite in your protocol JSON with:
+
+```json
+{
+  "name": "gpqa_diamond",
+  "replicates": 4,
+  "pins": {
+    "dataset": "<40-char GPQA dataset commit>",
+    "harness": "builtin-gpqa-mcq-v1",
+    "verifier": "exact-choice-v1",
+    "adapter": "<output of the pin command>"
+  },
+  "prepare": ["python3", "scripts/adapters/gpqa_diamond.py", "prepare", "--split", "gpqa_diamond"],
+  "run": ["python3", "scripts/adapters/gpqa_diamond.py", "run", "--concurrency", "8"]
+}
+```
+
+Adapter argv runs with the repository root as the working directory, so the
+relative path above resolves; use an absolute path if you invoke the runner from
+elsewhere.
+
+GPQA is a gated dataset; the account running `prepare` needs accepted terms and
+a token in `HF_HOME`. Scoring is exact-choice, so no judge model is involved.
+Every item carries `must_pass: false`: the must-pass bank is the private task
+set, not a public benchmark. `malformed_tool_call` is always false because the
+suite is served without tools, and `premature_final_answer` means the server
+returned an answer with zero reasoning tokens while thinking was enabled.
+Timeouts are recorded as failed items rather than retried; transport faults are
+retried and then abort the run, and a 4xx other than 429 aborts immediately, so
+infrastructure noise never scores as model behavior.
+
+`--max-tokens` defaults to 65536. xhigh thinking on graduate-level science runs
+long, and a truncated reply is scored 0 with `context_failure` set; raise the
+cap rather than accepting truncation, and keep it identical for both
+checkpoints.
+
+Before the first scored run, confirm the server actually honors the generation
+policy. `reasoning_effort` and `chat_template_kwargs` are the fields a vLLM
+build is most likely to reject or ignore, and either failure would otherwise
+surface as an aborted run or as silently non-thinking output:
+
+```bash
+python3 scripts/adapters/gpqa_diamond.py probe \
+  --base-url "$EVAL_BASE_URL" --model openai/qwen38-eval
+```
+
+It sends one request with the model-card policy and fails if the server rejects
+a field, returns no reasoning while thinking is enabled, or produces no parsable
+answer line.
+
+## Reference adapter: RULER
+
+`scripts/adapters/ruler.py` synthesizes every haystack locally. It is not an
+upstream RULER reproduction and its scores are not comparable to published RULER
+numbers; it exists to measure FP8 against AWQ on byte-identical items, which is
+what `EVAL.md` asks of this suite. Seven synthetic tasks are generated per
+length: `niah_single`, `niah_multikey`, `niah_multivalue`, `niah_multiquery`,
+`vt`, `cwe`, and `fwe`. RULER's two QA tasks are deliberately excluded, since
+they would pull in an external QA dataset and a second verifier.
+
+Lengths are 4096, 32768, and 131072. `prepare` refuses any length that does not
+leave `--output-reserve` tokens inside `--max-model-len`, so the combination
+that would score truncation instead of recall cannot be configured by accident:
+
+```console
+$ ruler.py prepare --lengths 262144 ...
+error: lengths [262144] exceed the usable window: --max-model-len 262144 minus
+--output-reserve 16384 leaves 245504 prompt tokens. A prompt that fills the
+whole window leaves no room for an answer.
+```
+
+Because prompts are built to fit, `context_failure` on this suite means output
+truncation only, never a prompt that never fit. Rows carry `length` and `task`
+as category fields under the single `ruler` label, and the run metadata reports
+`accuracy_by_length` and `context_failures_by_length` so a cliff at 128K is
+visible without the suite counting more than once in the macro gate.
+
+The haystack corpus is pinned by content hash rather than by a hub revision: a
+revision can be re-tagged, a hash cannot. Point `--corpus` at a UTF-8 text file
+or a directory of `.txt` files on persistent scratch and produce all four pins
+with:
+
+```bash
+python3 scripts/adapters/ruler.py pin --corpus "$RUN_BASE/eval/haystack"
+```
+
+`prepare` re-hashes the corpus and refuses to run if it no longer matches
+`pins.dataset`, so a silently edited haystack cannot reach a scored run. Then
+use:
+
+```json
+{
+  "name": "ruler",
+  "replicates": 1,
+  "pins": { "...": "output of the pin command" },
+  "prepare": ["python3", "scripts/adapters/ruler.py", "prepare",
+              "--lengths", "4096,32768,131072", "--synthesis-seed", "38027",
+              "--corpus", "/scratch/.../haystack", "--tokenizer", "/scratch/.../v2/model"],
+  "run": ["python3", "scripts/adapters/ruler.py", "run", "--concurrency", "8"]
+}
+```
+
+`prepare` needs a tokenizer to hit its length targets and defaults to
+`$OUTPUT_DIR`; the runner already asserts that both checkpoints share a
+tokenizer hash, so either one gives the same items. It prints the total prompt
+tokens per replicate per checkpoint, which is the number to look at before
+committing the GPU hours: at the default ten items per task that is 210 items
+and roughly 12M prompt tokens per checkpoint.
+
 ## Adapter contract
 
 Adapter commands are argv arrays and are never evaluated through a shell. They
@@ -129,7 +262,13 @@ During `run` or `run-pilot`, the adapter must:
 Keep category, failure details, timings, token counts, raw-response paths,
 verifier output paths, and protocol overrides as additional fields. For the
 multimodal suite, keep `docvqa`, `chartqa`, `textvqa`, and `private-ui` as a
-category field under the one `multimodal` suite label.
+category field under the one `multimodal` suite label. For the `ruler` suite,
+keep the context length (`4k`, `32k`, `128k`, `256k`) and the RULER task name as
+category fields under the one `ruler` label, so per-length accuracy can be
+reported without the suite counting more than once in the macro-average gate.
+The RULER adapter must synthesize its haystacks from the pinned corpus revision
+and `--synthesis-seed` rather than downloading prebuilt prompts, and both models
+must receive byte-identical materialized items.
 
 The MTP adapter runs four times: disabled/enabled at concurrency 1 and 8. It
 receives `EVAL_MTP_MODE` and `EVAL_CONCURRENCY`, and writes the schema consumed

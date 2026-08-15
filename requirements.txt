@@ -2,6 +2,7 @@
 # records the resolved commits and pip freeze in the output metadata.
 torch==2.10.0
 torchvision==0.25.0
+kernels==0.16.0
 git+https://github.com/huggingface/transformers.git@a597f974857b3d92939971296bc0deb93d33d780
 compressed-tensors==0.18.1a20260806
 git+https://github.com/vllm-project/llm-compressor.git@623c8cee18060308e3aeb4a861a0df3578e74588

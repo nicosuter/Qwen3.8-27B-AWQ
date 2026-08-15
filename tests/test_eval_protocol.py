@@ -25,6 +25,7 @@ def valid_config() -> dict:
         "gpqa_diamond": 4,
         "matharena_2026_06": 4,
         "multimodal": 1,
+        "ruler": 1,
     }
     for name, count in replicas.items():
         suite = {
@@ -106,7 +107,8 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = self.write_config(Path(temporary), valid_config())
             loaded = protocol.load_config(path)
-            self.assertEqual(len(loaded["suites"]), 6)
+            self.assertEqual(len(loaded["suites"]), 7)
+            self.assertIn("ruler", {suite["name"] for suite in loaded["suites"]})
 
     def test_rejects_speculation_in_primary_server(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -135,6 +137,11 @@ class ConfigTests(unittest.TestCase):
 
 
 class ArtifactValidationTests(unittest.TestCase):
+    def test_candidate_checkpoint_preflight_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(protocol.ProtocolError, "checkpoint is invalid"):
+                protocol.validate_candidate_checkpoint(Path(temporary))
+
     def test_result_rows_require_complete_failure_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "results.jsonl"

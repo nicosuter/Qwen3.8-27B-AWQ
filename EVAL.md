@@ -27,10 +27,41 @@ executable tasks, the real Hermes scaffold, and recent reasoning problems.
 | Science | GPQA Diamond | full, 4 seeds | exact-choice accuracy by biology/chemistry/physics | Hard expert-written science questions with objective scoring. |
 | Current reasoning | MathArena ArXivMath June 2026 plus BrokenArXiv June 2026 | full snapshots, 4 seeds | answer/proof score; correct refusal on false premises | Recent research-level material. BrokenArXiv also catches confident reasoning through a false premise. |
 | Multimodal | DocVQA, ChartQA, TextVQA, and a frozen UI-screenshot pack | public validation splits plus private screenshots, 1 deterministic sample | accuracy/ANLS; OCR, grounding, empty-answer failures | Source-precision vision outputs still traverse the quantized language path. |
+| Long context | RULER at 4K, 32K, and 128K | full synthetic set per length, 1 seeded sample | per-length string-match accuracy; effective context length; `context_failure` rate | Every other suite here runs at a few thousand tokens. In 48 of 64 layers the DeltaNet recurrent state is the only long-range carrier, and quantization error in that path accumulates through the state rather than being renormalized away per token. Nothing else in this protocol would see it. |
 
 The locked Terminal-Bench pilot must be sampled once, before either model is
 run, stratified by task category and difficulty. It is only a cheap failure
 detector. A publishable or deployment decision uses the full set.
+
+RULER is here as a paired FP8-versus-AWQ measurement, not as an upstream
+reproduction: Qwen publishes RULER for earlier generations but reports no
+long-context benchmark for Qwen3.8-27B, so there is no published number to
+anchor against. It suits this protocol for three other reasons. The haystacks
+are synthesized from a corpus revision, a generator commit, and a fixed seed
+rather than pulled from a dataset that can move under a pinned name; scoring is
+deterministic string match, so no judge revision enters the gate; and synthetic
+haystacks cannot overlap the calibration manifest, so the full and
+`calibration-clean` reports agree by construction.
+
+Report RULER per length, never as a single scalar. The whole point is to locate
+where degradation begins, and a 4K-to-128K average will hide a cliff at the top
+end behind two healthy buckets. The per-length numbers are diagnostics; the
+value that enters gate 1 and the cross-suite macro-average is RULER's own
+average over its three lengths, so the suite counts once rather than three times.
+
+The top length is 128K, not the model's full 256K window. The paired protocol
+serves both checkpoints with `--max-model-len 262144`, and a prompt that fills
+the window leaves no output budget for a thinking model, so a 256K point would
+score truncation rather than long-range recall. Raising the served context for
+one suite would break the identical-server rule that makes the pairing valid.
+`scripts/adapters/ruler.py` rejects any requested length that does not leave
+room for `--output-reserve`.
+A per-length cliff that survives that averaging is exactly the kind of regression
+cluster gate 5 exists to catch. Budget the 256K bucket against KV memory rather
+than wall clock: at 16
+full-attention layers, 4 KV heads, and 256-wide heads, one 256K sequence holds
+roughly 17 GB of KV cache, which bounds per-replica concurrency well below what
+the shorter suites tolerate.
 
 ### Secondary diagnostics
 
@@ -197,6 +228,13 @@ python scripts/compare_mtp_results.py \
 The compatibility gate allows at most a 1-point quality drop, a 1-point
 failure-rate increase, and requires at least 40% draft acceptance. Speed is
 reported, not gated; run concurrency 1 and production concurrency separately.
+The acceptance fields must be deltas, never repeated snapshots of vLLM's
+cumulative counters. For a concurrent run, record the server-wide counter delta
+on exactly one result row and explicit zeros on the others. The comparator sums
+accepted and drafted tokens before dividing. Its per-request latency-derived
+speed figure is diagnostic only and is not wall-clock server throughput when
+requests overlap; record wall-clock batch throughput separately in the adapter
+report.
 
 ## Scoring and decision rule
 

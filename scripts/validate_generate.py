@@ -9,6 +9,13 @@ import torch
 from PIL import Image
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
+from preserve_mtp import (
+    QWEN38_MTP_KEYS,
+    QWEN38_MTP_LINEAR_MODULES,
+    QWEN38_MTP_SHAPES,
+    validate_mtp_artifact,
+)
+
 MODEL = Path(os.environ.get("OUTPUT_DIR", "artifacts/Qwen3.8-27B-AWQ")).resolve()
 STARTED = time.monotonic()
 DEADLINE_SECONDS = int(os.environ.get("SMOKE_DEADLINE_SECONDS", "1200"))
@@ -27,6 +34,18 @@ WEATHER_TOOL = {
         },
     },
 }
+
+artifact = validate_mtp_artifact(
+    MODEL,
+    expected_keys=QWEN38_MTP_KEYS,
+    expected_modules=QWEN38_MTP_LINEAR_MODULES,
+    expected_shapes=QWEN38_MTP_SHAPES,
+)
+print(
+    f"artifact-index=ok packed_weights={artifact['packed_weights']} "
+    f"mtp_parameters={artifact['mtp_parameters']} mtp_dtype=torch.bfloat16 "
+    f"mtp_ignored_modules={len(artifact['mtp_ignored_modules'])}"
+)
 
 processor = AutoProcessor.from_pretrained(MODEL, trust_remote_code=True)
 model = AutoModelForImageTextToText.from_pretrained(
@@ -47,21 +66,9 @@ bad_vision_dtypes = [
 assert not bad_vision_dtypes, f"vision parameters were quantized: {bad_vision_dtypes[:5]}"
 mtp_layers = int(getattr(model.config.text_config, "mtp_num_hidden_layers", 0))
 assert mtp_layers > 0, "saved checkpoint config no longer advertises MTP"
-mtp_parameters = [
-    (name, parameter)
-    for name, parameter in model.named_parameters()
-    if "mtp" in name.lower()
-]
-assert mtp_parameters, "saved checkpoint has no MTP parameters"
-bad_mtp_dtypes = [
-    (name, str(parameter.dtype))
-    for name, parameter in mtp_parameters
-    if parameter.dtype not in (torch.float16, torch.bfloat16)
-]
-assert not bad_mtp_dtypes, f"MTP parameters were quantized: {bad_mtp_dtypes[:5]}"
 print(
     f"artifact-dtypes=ok vision_parameters={len(vision_parameters)} "
-    f"mtp_parameters={len(mtp_parameters)} mtp_layers={mtp_layers}"
+    f"mtp_parameters={artifact['mtp_parameters']} mtp_layers={mtp_layers}"
 )
 
 
