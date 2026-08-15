@@ -68,6 +68,9 @@ setup() {
 JSON
     PYTHON="$WORK/stub"; BASE_URL="http://x"; SERVED_NAME="m"
     CONCURRENCY=""; CONCURRENCY_SCALE="0.5"; PAIRED_FORCE=0; TIMEOUT_SCALE="1.0"
+    BASELINE_FP="sha256:aaa"; CANDIDATE_FP="sha256:bbb"
+    BASELINE_INFO='{"label":"baseline","fingerprint":"sha256:aaa"}'
+    CANDIDATE_INFO='{"label":"candidate","fingerprint":"sha256:bbb"}'
 }
 
 max_overlap() {
@@ -122,7 +125,7 @@ setup; SUITES="alpha"; REPLICATES=2; PARALLEL=0
 mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
 echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
 cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"max_tokens":1000,"request_timeout_seconds":60}
+{"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:bbb"}}
 JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
@@ -135,7 +138,7 @@ setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
 mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
 echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
 cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"max_tokens":512,"request_timeout_seconds":60}
+{"max_tokens":512,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:bbb"}}
 JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
@@ -154,7 +157,7 @@ mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
 echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
 # config asks 60 * 2.5 = 150s; this run had 60s but nothing timed out.
 cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"max_tokens":1000,"request_timeout_seconds":60,"timeouts":0}
+{"max_tokens":1000,"request_timeout_seconds":60,"timeouts":0,"checkpoint":{"fingerprint":"sha256:bbb"}}
 JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
@@ -165,7 +168,7 @@ setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0; TIMEOUT_SCALE="2.5"
 mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
 echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
 cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"max_tokens":1000,"request_timeout_seconds":60,"timeouts":5}
+{"max_tokens":1000,"request_timeout_seconds":60,"timeouts":5,"checkpoint":{"fingerprint":"sha256:bbb"}}
 JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
@@ -177,7 +180,7 @@ setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0; TIMEOUT_SCALE="1.0"
 mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
 echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
 cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"max_tokens":1000,"request_timeout_seconds":9999,"timeouts":3}
+{"max_tokens":1000,"request_timeout_seconds":9999,"timeouts":3,"checkpoint":{"fingerprint":"sha256:bbb"}}
 JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
@@ -196,6 +199,40 @@ check "returned promptly, not blocked on the sampler" "yes" \
     "$(python3 -c "print('yes' if $took < 30 else 'no($took)')")"
 check "both lanes still ran" 2 "$(grep -cE 'suite=(alpha|beta) rep=0' <<<"$out")"
 check "sampler did not steal a lane" 2 "$(max_overlap)"
+
+echo "== case 11: results from a different checkpoint are not reused =="
+setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
+mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
+echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
+{"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:SOMEONE_ELSE"}}
+JSON
+out="$(score_variant candidate 2>&1)"; rc=$?
+check "exit 0" 0 "$rc"
+check "not reused across checkpoints" 0 "$(grep -c 'already scored' <<<"$out")"
+check "rescored" 1 "$(grep -c 'suite=alpha rep=0' <<<"$out")"
+
+echo "== case 12: results with no recorded provenance are not reused =="
+setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
+mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
+echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
+{"max_tokens":1000,"request_timeout_seconds":60}
+JSON
+out="$(score_variant candidate 2>&1)"; rc=$?
+check "exit 0" 0 "$rc"
+check "unprovenanced results rejected" 0 "$(grep -c 'already scored' <<<"$out")"
+
+echo "== case 13: the baseline is checked against the baseline checkpoint =="
+setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
+mkdir -p "$RUN_DIR/raw/baseline" "$RUN_DIR/metadata"
+echo '{}' > "$RUN_DIR/raw/baseline/alpha-r0.jsonl"
+cat > "$RUN_DIR/metadata/alpha-baseline-r0.json" <<'JSON'
+{"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:aaa"}}
+JSON
+out="$(score_variant baseline 2>&1)"; rc=$?
+check "exit 0" 0 "$rc"
+check "baseline reused on its own fingerprint" 1 "$(grep -c 'already scored' <<<"$out")"
 
 echo
 echo "passed $PASS, failed $FAIL"

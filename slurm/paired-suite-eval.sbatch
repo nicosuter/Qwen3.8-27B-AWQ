@@ -112,16 +112,19 @@ test -s "$CONFIG"
 test -s "$OUTPUT_DIR/config.json"
 test -s "$BASELINE_DIR/config.json"
 
-# Several checkpoints sit side by side under v2/ and OUTPUT_DIR has a default, so
-# a submit that forgets to set it evaluates the wrong one and says nothing. Name
-# what is actually about to be served.
-echo "candidate=$OUTPUT_DIR"
-python3 -c "
-import json, sys
-q = json.load(open(sys.argv[1] + '/config.json')).get('quantization_config') or {}
-print('candidate-quant format=%s groups=%d ignored=%d' % (
-    q.get('format'), len(q.get('config_groups') or {}), len(q.get('ignore') or [])))
-" "$OUTPUT_DIR"
+# Both variants are served under one --served-model-name so no harness behavior
+# can branch on which model is loaded, which also means nothing in a result says
+# which weights produced it. Several checkpoints sit side by side under v2/ and
+# OUTPUT_DIR has a default, so a submit that forgets to set it silently scores
+# the wrong one. Fingerprint both now, print them, and keep them with the run.
+BASELINE_INFO="$("$PYTHON" scripts/checkpoint_fingerprint.py "$BASELINE_DIR" --label baseline)"
+CANDIDATE_INFO="$("$PYTHON" scripts/checkpoint_fingerprint.py "$OUTPUT_DIR" --label candidate)"
+mkdir -p "$RUN_DIR"
+printf '%s\n%s\n' "$BASELINE_INFO" "$CANDIDATE_INFO" > "$RUN_DIR/checkpoints.jsonl"
+echo "baseline-checkpoint=$BASELINE_INFO"
+echo "candidate-checkpoint=$CANDIDATE_INFO"
+BASELINE_FP="$(printf '%s' "$BASELINE_INFO" | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin)["fingerprint"])')"
+CANDIDATE_FP="$(printf '%s' "$CANDIDATE_INFO" | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin)["fingerprint"])')"
 
 # Scoring somebody else's quantization is the same paired measurement with a
 # different candidate, so the baseline half is identical work. Seed it from a
@@ -229,12 +232,27 @@ suite_is_current() {
     local out="$RUN_DIR/raw/$variant/$suite-r$rep.jsonl"
     local meta="$RUN_DIR/metadata/$suite-$variant-r$rep.json"
     [[ -s "$out" && -s "$meta" ]] || return 1
-    "$PYTHON" - "$CONFIG" "$suite" "$meta" "$TIMEOUT_SCALE" <<'PY'
+    local want_fp
+    if [[ "$variant" == "baseline" ]]; then want_fp="$BASELINE_FP"; else want_fp="$CANDIDATE_FP"; fi
+    "$PYTHON" - "$CONFIG" "$suite" "$meta" "$TIMEOUT_SCALE" "$want_fp" <<'PY'
 import json, sys
 
-config_path, suite, meta_path, timeout_scale = sys.argv[1:5]
+config_path, suite, meta_path, timeout_scale, want_fingerprint = sys.argv[1:6]
 run = next(s["run"] for s in json.load(open(config_path))["suites"] if s["name"] == suite)
 recorded = json.load(open(meta_path))
+
+# Reuse across runs is the point of this check, and it is also how results from
+# one checkpoint end up standing in for another: the run directory does not
+# change when OUTPUT_DIR does, and an inherited baseline may have come from
+# another cluster entirely. Results whose provenance cannot be established are
+# not reusable, which includes anything scored before this was recorded.
+have_fingerprint = (recorded.get("checkpoint") or {}).get("fingerprint")
+if have_fingerprint != want_fingerprint:
+    print(
+        f"{suite}: scored by checkpoint {have_fingerprint}, serving {want_fingerprint}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 # The cap decides what was measured, so it has to match exactly.
 if "--max-tokens" in run:
@@ -276,6 +294,13 @@ score_variant() {
     local variant="$1" suite rep job label log rc failed=0
     echo "=== generation policy probe ($variant) ==="
     "$PYTHON" scripts/adapters/gpqa_diamond.py probe --base-url "$BASE_URL" --model "$SERVED_NAME"
+    # Travels with every result this variant produces, so the checkpoint is
+    # identifiable from the run rather than from a job log that gets overwritten.
+    if [[ "$variant" == "baseline" ]]; then
+        export EVAL_CHECKPOINT_JSON="$BASELINE_INFO"
+    else
+        export EVAL_CHECKPOINT_JSON="$CANDIDATE_INFO"
+    fi
 
     local pending=() lane_pids=()
     for suite in $SUITES; do

@@ -14,6 +14,7 @@ produce a release decision. Results from `--limit` runs are diagnostics only.
 import argparse
 import hashlib
 import json
+import os
 import random
 import subprocess
 import sys
@@ -113,6 +114,21 @@ def replicate_seed(config: dict[str, Any], replicate: int, override: int | None)
         return int(config["order_seed"])
     digest = hashlib.sha256(f"{config['order_seed']}:{replicate}".encode()).digest()
     return int.from_bytes(digest[:4], "big")
+
+
+def served_checkpoint() -> dict[str, Any] | None:
+    """Which weights produced these results, as fingerprinted by the caller.
+
+    Both variants are served under one model name on purpose, so the served name
+    cannot answer this and the results would otherwise be anonymous.
+    """
+    raw = os.environ.get("EVAL_CHECKPOINT_JSON", "").strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {"error": "EVAL_CHECKPOINT_JSON was not valid JSON", "raw": raw[:200]}
 
 
 def describe_hardware() -> dict[str, Any]:
@@ -229,6 +245,7 @@ def do_run(config: dict[str, Any], suite: str, run_dir: Path, args: argparse.Nam
         args.variant,
         args.replicate,
         {
+            "checkpoint": served_checkpoint(),
             "hardware": describe_hardware(),
             "request_timeout_scale": args.request_timeout_scale,
             "concurrency_scale": args.concurrency_scale,
