@@ -55,27 +55,28 @@ want to reproduce or audit should start from those rather than from this card.
 
 These modules stay in source precision:
 
-- the vision tower (`visual`/`vision`), which Qwen's own FP8 release also keeps in BF16
+- the vision tower (`visual`/`vision`)
 - the MTP head
 - Gated DeltaNet input projections (`in_proj_a`, `in_proj_b`, `in_proj_qkv`, `in_proj_z`)
-- `lm_head`, which Qwen's FP8 release also keeps in BF16
+- `lm_head`
 
 Everything else that is a `Linear` gets W4A16. The AWQ scale search itself is
 restricted to two MLP mappings, `post_attention_layernorm → gate_proj/up_proj`
 and `up_proj → down_proj`, with `duo_scaling="both"` over a 20-point grid. The
 remaining quantized projections are quantized without smoothing.
 
-The nearest comparison is `cyankiwi/Qwen3.8-27B-AWQ-INT4`, a 4-bit repack of
-this same model at 19.6 GB. It quantizes `in_proj_qkv` and `in_proj_z`; this one
-holds both in source precision across all 48 linear-attention layers, which is
-4.0B parameters, roughly 15% of the model, and accounts for essentially all of
-the size difference between the two checkpoints. Qwen's own FP8 release also
-quantizes those projections, but at 8 bits with per-block scales, which is not
-evidence about 4-bit behavior: the reported failure mode is recurrent-state
-corruption that appears only at long context. Confining AWQ mappings to the MLP paths also keeps
-calibration from ever wrapping `Qwen3_5GatedDeltaNet`, which sidesteps a
-compressed-tensors offload-wrapper bug that drops the positional
-`hidden_states` argument during replay.
+Holding `in_proj_qkv` and `in_proj_z` in source precision across all 48
+linear-attention layers costs about 4.0B parameters, roughly 15% of the model,
+and is most of this checkpoint's size. They are excluded because 48 of the 64
+layers carry their long-range signal in a recurrent state rather than a
+renormalized attention pattern, so error introduced there accumulates along the
+sequence instead of being bounded per token. Whether 4-bit quantization actually
+damages that path is a measurement this repository has not yet made.
+
+Confining AWQ mappings to the MLP paths also keeps calibration from ever
+wrapping `Qwen3_5GatedDeltaNet`, which sidesteps a compressed-tensors
+offload-wrapper bug that drops the positional `hidden_states` argument during
+replay.
 
 ## Calibration data
 
