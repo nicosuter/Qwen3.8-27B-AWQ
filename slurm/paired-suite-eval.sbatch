@@ -140,9 +140,38 @@ start_server() {
 variant_is_scored() {
     local variant="$1"
     for suite in $SUITES; do
-        [[ -s "$RUN_DIR/raw/$variant/$suite-r0.jsonl" ]] || return 1
+        suite_is_current "$variant" "$suite" || return 1
     done
     return 0
+}
+
+# Results already scored under the same generation policy are reusable: pairing
+# is per item, not per process, so a baseline measured in an earlier job is as
+# valid as one measured here. What is NOT reusable is a result taken under a
+# different cap or timeout, which changes what was measured -- reusing a
+# 16384-cap run against a 65536 config would invent an improvement. Concurrency
+# is deliberately not compared: it changes scheduling, not the distribution.
+suite_is_current() {
+    local variant="$1" suite="$2"
+    local out="$RUN_DIR/raw/$variant/$suite-r0.jsonl"
+    local meta="$RUN_DIR/metadata/$suite-$variant-r0.json"
+    [[ -s "$out" && -s "$meta" ]] || return 1
+    "$PYTHON" - "$CONFIG" "$suite" "$meta" <<'PY'
+import json, sys
+
+config_path, suite, meta_path = sys.argv[1], sys.argv[2], sys.argv[3]
+run = next(s["run"] for s in json.load(open(config_path))["suites"] if s["name"] == suite)
+recorded = json.load(open(meta_path))
+FIELDS = {"--max-tokens": "max_tokens", "--request-timeout": "request_timeout_seconds"}
+for flag, key in FIELDS.items():
+    if flag not in run:
+        continue
+    have, want = recorded.get(key), float(run[run.index(flag) + 1])
+    if have is None or float(have) != want:
+        print(f"{suite}: {flag} config {want}, recorded {have}", file=sys.stderr)
+        sys.exit(1)
+sys.exit(0)
+PY
 }
 
 score_variant() {
@@ -150,6 +179,10 @@ score_variant() {
     echo "=== generation policy probe ($variant) ==="
     "$PYTHON" scripts/adapters/gpqa_diamond.py probe --base-url "$BASE_URL" --model "$SERVED_NAME"
     for suite in $SUITES; do
+        if [[ "${PAIRED_FORCE:-0}" != "1" ]] && suite_is_current "$variant" "$suite"; then
+            echo "=== $suite ($variant) already scored under this policy; reusing ==="
+            continue
+        fi
         echo "=== $suite ($variant) ==="
         "$PYTHON" scripts/run_adapter_suite.py \
             --config "$CONFIG" --suite "$suite" --run-dir "$RUN_DIR" \
