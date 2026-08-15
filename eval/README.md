@@ -247,6 +247,48 @@ tokens per replicate per checkpoint, which is the number to look at before
 committing the GPU hours: at the default ten items per task that is 210 items
 and roughly 12M prompt tokens per checkpoint.
 
+## The remaining five adapters
+
+Each prints its pins with `pin`, refuses a branch name where a commit belongs,
+and hashes its own source together with `_common.py` so an edit without a repin
+stops the run. Three of them score data that differs from what `EVAL.md` names,
+and each records the substitution in its own run metadata:
+
+| suite | adapter | data actually scored | verifier |
+|---|---|---|---|
+| `bfcl_v4` | `bfcl.py` | BFCL **v3** static split, 1240 items; no v4 exists on the Hub | AST match |
+| `livecodebench_v6` | `livecodebench.py` | release v6, 175 problems, 7000 tests | sandboxed execution, pass@1 |
+| `matharena_2026_06` | `matharena.py` | AIME 2026 + Apex shortlist; the named 2026-06 snapshots are **not published** | exact integer |
+| `multimodal` | `multimodal.py` | DocVQA, ChartQA, TextVQA; the private UI pack does **not exist** here | ANLS / relaxed / VQA |
+| `terminal_bench_2_1` | `terminal_bench.py` | Harbor task pack, driven through the Hermes agent | Harbor's own verifier |
+
+```bash
+python3 scripts/adapters/bfcl.py           pin --resolve-dataset
+python3 scripts/adapters/livecodebench.py  pin --resolve-dataset
+python3 scripts/adapters/matharena.py      pin --resolve
+python3 scripts/adapters/multimodal.py     pin --resolve
+python3 scripts/adapters/terminal_bench.py pin --dataset-version <v> --harbor-version <v> --task-checksums <set>
+```
+
+Three things worth knowing before running them.
+
+**LiveCodeBench executes model-generated code.** Each solution runs in a fresh
+temporary directory under CPU-time, file-descriptor and address-space limits,
+but that is a resource cap, not a security sandbox. Do not point it at a
+filesystem it could damage. Its private tests arrive as pickled data, decoded
+with an unpickler that refuses every class lookup so a dataset revision cannot
+execute code at prepare time.
+
+**Terminal-Bench does not enforce the frozen sequence.** Harbor schedules its
+own trials, so the order fixes the task set only; the metadata records
+`task_order_enforced: set-only`. It also needs a container runtime for the task
+pack — `--environment singularity` works where Docker is unavailable, provided
+the pinned pack ships singularity-compose files.
+
+**BFCL is the only suite where `malformed_tool_call` can be true.** It serves
+tools natively; every other suite runs without tools, so that flag is
+structurally false there and contributes nothing to the failure-mode gate.
+
 ## Adapter contract
 
 Adapter commands are argv arrays and are never evaluated through a shell. They
