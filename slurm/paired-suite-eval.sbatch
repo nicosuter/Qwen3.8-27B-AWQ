@@ -7,7 +7,11 @@
 #SBATCH --mem=0
 #SBATCH --gres=gpu:4
 #SBATCH --time=03:00:00
-#SBATCH --output=qwen38-paired-suites-%j.out
+# %x is the job name, so pass --job-name=<what is being scored>: several
+# checkpoints share this script and "qwen38-paired-suites-4619.out" says nothing
+# about which one it measured. The directory must already exist or slurm drops
+# the job at submit time.
+#SBATCH --output=slurm-logs/%x-%j.out
 
 # First paired FP8-versus-AWQ measurement. Serves the pinned baseline, scores
 # the ready suites, serves the candidate, scores the same frozen items, then
@@ -72,11 +76,25 @@ echo "gpus=$VISIBLE_GPUS data-parallel=$DP"
 # roughly twice the timeout. An over-generous timeout costs nothing unless a
 # request genuinely hangs, so these round upwards.
 GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)"
+# An unrecognised card is refused rather than guessed at. Slurm here advertises
+# every node as plain "gpu:4" with no type and no feature to select on, so a job
+# asking for four GPUs can land on V100s: sm_70 has no Marlin kernels for W4A16,
+# no bf16, and 32GB per card against a 27.7GB checkpoint leaves nothing for KV.
+# That produces either a crash or numbers not comparable to the A100 runs, and
+# the second is worse.
 case "$GPU_NAME" in
     *H200*|*B200*|*GB200*) TIMEOUT_SCALE_DEFAULT=1.0 ;;
     *H100*)                TIMEOUT_SCALE_DEFAULT=1.5 ;;
     *A100*)                TIMEOUT_SCALE_DEFAULT=2.5 ;;
-    *)                     TIMEOUT_SCALE_DEFAULT=2.5 ;;   # unknown card, assume slow
+    *)
+        if [[ "${PAIRED_ALLOW_ANY_GPU:-0}" != "1" ]]; then
+            echo "unvalidated GPU: ${GPU_NAME:-none detected}" >&2
+            echo "known good: H200, H100, A100, B200, GB200. Pin the node with" >&2
+            echo "--nodelist, or set PAIRED_ALLOW_ANY_GPU=1 to score on it anyway" >&2
+            exit 1
+        fi
+        TIMEOUT_SCALE_DEFAULT=4.0
+        ;;
 esac
 TIMEOUT_SCALE="${PAIRED_TIMEOUT_SCALE:-$TIMEOUT_SCALE_DEFAULT}"
 echo "gpu=${GPU_NAME:-unknown} timeout-scale=$TIMEOUT_SCALE"
