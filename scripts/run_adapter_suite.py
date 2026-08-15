@@ -40,7 +40,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--concurrency",
         type=int,
-        help="override the suite's --concurrency, for a smaller server than the config assumes",
+        help="override the suite's --concurrency outright",
+    )
+    parser.add_argument(
+        "--concurrency-scale",
+        type=float,
+        help="scale the suite's configured --concurrency, for a smaller server than "
+             "the config assumes. Preferred over --concurrency across suites, whose "
+             "KV footprints differ by an order of magnitude at long context",
     )
     parser.add_argument(
         "--limit",
@@ -96,6 +103,9 @@ def do_run(config: dict[str, Any], suite: str, run_dir: Path, args: argparse.Nam
         raise protocol.ProtocolError("--base-url is required to score a suite")
     entry = next(item for item in config["suites"] if item["name"] == suite)
     command = list(entry["run"])
+    if args.concurrency_scale and not args.concurrency and "--concurrency" in command:
+        configured = int(command[command.index("--concurrency") + 1])
+        args.concurrency = max(1, int(configured * args.concurrency_scale))
     if args.concurrency:
         if "--concurrency" in command:
             command[command.index("--concurrency") + 1] = str(args.concurrency)

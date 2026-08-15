@@ -45,6 +45,11 @@ CONFIG="${PAIRED_CONFIG:-$RUN_BASE/eval/paired-1.json}"
 SUITES="${PAIRED_SUITES:-gpqa_diamond ruler}"
 DP="${PAIRED_DP:-8}"
 CONCURRENCY="${PAIRED_CONCURRENCY:-}"
+# Default to scaling each suite's configured concurrency by how much of the
+# protocol's eight-replica server this job actually has. One absolute number
+# across suites is wrong: RULER holds about six percent of the KV pool per
+# request where a short prompt holds one.
+CONCURRENCY_SCALE="${PAIRED_CONCURRENCY_SCALE:-$(python3 -c "print($DP/8)")}"
 PYTHON="$PROJECT_DIR/.venv/bin/python"
 PORT="$(( 8000 + (SLURM_JOB_ID % 1000) ))"
 SERVED_NAME=qwen38-eval
@@ -131,7 +136,8 @@ score_variant() {
         "$PYTHON" scripts/run_adapter_suite.py \
             --config "$CONFIG" --suite "$suite" --run-dir "$RUN_DIR" \
             --phase run --variant "$variant" --base-url "$BASE_URL" \
-            ${CONCURRENCY:+--concurrency "$CONCURRENCY"}
+            ${CONCURRENCY:+--concurrency "$CONCURRENCY"} \
+            ${CONCURRENCY:-${CONCURRENCY_SCALE:+--concurrency-scale "$CONCURRENCY_SCALE"}}
     done
 }
 
