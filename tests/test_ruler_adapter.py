@@ -121,11 +121,15 @@ class SynthesisTests(unittest.TestCase):
         )
 
     def test_every_task_hits_its_length_target(self) -> None:
+        # The allowance is deliberately left unfilled for the chat template, so
+        # the contract is the target minus it, not the nominal length.
+        target = 4096 - adapter.TEMPLATE_ALLOWANCE
+        tolerance = max(adapter.TEMPLATE_ALLOWANCE // 2, int(4096 * adapter.LENGTH_TOLERANCE))
         for task in adapter.TASKS:
             with self.subTest(task=task):
                 prompt, key = self.build(task)
                 achieved = len(self.tokenizer.encode(prompt["text"]))
-                self.assertLessEqual(abs(achieved - 4096), adapter.TEMPLATE_ALLOWANCE)
+                self.assertLessEqual(abs(achieved - target), tolerance)
                 self.assertEqual(key["achieved_tokens"], achieved)
 
     def test_synthesis_is_deterministic(self) -> None:
@@ -145,6 +149,23 @@ class SynthesisTests(unittest.TestCase):
         self.assertEqual(len(key["expected"]), 5)
         for name in key["expected"]:
             self.assertIn(name, prompt["text"])
+
+    def test_counting_tasks_offer_a_candidate_shortlist(self) -> None:
+        # Without candidates the model tallies the whole list and never stops:
+        # every cwe and fwe item burned the full output cap and scored zero.
+        for task, count in (("cwe", 10), ("fwe", 3)):
+            with self.subTest(task=task):
+                prompt, key = self.build(task, length=32768)
+                self.assertIn("Candidates:", prompt["text"])
+                listed = [w.strip() for w in prompt["text"].rsplit("Candidates:", 1)[1].split(",")]
+                # Distractors are bounded by how many distinct filler words the
+                # list actually carries, so the shortlist can be shorter than the
+                # ratio asks for; it must still be long enough to punish guessing.
+                self.assertLessEqual(len(listed), count * (1 + adapter.WORD_CANDIDATE_RATIO))
+                self.assertGreaterEqual(len(listed), count * 2)
+                self.assertEqual(len(listed), len(set(listed)))
+                for word in key["expected"]:
+                    self.assertIn(word, listed)
 
     def test_frequent_words_dominate_the_list(self) -> None:
         for task, count in (("cwe", 10), ("fwe", 3)):

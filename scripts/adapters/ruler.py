@@ -465,9 +465,14 @@ def build_item(
     if task in ("cwe", "fwe"):
         instruction = CWE_INSTRUCTION
         frequent_count = 10 if task == "cwe" else 3
-        # The query carries the shortlist, so its length is known only after the
-        # list is built; reserve a generous allowance and measure exactly after.
-        overhead = len(tokenizer.encode(instruction)) + 256
+        pool = COMMON_WORD_POOL if task == "cwe" else FWE_WORD_POOL
+        # The query carries the shortlist, whose contents are known only after
+        # the list is built. Every pool word has the same token shape, so a probe
+        # of the right length measures the query exactly in one pass.
+        probe = WORD_QUESTIONS[task].format(k=frequent_count) + "\n\nCandidates: " + ", ".join(
+            [pool[0]] * (frequent_count * (1 + WORD_CANDIDATE_RATIO))
+        )
+        overhead = len(tokenizer.encode(instruction)) + len(tokenizer.encode(probe))
         body, expected, candidates = build_word_list(task, target - overhead, tokenizer, rng)
         query = (
             WORD_QUESTIONS[task].format(k=frequent_count)
