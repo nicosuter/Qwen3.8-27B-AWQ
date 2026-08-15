@@ -182,10 +182,17 @@ the positional-`hidden_states` bug in compressed-tensors cache offload.
 ## Publishing the checkpoint
 
 Use `scripts/publish_checkpoint.py`. It plans the commit, refuses to publish a
-structurally broken artifact, and only uploads when told to:
+structurally broken artifact, and only uploads when told to. Publishing happens
+from a workstation, not the cluster, so it needs an interpreter that can import
+`huggingface_hub` — the `hf` CLI keeps its copy in a private virtualenv that is
+not on the path, so make one:
 
 ```bash
-python3 scripts/publish_checkpoint.py \
+python3 -m venv .venv && .venv/bin/pip install huggingface_hub
+```
+
+```bash
+.venv/bin/python scripts/publish_checkpoint.py \
     --repo nicosuter/Qwen3.8-27B-AWQ \
     --path artifacts/Qwen3.8-27B-AWQ \
     --message "Requantize"          # add --execute to actually publish
