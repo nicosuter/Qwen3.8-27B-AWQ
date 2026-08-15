@@ -46,7 +46,7 @@ apptainer run --nv \
     --served-model-name "$SERVED_NAME" \
     --host 127.0.0.1 \
     --port "$PORT" \
-    --max-model-len 8192 \
+    --max-model-len 40960 \
     --reasoning-parser "$REASONING_PARSER" \
     > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
@@ -72,7 +72,7 @@ curl -sf "$BASE_URL/chat/completions" -H 'Content-Type: application/json' -d "{
     \"model\": \"$SERVED_NAME\",
     \"messages\": [{\"role\": \"user\", \"content\": \"Is 2903 prime? Work it out.\"}],
     \"chat_template_kwargs\": {\"enable_thinking\": true, \"reasoning_effort\": \"xhigh\"},
-    \"max_tokens\": 1200, \"temperature\": 1.0, \"top_p\": 0.95}" \
+    \"max_tokens\": 16384, \"temperature\": 1.0, \"top_p\": 0.95}" \
     | "$PYTHON" -c "
 import json, sys
 data = json.load(sys.stdin)
@@ -83,6 +83,7 @@ print('finish_reason      :', data['choices'][0].get('finish_reason'))
 print('reasoning_content  :', len(reasoning), 'chars')
 print('content            :', len(content), 'chars')
 print('closing tag in body:', '</think>' in content)
+print('completion_tokens  :', data.get('usage', {}).get('completion_tokens'))
 print('usage              :', json.dumps(data.get('usage', {})))
 print('--- reasoning head ---'); print(reasoning[:300])
 print('--- content head ---'); print(content[:300])

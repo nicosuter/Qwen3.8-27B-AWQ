@@ -156,7 +156,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         help="JSON generation policy; defaults to the model-card policy",
     )
-    probe.add_argument("--max-tokens", type=int, default=2048)
+    # An unterminated think block is returned as nothing at all: vLLM drops
+    # reasoning that never reaches </think>. The probe cap must be generous
+    # enough for xhigh to finish, or the probe measures its own cap.
+    probe.add_argument("--max-tokens", type=int, default=16384)
     probe.add_argument("--request-timeout", type=float, default=300.0)
 
     pin = sub.add_parser("pin", help="print the pins object to paste into protocol.json")
