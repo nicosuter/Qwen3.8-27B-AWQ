@@ -43,6 +43,8 @@ fi
 RUN_DIR="${PAIRED_RUN_DIR:-$RUN_BASE/v2/paired-1}"
 CONFIG="${PAIRED_CONFIG:-$RUN_BASE/eval/paired-1.json}"
 SUITES="${PAIRED_SUITES:-gpqa_diamond ruler}"
+DP="${PAIRED_DP:-8}"
+CONCURRENCY="${PAIRED_CONCURRENCY:-}"
 PYTHON="$PROJECT_DIR/.venv/bin/python"
 PORT="$(( 8000 + (SLURM_JOB_ID % 1000) ))"
 SERVED_NAME=qwen38-eval
@@ -87,7 +89,7 @@ start_server() {
         --host 127.0.0.1 \
         --port "$PORT" \
         --tensor-parallel-size 1 \
-        --data-parallel-size 8 \
+        --data-parallel-size "$DP" \
         --max-model-len 262144 \
         --kv-cache-dtype auto \
         --reasoning-parser qwen3 \
@@ -112,6 +114,14 @@ start_server() {
     echo "server-ready=ok variant=$variant"
 }
 
+variant_is_scored() {
+    local variant="$1"
+    for suite in $SUITES; do
+        [[ -s "$RUN_DIR/raw/$variant/$suite-r0.jsonl" ]] || return 1
+    done
+    return 0
+}
+
 score_variant() {
     local variant="$1"
     echo "=== generation policy probe ($variant) ==="
@@ -120,17 +130,29 @@ score_variant() {
         echo "=== $suite ($variant) ==="
         "$PYTHON" scripts/run_adapter_suite.py \
             --config "$CONFIG" --suite "$suite" --run-dir "$RUN_DIR" \
-            --phase run --variant "$variant" --base-url "$BASE_URL"
+            --phase run --variant "$variant" --base-url "$BASE_URL" \
+            ${CONCURRENCY:+--concurrency "$CONCURRENCY"}
     done
 }
 
-start_server baseline "$BASELINE_REPO" "/mnt/model/snapshots/$BASELINE_REVISION"
-score_variant baseline
-stop_server
+# A cancelled run leaves one side already scored. Reusing it costs nothing in
+# validity as long as the flags and image are the same, and it keeps the node
+# for half as long.
+if [[ "${PAIRED_FORCE:-0}" != "1" ]] && variant_is_scored baseline; then
+    echo "baseline already scored in $RUN_DIR/raw/baseline; skipping"
+else
+    start_server baseline "$BASELINE_REPO" "/mnt/model/snapshots/$BASELINE_REVISION"
+    score_variant baseline
+    stop_server
+fi
 
-start_server candidate "$OUTPUT_DIR" "/mnt/model"
-score_variant candidate
-stop_server
+if [[ "${PAIRED_FORCE:-0}" != "1" ]] && variant_is_scored candidate; then
+    echo "candidate already scored in $RUN_DIR/raw/candidate; skipping"
+else
+    start_server candidate "$OUTPUT_DIR" "/mnt/model"
+    score_variant candidate
+    stop_server
+fi
 
 # One file per checkpoint so the comparator sees every suite at once; it
 # requires identical keys on both sides and will say so if a suite is missing.

@@ -139,9 +139,15 @@ CWE_INSTRUCTION = (
     "Below is a long list of words. Count how often each word appears; you will "
     "be asked for the most frequent ones."
 )
+# Asking for "the most frequent words" outright invites a thinking model to tally
+# every word, which exhausts any output budget: every such item returned nothing
+# after 16384 tokens while the retrieval tasks finished in under 2500. Offering
+# candidates bounds the work to comparing a shortlist without removing the need
+# to attend over the whole list.
+WORD_CANDIDATE_RATIO = 3
 WORD_QUESTIONS = {
-    "cwe": "What are the 10 most frequent words in the list above?",
-    "fwe": "What are the 3 most frequent words in the list above?",
+    "cwe": "Which {k} of these words appear most often in the list above?",
+    "fwe": "Which {k} of these words appear most often in the list above?",
 }
 
 ANSWER_SEGMENT_RE = re.compile(r"answer\s*[::]\s*", re.IGNORECASE)
@@ -415,8 +421,8 @@ def compose_word_list(
 
 def build_word_list(
     task: str, budget: int, tokenizer: Tokenizer, rng: random.Random
-) -> tuple[str, list[str]]:
-    """Return (word list text, expected words) filled to the token budget."""
+) -> tuple[str, list[str], list[str]]:
+    """Return (word list text, expected words, candidate shortlist)."""
     pool, frequent_count = (COMMON_WORD_POOL, 10) if task == "cwe" else (FWE_WORD_POOL, 3)
     frequent = list(rng.sample(pool, frequent_count))
     filler_pool = [word for word in pool if word not in frequent]
@@ -432,7 +438,13 @@ def build_word_list(
         if abs(tokens - budget) <= max(64, budget * LENGTH_TOLERANCE / 2):
             break
         total = max(int(total * budget / max(tokens, 1)), frequent_count * 8)
-    return text, frequent
+    # Distractors are drawn from words that really are in the list, so absence
+    # cannot be used to eliminate them without reading it.
+    present = [word for word in filler_pool if word in set(text.split(", "))]
+    distractors = rng.sample(present, min(len(present), frequent_count * WORD_CANDIDATE_RATIO))
+    candidates = frequent + distractors
+    rng.shuffle(candidates)
+    return text, frequent, candidates
 
 
 def build_item(
@@ -451,9 +463,17 @@ def build_item(
     target = length - TEMPLATE_ALLOWANCE
 
     if task in ("cwe", "fwe"):
-        instruction, query = CWE_INSTRUCTION, WORD_QUESTIONS[task]
-        overhead = len(tokenizer.encode(instruction)) + len(tokenizer.encode(query))
-        body, expected = build_word_list(task, target - overhead, tokenizer, rng)
+        instruction = CWE_INSTRUCTION
+        frequent_count = 10 if task == "cwe" else 3
+        # The query carries the shortlist, so its length is known only after the
+        # list is built; reserve a generous allowance and measure exactly after.
+        overhead = len(tokenizer.encode(instruction)) + 256
+        body, expected, candidates = build_word_list(task, target - overhead, tokenizer, rng)
+        query = (
+            WORD_QUESTIONS[task].format(k=frequent_count)
+            + "\n\nCandidates: "
+            + ", ".join(candidates)
+        )
     else:
         instruction, needles, query, expected = build_needle_task(task, rng)
         overhead = len(tokenizer.encode(instruction)) + len(tokenizer.encode(query))

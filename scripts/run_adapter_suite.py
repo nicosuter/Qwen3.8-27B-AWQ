@@ -38,6 +38,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int)
     parser.add_argument("--base-url", default="")
     parser.add_argument(
+        "--concurrency",
+        type=int,
+        help="override the suite's --concurrency, for a smaller server than the config assumes",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         help="score only the first N items of the frozen order; dry runs only",
@@ -90,6 +95,13 @@ def do_run(config: dict[str, Any], suite: str, run_dir: Path, args: argparse.Nam
     if not args.base_url:
         raise protocol.ProtocolError("--base-url is required to score a suite")
     entry = next(item for item in config["suites"] if item["name"] == suite)
+    command = list(entry["run"])
+    if args.concurrency:
+        if "--concurrency" in command:
+            command[command.index("--concurrency") + 1] = str(args.concurrency)
+        else:
+            command += ["--concurrency", str(args.concurrency)]
+        print(f"concurrency overridden to {args.concurrency}", flush=True)
     order = json.loads(order_path(run_dir, suite).read_text(encoding="utf-8"))
     if args.limit:
         order = order[: args.limit]
@@ -116,7 +128,7 @@ def do_run(config: dict[str, Any], suite: str, run_dir: Path, args: argparse.Nam
     if args.limit:
         env["EVAL_TASK_ORDER_JSON"] = str(run_dir / "orders" / f"{suite}-limit{args.limit}.json")
     protocol.run_logged(
-        entry["run"],
+        command,
         env=env,
         log_path=run_dir / "logs" / f"run-{args.variant}-r{args.replicate}-{suite}.log",
         dry_run=False,
