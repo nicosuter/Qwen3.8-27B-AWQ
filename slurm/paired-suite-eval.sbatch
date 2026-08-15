@@ -25,6 +25,13 @@ source ./scripts/load_env.sh
 export OUTPUT_DIR="${OUTPUT_DIR:-$RUN_BASE/v2/model}"
 : "${EVAL_APPTAINER_IMAGE:?set EVAL_APPTAINER_IMAGE to the pinned vLLM .sif}"
 
+# Apptainer passes the host environment through, and one cluster's login profile
+# exports CC/CXX pointing at a gcc that exists on neither the host nor the
+# container. Triton honours CC when it JIT-compiles at startup, fails, and vLLM
+# reports it as "Model architectures [...] failed to be inspected", which says
+# nothing about the real cause. Let Triton find the container's own compiler.
+unset CC CXX
+
 # At data-parallel size 8, eight workers share one squashfuse mount and it has
 # dropped out mid-startup, surfacing as ENOTCONN on libc reads and a confusing
 # "NVCC compilation failed" from the DeepGEMM warmup. An unpacked sandbox takes

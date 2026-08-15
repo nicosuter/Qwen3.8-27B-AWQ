@@ -35,6 +35,9 @@ source ./scripts/load_env.sh
 : "${PROBE_BIND:?set PROBE_BIND to the host directory to mount}"
 : "${PROBE_MODEL:?set PROBE_MODEL to the model path as seen inside the container}"
 
+# See paired-suite-eval.sbatch: a leaked host CC breaks Triton's startup JIT.
+unset CC CXX
+
 IMAGE="$EVAL_APPTAINER_IMAGE"
 SANDBOX="${EVAL_APPTAINER_SANDBOX:-${EVAL_APPTAINER_IMAGE%.sif}-sandbox}"
 [[ -d "$SANDBOX" ]] && IMAGE="$SANDBOX"
