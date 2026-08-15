@@ -16,6 +16,7 @@ set -euo pipefail
 
 usage() {
     echo "usage: bash scripts/submit_quantize.sh NGPUS [--fp8-gdn=true|false] [--output-dir=PATH]" >&2
+    echo "                                      [--dependency=SPEC] [--time=HH:MM:SS]" >&2
     exit 2
 }
 
@@ -28,8 +29,15 @@ esac
 
 FP8_GDN=false
 OUTPUT_DIR=""
+DEPENDENCY=""
+# The job header reserves 24h for a full prepare-and-quantize. A requant is
+# well under an hour, and on a shared node the reservation is what other people
+# see, so allow a shorter one.
+TIME_LIMIT=""
 for arg in "$@"; do
     case "$arg" in
+        --dependency=*) DEPENDENCY="${arg#*=}" ;;
+        --time=*) TIME_LIMIT="${arg#*=}" ;;
         --fp8-gdn=*)
             FP8_GDN="${arg#*=}"
             case "$FP8_GDN" in
@@ -67,8 +75,12 @@ fi
 echo "gpus           : $NGPUS"
 echo "gdn projections: $GDN_PRECISION"
 echo "output         : $OUTPUT_DIR"
+[[ -n "$DEPENDENCY" ]] && echo "dependency     : $DEPENDENCY"
+[[ -n "$TIME_LIMIT" ]] && echo "time limit     : $TIME_LIMIT"
 
 exec sbatch \
     --gres="gpu:$NGPUS" \
+    ${DEPENDENCY:+--dependency="$DEPENDENCY"} \
+    ${TIME_LIMIT:+--time="$TIME_LIMIT"} \
     --export="ALL,GDN_PRECISION=$GDN_PRECISION,OUTPUT_DIR=$OUTPUT_DIR" \
     slurm/quantize.sbatch
