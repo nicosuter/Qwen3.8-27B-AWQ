@@ -148,7 +148,11 @@
         "REPLACE_WITH_PINNED_GPQA_ADAPTER",
         "run",
         "--concurrency",
-        "384"
+        "384",
+        "--max-tokens",
+        "131072",
+        "--request-timeout",
+        "4200"
       ]
     },
     {
