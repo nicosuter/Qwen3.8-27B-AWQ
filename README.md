@@ -179,6 +179,36 @@ the measurement that would settle it. AWQ mappings are restricted
 to the MLP paths, so calibration never wraps `Qwen3_5GatedDeltaNet`; this avoids
 the positional-`hidden_states` bug in compressed-tensors cache offload.
 
+## Publishing the checkpoint
+
+`hf upload` adds and updates, but never removes. Publishing a reshard without
+`--delete` therefore leaves the previous shards in place: a repository that held
+`model-0000{1,2}-of-00002.safetensors` keeps them beside the new five, twice the
+download and two sets of weights the index does not reference. It also does not
+honour a `.gitignore`, so local state is uploaded unless excluded.
+
+```bash
+uvx --from huggingface_hub hf upload \
+    nicosuter/Qwen3.8-27B-AWQ \
+    artifacts/Qwen3.8-27B-AWQ \
+    . \
+    --repo-type model \
+    --exclude ".omc/*" --exclude ".gitignore" \
+    --delete "*.safetensors" \
+    --commit-message "Requantize"
+```
+
+`--delete "*.safetensors"` removes remote shards that this upload does not
+replace, which is the whole problem, while leaving `README.md` and the configs
+untouched. `--delete "*"` would mirror the directory exactly, but it also
+deletes anything maintained only on the Hub, the model card included.
+
+Check what a fresh clone would receive before publishing:
+
+```bash
+ls -a artifacts/Qwen3.8-27B-AWQ
+```
+
 ## Rapid paired release smoke
 
 ```bash
