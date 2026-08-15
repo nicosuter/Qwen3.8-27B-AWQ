@@ -163,14 +163,19 @@ sequential AWQ starts, each rank runs its image rows through the BF16 vision
 tower and splices those real visual embeddings into the token stream. Text and
 image rows then share one `inputs_embeds` schema, avoiding the sequential FX
 tracer's static optional-pixel branch without discarding vision calibration.
-The full BF16 model and rank-local AWQ cache remain on each H200. The
-target set is deliberately more conservative than QuantTrio's: vision, MTP,
-layer 0, DeltaNet `in_proj_{a,b,qkv,z}`, and full-attention `q/k/v` stay in
-source precision. QuantTrio's `Qwen3.6-27B-AWQ` excludes only `in_proj_a` and
-`in_proj_b` from the DeltaNet input projection and quantizes `in_proj_qkv` and
-`in_proj_z`. Holding those two in BF16 across the 47 quantizable linear-attention
-layers is 3.9B parameters, or roughly 5.8 GB of checkpoint size, and it is the
-entire difference between this artifact and theirs. AWQ mappings are restricted
+The full BF16 model and rank-local AWQ cache remain on each H200. The target
+set now matches the reference quantizations except in one place: vision, MTP,
+`lm_head`, and the DeltaNet `in_proj_{a,b,qkv,z}` projections stay in source
+precision. Qwen's own FP8 checkpoint keeps the vision tower and `lm_head` in
+BF16 too, so those exclusions are not conservatism.
+
+`in_proj_qkv` and `in_proj_z` are the exception, and they are the whole
+remaining difference from `cyankiwi/Qwen3.8-27B-AWQ-INT4` at 19.6 GB. Held in
+BF16 across all 48 linear-attention layers they are 4.0B parameters, roughly
+15% of the model. Qwen's FP8 quantizes them, but at 8 bits with per-block
+scales, which is not evidence about 4-bit AWQ: the reported failure mode is
+recurrent-state corruption that only shows at long context. RULER at 128K is
+the measurement that would settle it. AWQ mappings are restricted
 to the MLP paths, so calibration never wraps `Qwen3_5GatedDeltaNet`; this avoids
 the positional-`hidden_states` bug in compressed-tensors cache offload.
 

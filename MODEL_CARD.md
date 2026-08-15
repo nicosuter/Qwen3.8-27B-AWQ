@@ -55,12 +55,10 @@ want to reproduce or audit should start from those rather than from this card.
 
 These modules stay in source precision:
 
-- the vision tower (`visual`/`vision`)
+- the vision tower (`visual`/`vision`), which Qwen's own FP8 release also keeps in BF16
 - the MTP head
-- decoder layer 0
 - Gated DeltaNet input projections (`in_proj_a`, `in_proj_b`, `in_proj_qkv`, `in_proj_z`)
-- full-attention `q_proj`, `k_proj`, `v_proj`
-- `lm_head`
+- `lm_head`, which Qwen's FP8 release also keeps in BF16
 
 Everything else that is a `Linear` gets W4A16. The AWQ scale search itself is
 restricted to two MLP mappings, `post_attention_layernorm → gate_proj/up_proj`

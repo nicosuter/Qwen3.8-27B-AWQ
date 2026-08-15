@@ -363,7 +363,6 @@ def main() -> None:
         "re:.*visual.*",
         "re:.*vision.*",
         "re:.*mtp.*",
-        "re:.*layers\\.0\\..*",
         "re:.*linear_attn.in_proj_a$",
         "re:.*linear_attn.in_proj_b$",
         "re:.*linear_attn.in_proj_qkv$",
