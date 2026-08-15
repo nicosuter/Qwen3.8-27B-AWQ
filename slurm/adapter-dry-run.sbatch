@@ -3,9 +3,9 @@
 #SBATCH --partition=defq
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=256G
-#SBATCH --gres=gpu:2
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=128G
+#SBATCH --gres=gpu:1
 #SBATCH --time=04:00:00
 #SBATCH --output=qwen38-adapter-dry-run-%j.out
 
@@ -53,8 +53,8 @@ SERVER_LOG="$LOG_DIR/adapter-dry-run-${SLURM_JOB_ID:-manual}.log"
 : > "$SERVER_LOG"
 
 # %runscript is `exec vllm serve "$@"`, so the first argument is the model.
-# Context and parsers match the paired protocol; data parallelism is sized to
-# the two GPUs this job asks for rather than the protocol's eight.
+# Context and parsers match the paired protocol. One GPU on purpose: this box
+# is shared, and a 45-item dry run does not justify crowding anyone out.
 apptainer run --nv \
     --bind "$OUTPUT_DIR:/model:ro" \
     "$EVAL_APPTAINER_IMAGE" \
@@ -63,7 +63,7 @@ apptainer run --nv \
     --host 127.0.0.1 \
     --port "$PORT" \
     --tensor-parallel-size 1 \
-    --data-parallel-size 2 \
+    --data-parallel-size 1 \
     --max-model-len 262144 \
     --kv-cache-dtype auto \
     --reasoning-parser qwen3 \
