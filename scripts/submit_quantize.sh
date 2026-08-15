@@ -3,6 +3,13 @@
 #
 #   bash scripts/submit_quantize.sh 8
 #   bash scripts/submit_quantize.sh 8 --fp8-gdn=true
+#   bash scripts/submit_quantize.sh 8 --fp8-gdn=true --algorithm=awq+gptq
+#
+# --algorithm chooses how weights are rounded once AWQ has scaled activations.
+# awq rounds each weight to the nearest representable value on its own;
+# awq+gptq pushes each column's rounding error into the columns not yet
+# quantized, correcting the layer output instead. GPTQ costs roughly two to
+# three times the runtime and writes to its own directory so both survive.
 #
 # --fp8-gdn selects what happens to the Gated DeltaNet input projections,
 # in_proj_qkv and in_proj_z, which are 4.0B parameters and most of the
@@ -16,6 +23,7 @@ set -euo pipefail
 
 usage() {
     echo "usage: bash scripts/submit_quantize.sh NGPUS [--fp8-gdn=true|false] [--output-dir=PATH]" >&2
+    echo "                                      [--algorithm=awq|awq+gptq]" >&2
     echo "                                      [--dependency=SPEC] [--time=HH:MM:SS]" >&2
     exit 2
 }
@@ -28,6 +36,7 @@ case "$NGPUS" in
 esac
 
 FP8_GDN=false
+ALGORITHM=awq
 OUTPUT_DIR=""
 DEPENDENCY=""
 # The job header reserves 24h for a full prepare-and-quantize. A requant is
@@ -45,6 +54,13 @@ for arg in "$@"; do
                 *) echo "--fp8-gdn must be true or false, got: $FP8_GDN" >&2; exit 2 ;;
             esac
             ;;
+        --algorithm=*)
+            ALGORITHM="${arg#*=}"
+            case "$ALGORITHM" in
+                awq | awq+gptq) ;;
+                *) echo "--algorithm must be awq or awq+gptq, got: $ALGORITHM" >&2; exit 2 ;;
+            esac
+            ;;
         --output-dir=*) OUTPUT_DIR="${arg#*=}" ;;
         -h | --help) usage ;;
         *) echo "unknown argument: $arg" >&2; usage ;;
@@ -58,6 +74,9 @@ else
     GDN_PRECISION=source
     DEFAULT_SUFFIX=""
 fi
+# The algorithm leaves config.json untouched, so without a distinct directory an
+# AWQ+GPTQ build and an AWQ one differ only in their weights.
+[[ "$ALGORITHM" == "awq+gptq" ]] && DEFAULT_SUFFIX="$DEFAULT_SUFFIX-gptq"
 
 # Resolve the default output directory the same way the job would, so the two
 # variants cannot overwrite each other by accident.
@@ -74,6 +93,7 @@ fi
 
 echo "gpus           : $NGPUS"
 echo "gdn projections: $GDN_PRECISION"
+echo "algorithm      : $ALGORITHM"
 echo "output         : $OUTPUT_DIR"
 [[ -n "$DEPENDENCY" ]] && echo "dependency     : $DEPENDENCY"
 [[ -n "$TIME_LIMIT" ]] && echo "time limit     : $TIME_LIMIT"
@@ -82,5 +102,5 @@ exec sbatch \
     --gres="gpu:$NGPUS" \
     ${DEPENDENCY:+--dependency="$DEPENDENCY"} \
     ${TIME_LIMIT:+--time="$TIME_LIMIT"} \
-    --export="ALL,GDN_PRECISION=$GDN_PRECISION,OUTPUT_DIR=$OUTPUT_DIR" \
+    --export="ALL,GDN_PRECISION=$GDN_PRECISION,QUANT_ALGORITHM=$ALGORITHM,OUTPUT_DIR=$OUTPUT_DIR" \
     slurm/quantize.sbatch

@@ -17,7 +17,7 @@ import torch.distributed as dist
 from compressed_tensors.offload import OffloadCache, init_dist, to_accelerate
 from compressed_tensors.quantization import preset_name_to_scheme
 from llmcompressor import oneshot
-from llmcompressor.modifiers.quantization import QuantizationModifier
+from llmcompressor.modifiers.quantization import GPTQModifier, QuantizationModifier
 from llmcompressor.modifiers.transform.awq import AWQMapping, AWQModifier
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
@@ -45,6 +45,19 @@ MAX_LENGTH = int(os.environ.get("MAX_SEQ_LENGTH", "4096"))
 # "source" keeps the Gated DeltaNet input projections in BF16; "fp8" quantizes
 # them the way Qwen's own FP8 release does. Everything else is W4A16 either way.
 GDN_PRECISION = os.environ.get("GDN_PRECISION", "source")
+# "awq" scales activations, then rounds each weight to the nearest representable
+# value independently. "awq+gptq" keeps the scaling and replaces the rounding
+# with GPTQ, which pushes each column's rounding error into the columns it has
+# not quantized yet, correcting the layer's output rather than each weight in
+# isolation. Our reconstruction error rises sharply with depth -- 6.4e-2 at
+# layers.63.mlp.up_proj against a 3.98e-4 median -- which is where compensation
+# has the most to recover.
+QUANT_ALGORITHM = os.environ.get("QUANT_ALGORITHM", "awq")
+if QUANT_ALGORITHM not in ("awq", "awq+gptq"):
+    raise SystemExit(f"QUANT_ALGORITHM must be awq or awq+gptq, got {QUANT_ALGORITHM!r}")
+# Added to the Hessian diagonal before inversion. Too small and a rank-deficient
+# Hessian makes the Cholesky fail; llm-compressor's default is 0.01.
+GPTQ_DAMPENING_FRAC = float(os.environ.get("GPTQ_DAMPENING_FRAC", "0.01"))
 FULL_MANIFEST_SAMPLES = 256
 NUM_SAMPLES = int(os.environ.get("CALIBRATION_SAMPLES", str(FULL_MANIFEST_SAMPLES)))
 
@@ -400,12 +413,28 @@ def main() -> None:
         ),
         AWQMapping("re:.*up_proj$", ["re:.*down_proj$"]),
     ]
+    # GPTQ subsumes QuantizationModifier rather than running beside it: it
+    # applies the same config groups itself, and two modifiers writing schemes
+    # onto the same modules would fight over them.
+    if QUANT_ALGORITHM == "awq+gptq":
+        quantizer = GPTQModifier(
+            config_groups=config_groups,
+            ignore=ignores,
+            dampening_frac=GPTQ_DAMPENING_FRAC,
+            # A down_proj Hessian is intermediate_size squared in floats, over a
+            # gigabyte each here, and one is live per module being quantized.
+            # Keeping them off the accelerator costs transfer time and buys back
+            # the memory the model replicas already want.
+            offload_hessians=True,
+        )
+    else:
+        quantizer = QuantizationModifier(config_groups=config_groups, ignore=ignores)
     recipe = [
         AWQModifier(duo_scaling="both", n_grid=20, mappings=mappings),
         # No kv_cache_scheme: it attaches quantization to the attention module
         # itself, and the distributed branch bin-packs scheme-bearing modules by
         # mod.weight.numel(), which Qwen3_5Attention does not have.
-        QuantizationModifier(config_groups=config_groups, ignore=ignores),
+        quantizer,
     ]
     oneshot(
         model=model,
@@ -488,6 +517,15 @@ def main() -> None:
             "loading_strategy": "one BF16 model replica per H200; no offload wrapper",
             "ignored_modules": ignores,
             "gdn_precision": GDN_PRECISION,
+            # config.json is identical for both algorithms, so without this the
+            # only thing separating an AWQ checkpoint from an AWQ+GPTQ one is
+            # the weights themselves.
+            "quant_algorithm": QUANT_ALGORITHM,
+            **(
+                {"gptq_dampening_frac": GPTQ_DAMPENING_FRAC, "gptq_block_size": 128}
+                if QUANT_ALGORITHM == "awq+gptq"
+                else {}
+            ),
             "config_groups": {
                 name: {
                     "num_bits": group.weights.num_bits,
