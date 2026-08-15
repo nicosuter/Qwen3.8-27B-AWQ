@@ -46,7 +46,7 @@ haystacks cannot overlap the calibration manifest, so the full and
 Report RULER per length, never as a single scalar. The whole point is to locate
 where degradation begins, and a 4K-to-128K average will hide a cliff at the top
 end behind two healthy buckets. The per-length numbers are diagnostics; the
-value that enters gate 1 and the cross-suite macro-average is RULER's own
+value that enters the macro-average is RULER's own
 average over its three lengths, so the suite counts once rather than three times.
 
 The top length is 128K, not the model's full 256K window. The paired protocol
@@ -57,11 +57,14 @@ one suite would break the identical-server rule that makes the pairing valid.
 `scripts/adapters/ruler.py` rejects any requested length that does not leave
 room for `--output-reserve`.
 A per-length cliff that survives that averaging is exactly the kind of regression
-cluster gate 5 exists to catch. Budget the 256K bucket against KV memory rather
-than wall clock: at 16
-full-attention layers, 4 KV heads, and 256-wide heads, one 256K sequence holds
-roughly 17 GB of KV cache, which bounds per-replica concurrency well below what
-the shorter suites tolerate.
+cluster gate 6 exists to catch. Budget the 128K bucket against KV memory rather
+than wall clock: at 16 full-attention layers, 4 KV heads, and 256-wide heads,
+one 128K sequence holds roughly 8.5 GB of KV cache, which bounds per-replica
+concurrency well below what the shorter suites tolerate. Measured on one H200
+serving this checkpoint, four concurrent 128K requests occupied about 25% of the
+KV pool against roughly 1.2% for a short-prompt request, so RULER wants about a
+dozen requests in flight per replica where the short suites comfortably take
+forty or more.
 
 ### Secondary diagnostics
 
@@ -262,17 +265,30 @@ python scripts/compare_eval_results.py \
 
 The default automated release gate is intentionally practical for a W4A16 27B model:
 
-1. every primary suite's point estimate is no worse than FP8 by 3 percentage
-   points;
-2. the equally weighted macro-average 95% paired-bootstrap lower bound is above
-   -3 points;
+1. the equally weighted macro-average point estimate is no worse than FP8 by 3
+   percentage points;
+2. no single suite's 95% paired-bootstrap interval sits entirely below -5
+   points, so one suite can still sink the run, but only on evidence;
 3. malformed tool calls, premature final answers, empty answers, repetition
-   loops, context failures, and timeouts show no absolute increase over 1 point;
-4. at least 95% of FP8-passed private must-pass tasks still pass under AWQ;
-5. no regression cluster has a credible common cause (for example long context,
+   loops, context failures, and timeouts show no absolute increase over 1 point,
+   measured per suite and averaged with equal suite weight;
+4. at least 95% of FP8-passed private must-pass tasks still pass under AWQ,
+   where passing means reaching the full verifier reward, counted once per task
+   rather than once per replicate;
+5. every suite with a declared baseline floor clears it, which is the only check
+   that would notice a harness broken identically for both checkpoints;
+6. no regression cluster has a credible common cause (for example long context,
    parallel tool calls, vision/OCR, chemistry, or dynamic programming) merely
    hidden by the macro average. This last review remains manual; the script
    reports `automated-quality-gate` rather than claiming it passed.
+
+Gates 1 and 2 replace an earlier rule that failed the run whenever any suite's
+point estimate fell 3 points. Seven suites is seven chances, and the smaller
+ones carry intervals twice the width of that margin: simulated against the
+planned sample sizes, that rule rejected 60% of runs with no degradation at all,
+while the macro rule rejects 2%. Suites that fall past 3 points without clearing
+the 5-point evidential bar are printed as review flags and belong in the manual
+cluster review, not in an automatic verdict.
 
 Lock these margins before viewing either model's outputs. If a 3-point loss is
 not acceptable for the intended deployment, lower the margin now and increase

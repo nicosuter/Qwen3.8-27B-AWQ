@@ -115,11 +115,17 @@ FWE_WORD_POOL = tuple(f"token{index:03d}" for index in range(600))
 # The frequent words form a descending ladder from TOP_RATIO down to
 # TIGHT_RATIO times the filler count. The lowest rung sits deliberately close to
 # the filler: a task both checkpoints ace measures nothing about degradation.
-TOP_RATIO = 2.5
-TIGHT_RATIO = 1.5
+TOP_RATIO = 3.0
+TIGHT_RATIO = 2.0
 TARGET_FILLER_REPEATS = 8
 MIN_FILLER_WORDS = 20
 MIN_FILLER_REPEATS = 3
+# Counting is bounded by how many distinct words must be tallied, not by list
+# length. Left uncapped, a 128k list asks for the top 3 of 400 buckets and the
+# model reasons until it hits the output cap at every length, scoring 0 for both
+# checkpoints and measuring nothing. The list still scales with context; the
+# bookkeeping does not.
+MAX_DISTINCT_FILLER = 24
 
 NEEDLE_INSTRUCTION = (
     "Some special magic numbers are hidden in the following text. Memorize them; "
@@ -177,6 +183,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run = sub.add_parser("run", help="score the frozen task order against the server")
     run.add_argument("--concurrency", type=int, default=1)
     run.add_argument("--max-tokens", type=int, default=DEFAULT_OUTPUT_RESERVE)
+    run.add_argument("--concurrency-note", help=argparse.SUPPRESS)
     run.add_argument("--request-timeout", type=float, default=3600.0)
     run.add_argument("--retries", type=int, default=2)
 
@@ -377,7 +384,11 @@ def compose_word_list(
     weight = sum(ladder)
     # Spend as many distinct filler words as the list can carry while each still
     # recurs often enough for the ladder to sit above it.
-    usable = min(len(filler_pool), max(MIN_FILLER_WORDS, int(total / TARGET_FILLER_REPEATS - weight)))
+    usable = min(
+        len(filler_pool),
+        MAX_DISTINCT_FILLER,
+        max(MIN_FILLER_WORDS, int(total / TARGET_FILLER_REPEATS - weight)),
+    )
     base = total / (usable + weight)
     if usable < MIN_FILLER_WORDS or base < MIN_FILLER_REPEATS:
         raise AdapterError(

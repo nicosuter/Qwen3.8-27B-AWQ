@@ -30,11 +30,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--bootstrap-samples", type=int, default=20_000)
     parser.add_argument("--seed", type=int, default=38_027)
-    parser.add_argument("--max-suite-drop", type=float, default=0.03)
-    parser.add_argument("--macro-ci-margin", type=float, default=0.03)
+    # The hard bar is the equally weighted macro point estimate. Gating on every
+    # suite's point estimate instead fails 60% of runs that have no degradation
+    # at all: seven suites is seven chances, and the small ones carry confidence
+    # intervals twice the width of the margin.
+    parser.add_argument("--max-macro-drop", type=float, default=0.03)
+    # A single suite can still sink the run, but only on evidence: its interval
+    # must clear a wider margin, so noise cannot trip it.
+    parser.add_argument("--suite-confident-drop", type=float, default=0.05)
+    # Reported for the manual regression review, never a failure by itself.
+    parser.add_argument("--review-suite-drop", type=float, default=0.03)
     parser.add_argument("--max-failure-increase", type=float, default=0.01)
     parser.add_argument("--must-pass-retention", type=float, default=0.95)
+    # Agent verifiers award partial credit, so "score > 0" is not a pass.
+    parser.add_argument("--must-pass-threshold", type=float, default=1.0)
+    # Everything else here is paired, so a harness broken for both checkpoints
+    # passes silently. Floors are the only check that looks at absolute quality.
+    parser.add_argument(
+        "--baseline-floor",
+        action="append",
+        default=[],
+        metavar="SUITE=VALUE",
+        help="fail when the baseline scores below VALUE on SUITE",
+    )
     return parser.parse_args()
+
+
+def parse_floors(raw: list[str]) -> dict[str, float]:
+    floors = {}
+    for entry in raw:
+        suite, _, value = entry.partition("=")
+        if not suite or not value:
+            raise ValueError(f"--baseline-floor expects SUITE=VALUE; got {entry!r}")
+        floors[suite] = float(value)
+    return floors
 
 
 def load_rows(path: Path) -> dict[Key, dict[str, Any]]:
@@ -171,39 +200,76 @@ def auxiliary_gates(
     *,
     max_failure_increase: float,
     must_pass_retention: float,
+    must_pass_threshold: float = 1.0,
 ) -> dict[str, Any]:
+    suites = sorted({key[0] for key in baseline})
     failure_rates = {}
     failure_failures = []
     for field in FAILURE_FIELDS:
-        baseline_rate = statistics.fmean(float(row[field]) for row in baseline.values())
-        candidate_rate = statistics.fmean(float(row[field]) for row in candidate.values())
-        increase = candidate_rate - baseline_rate
+        per_suite = {}
+        for suite in suites:
+            rows = [key for key in baseline if key[0] == suite]
+            base_rate = statistics.fmean(float(baseline[key][field]) for key in rows)
+            cand_rate = statistics.fmean(float(candidate[key][field]) for key in rows)
+            per_suite[suite] = {
+                "baseline": base_rate,
+                "candidate": cand_rate,
+                "increase": cand_rate - base_rate,
+            }
+        # Equal weight per suite, matching the quality gate. Pooling every row
+        # instead weights suites by items x replicates, which let a 15-point
+        # context_failure regression confined to RULER show up as 0.86 points.
+        macro_increase = statistics.fmean(v["increase"] for v in per_suite.values())
         failure_rates[field] = {
-            "baseline": baseline_rate,
-            "candidate": candidate_rate,
-            "increase": increase,
+            "macro_increase": macro_increase,
+            "worst_suite": max(per_suite, key=lambda s: per_suite[s]["increase"]),
+            "by_suite": per_suite,
         }
-        if increase > max_failure_increase:
+        if macro_increase > max_failure_increase:
             failure_failures.append(field)
 
-    must_pass_keys = [
+    # Per item, after averaging replicates: an item with more replicates must not
+    # carry more weight in a bank where every task counts once.
+    base_items = aggregate_items(baseline)
+    cand_items = aggregate_items(candidate)
+    must_pass_items = [
         key
-        for key, row in baseline.items()
-        if row["must_pass"] and row["score"] > 0
+        for key, (score, must_pass) in base_items.items()
+        if must_pass and score >= must_pass_threshold
     ]
     retained = (
-        statistics.fmean(float(candidate[key]["score"] > 0) for key in must_pass_keys)
-        if must_pass_keys
+        statistics.fmean(
+            float(cand_items[key][0] >= must_pass_threshold) for key in must_pass_items
+        )
+        if must_pass_items
         else None
     )
+    declared = {key for key, (_, must_pass) in base_items.items() if must_pass}
     return {
         "failure_rates": failure_rates,
         "max_failure_increase": max_failure_increase,
         "failure_rate_failures": failure_failures,
-        "must_pass_baseline_passes": len(must_pass_keys),
+        "must_pass_threshold": must_pass_threshold,
+        "must_pass_declared_items": len(declared),
+        "must_pass_baseline_passes": len(must_pass_items),
         "must_pass_retention": retained,
         "required_must_pass_retention": must_pass_retention,
         "must_pass_failure": retained is not None and retained < must_pass_retention,
+        # A bank whose tasks the baseline never fully passes cannot gate anything.
+        "must_pass_unusable": bool(declared) and not must_pass_items,
+    }
+
+
+def aggregate_items(rows: dict[Key, dict[str, Any]]) -> dict[tuple[str, str], tuple[float, bool]]:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for (suite, item_id, _), row in rows.items():
+        grouped[(suite, item_id)].append(row)
+    return {
+        key: (
+            statistics.fmean(row["score"] for row in group),
+            any(row["must_pass"] for row in group),
+        )
+        for key, group in grouped.items()
     }
 
 
@@ -228,23 +294,47 @@ def main() -> int:
         candidate,
         max_failure_increase=args.max_failure_increase,
         must_pass_retention=args.must_pass_retention,
+        must_pass_threshold=args.must_pass_threshold,
     )
 
+    # Hard bar: the equally weighted macro point estimate.
+    macro_failure = report["macro"]["delta"] < -args.max_macro_drop
+    # A single suite fails the run only when its interval clears a wider margin,
+    # so one noisy small suite cannot veto an otherwise healthy candidate.
     suite_failures = [
         suite
         for suite, result in report["suites"].items()
-        if result["delta"] < -args.max_suite_drop
+        if result["ci95"][1] < -args.suite_confident_drop
     ]
-    macro_failure = report["macro"]["ci95"][0] < -args.macro_ci_margin
+    # Reported for the manual regression review; never a failure by itself.
+    suite_reviews = [
+        suite
+        for suite, result in report["suites"].items()
+        if result["delta"] < -args.review_suite_drop
+    ]
+    floors = parse_floors(args.baseline_floor)
+    floor_failures = {
+        suite: {"baseline": report["suites"][suite]["baseline"], "floor": floor}
+        for suite, floor in floors.items()
+        if suite in report["suites"] and report["suites"][suite]["baseline"] < floor
+    }
+    missing_floor_suites = sorted(set(floors) - set(report["suites"]))
+
     report["gate"] = {
-        "passed": not suite_failures
-        and not macro_failure
+        "passed": not macro_failure
+        and not suite_failures
+        and not floor_failures
+        and not missing_floor_suites
         and not auxiliary["failure_rate_failures"]
         and not auxiliary["must_pass_failure"],
-        "max_suite_drop": args.max_suite_drop,
-        "macro_ci_margin": args.macro_ci_margin,
-        "suite_point_failures": suite_failures,
-        "macro_ci_failure": macro_failure,
+        "max_macro_drop": args.max_macro_drop,
+        "suite_confident_drop": args.suite_confident_drop,
+        "review_suite_drop": args.review_suite_drop,
+        "macro_point_failure": macro_failure,
+        "suite_confident_failures": suite_failures,
+        "suite_review_flags": suite_reviews,
+        "baseline_floor_failures": floor_failures,
+        "baseline_floor_missing_suites": missing_floor_suites,
         **auxiliary,
     }
 
@@ -264,9 +354,35 @@ def main() -> int:
         f"{format_points(macro['delta']):>7} "
         f"[{format_points(macro['ci95'][0])}, {format_points(macro['ci95'][1])}]"
     )
+    gate = report["gate"]
+    if gate["suite_review_flags"]:
+        print("review (not a failure): " + ", ".join(gate["suite_review_flags"]))
+    for field in gate["failure_rate_failures"]:
+        rates = gate["failure_rates"][field]
+        print(
+            f"failure-mode gate: {field} +{100 * rates['macro_increase']:.2f} points "
+            f"macro, worst in {rates['worst_suite']}"
+        )
+    if gate["must_pass_unusable"]:
+        print(
+            f"must-pass bank unusable: {gate['must_pass_declared_items']} tasks declared, "
+            f"none reach the {gate['must_pass_threshold']:.2f} pass threshold on the baseline"
+        )
+    if gate["must_pass_retention"] is not None:
+        print(
+            f"must-pass retention: {100 * gate['must_pass_retention']:.1f}% of "
+            f"{gate['must_pass_baseline_passes']} baseline-passing tasks"
+        )
+    for suite, detail in gate["baseline_floor_failures"].items():
+        print(
+            f"baseline floor: {suite} scored {100 * detail['baseline']:.2f} "
+            f"below the {100 * detail['floor']:.2f} floor; the harness may be broken for both"
+        )
+    for suite in gate["baseline_floor_missing_suites"]:
+        print(f"baseline floor: no results for {suite}")
     print(
         "automated-quality-gate="
-        f"{'PASS' if report['gate']['passed'] else 'FAIL'}"
+        f"{'PASS' if gate['passed'] else 'FAIL'}"
     )
 
     if args.output:

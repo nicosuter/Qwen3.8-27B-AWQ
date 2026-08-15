@@ -160,7 +160,7 @@ class SynthesisTests(unittest.TestCase):
                     if word not in key["expected"] and word.startswith(("item", "token"))
                 ]
                 self.assertGreater(least_frequent, max(others))
-                self.assertLess(least_frequent / max(others), 2.0)
+                self.assertLessEqual(least_frequent / max(others), 2.6)
 
     def test_short_list_uses_part_of_the_filler_pool(self) -> None:
         # A 4k context cannot carry 600 distinct filler words; it must use fewer
@@ -179,6 +179,16 @@ class SynthesisTests(unittest.TestCase):
                 30, ["a", "b", "c"], [f"f{index}" for index in range(400)], random.Random(0)
             )
         self.assertIn("too short", str(caught.exception))
+
+    def test_distinct_filler_words_are_capped(self) -> None:
+        # Counting cost is set by bucket count, not list length: uncapped, the
+        # 128k list asked for the top 3 of 400 buckets and the model reasoned
+        # until the output cap at every length, scoring 0 on both checkpoints.
+        words = adapter.compose_word_list(
+            32000, ["a", "b", "c"], [f"f{index}" for index in range(600)], random.Random(0)
+        )
+        distinct = {word for word in words if word.startswith("f")}
+        self.assertLessEqual(len(distinct), adapter.MAX_DISTINCT_FILLER)
 
     def test_frequency_ladder_descends_to_the_tight_ratio(self) -> None:
         ladder = adapter.frequency_ladder(10)
@@ -199,7 +209,7 @@ class SynthesisTests(unittest.TestCase):
                 lowest = min(counts[word] for word in "abc")
                 top_filler = max(count for word, count in counts.items() if word.startswith("f"))
                 self.assertGreater(lowest, top_filler)
-                self.assertLess(lowest / top_filler, 2.0)
+                self.assertLessEqual(lowest / top_filler, 2.6)
 
     def test_item_ids_carry_length_and_task(self) -> None:
         prompt, _ = self.build("niah_single", length=131072, index=7)
