@@ -181,27 +181,25 @@ the positional-`hidden_states` bug in compressed-tensors cache offload.
 
 ## Publishing the checkpoint
 
-`hf upload` adds and updates, but never removes. Publishing a reshard without
-`--delete` therefore leaves the previous shards in place: a repository that held
-`model-0000{1,2}-of-00002.safetensors` keeps them beside the new five, twice the
-download and two sets of weights the index does not reference. It also does not
-honour a `.gitignore`, so local state is uploaded unless excluded.
+Use `scripts/publish_checkpoint.py`. It plans the commit, refuses to publish a
+structurally broken artifact, and only uploads when told to:
 
 ```bash
-uvx --from huggingface_hub hf upload \
-    nicosuter/Qwen3.8-27B-AWQ \
-    artifacts/Qwen3.8-27B-AWQ \
-    . \
-    --repo-type model \
-    --exclude ".omc/*" --exclude ".gitignore" \
-    --delete "*.safetensors" \
-    --commit-message "Requantize"
+python3 scripts/publish_checkpoint.py \
+    --repo nicosuter/Qwen3.8-27B-AWQ \
+    --path artifacts/Qwen3.8-27B-AWQ \
+    --message "Requantize"          # add --execute to actually publish
 ```
 
-`--delete "*.safetensors"` removes remote shards that this upload does not
-replace, which is the whole problem, while leaving `README.md` and the configs
-untouched. `--delete "*"` would mirror the directory exactly, but it also
-deletes anything maintained only on the Hub, the model card included.
+It exists because `hf upload` adds and updates but never removes. Publishing a
+reshard without pruning leaves the previous shards in place: a repository that
+held `model-0000{1,2}-of-00002.safetensors` keeps them beside the new five,
+twice the download and two sets of weights the index does not reference. The
+script prunes remote `*.safetensors` that this upload does not replace, refuses
+an artifact whose shards and index disagree, and excludes local state such as
+`.omc/`, which `hf upload` would otherwise publish since it does not honour a
+`.gitignore`. Files kept only on the Hub, the model card included, are reported
+and left alone.
 
 Check what a fresh clone would receive before publishing:
 
