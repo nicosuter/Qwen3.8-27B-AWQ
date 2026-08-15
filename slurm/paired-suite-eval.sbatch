@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=0
-#SBATCH --gres=gpu:8
+#SBATCH --gres=gpu:4
 #SBATCH --time=03:00:00
 #SBATCH --output=qwen38-paired-suites-%j.out
 
@@ -43,7 +43,18 @@ fi
 RUN_DIR="${PAIRED_RUN_DIR:-$RUN_BASE/v2/paired-1}"
 CONFIG="${PAIRED_CONFIG:-$RUN_BASE/eval/paired-1.json}"
 SUITES="${PAIRED_SUITES:-gpqa_diamond ruler}"
-DP="${PAIRED_DP:-8}"
+# Four, not eight: the node is shared and the rest is somebody else's.
+DP="${PAIRED_DP:-4}"
+# The header's --gres and this DP are set independently, so they can disagree.
+# vLLM would then either idle GPUs or fail deep into startup, after the image
+# and weights are already loaded. Check against what the cgroup actually grants.
+VISIBLE_GPUS="$(nvidia-smi -L | wc -l)"
+if (( DP > VISIBLE_GPUS )); then
+    echo "data-parallel size $DP exceeds the $VISIBLE_GPUS GPUs this job was granted" >&2
+    echo "raise --gres in the sbatch header, or lower PAIRED_DP" >&2
+    exit 1
+fi
+echo "gpus=$VISIBLE_GPUS data-parallel=$DP"
 CONCURRENCY="${PAIRED_CONCURRENCY:-}"
 # Default to scaling each suite's configured concurrency by how much of the
 # protocol's eight-replica server this job actually has. One absolute number
