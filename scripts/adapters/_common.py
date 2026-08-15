@@ -271,11 +271,25 @@ def message_text(message: dict[str, Any], field: str) -> str:
     return value if isinstance(value, str) else ""
 
 
-def reasoning_tokens(usage: dict[str, Any], reasoning: str) -> int:
+CHARS_PER_TOKEN = 4
+
+
+def reasoning_tokens(usage: dict[str, Any], reasoning: str, content: str = "") -> int:
+    """Reasoning tokens, inferred when the server strips them without reporting.
+
+    The pinned vLLM build removes the think block from `content` and returns
+    nothing in `reasoning_content`, so the only evidence that thinking happened
+    is the gap between tokens generated and tokens visible.
+    """
     details = usage.get("completion_tokens_details")
     if isinstance(details, dict) and isinstance(details.get("reasoning_tokens"), int):
         return int(details["reasoning_tokens"])
-    return len(reasoning.split())
+    if reasoning:
+        return len(reasoning.split())
+    completion = usage.get("completion_tokens")
+    if isinstance(completion, int) and not isinstance(completion, bool):
+        return max(0, completion - len(content) // CHARS_PER_TOKEN)
+    return 0
 
 
 def unpack_choice(item_id: str, response: dict[str, Any]) -> tuple[str, str, str, dict[str, Any]]:

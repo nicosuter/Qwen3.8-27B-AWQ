@@ -114,6 +114,9 @@ PROBE_QUESTION = (
     "A) 1.06 m\nB) 2.42 m\nC) 3.18 m\nD) 4.75 m"
 )
 
+# Below this, the reply cannot have contained real deliberation.
+MIN_PROBE_REASONING_TOKENS = 50
+
 FINAL_ANSWER_RE = re.compile(
     r"answer\b[^0-9A-Za-z]{0,12}(?:is[^0-9A-Za-z]{0,6})?([A-D])(?![0-9A-Za-z])",
     re.IGNORECASE,
@@ -330,7 +333,7 @@ def score_response(
     content, raw_reasoning, finish_reason, usage = unpack_choice(item_id, response)
     reasoning, answer = split_reasoning(content, raw_reasoning)
     predicted = extract_answer(answer)
-    thought = reasoning_tokens(usage, reasoning)
+    thought = reasoning_tokens(usage, reasoning, answer)
 
     row = base_row(SUITE, item_id, replicate)
     row.update(
@@ -512,7 +515,7 @@ def command_probe(
 
     content, raw_reasoning, finish_reason, usage = unpack_choice("probe", response)
     reasoning, answer_text = split_reasoning(content, raw_reasoning)
-    thought = reasoning_tokens(usage, reasoning)
+    thought = reasoning_tokens(usage, reasoning, answer_text)
     answer = extract_answer(answer_text)
     separated = bool(raw_reasoning)
     report = {
@@ -520,6 +523,8 @@ def command_probe(
         "finish_reason": finish_reason,
         "reasoning_returned": bool(reasoning),
         "reasoning_separated_by_server": separated,
+        "completion_tokens": usage.get("completion_tokens"),
+        "visible_answer_chars": len(answer_text),
         "reasoning_tokens": thought,
         "parsed_answer": answer,
         "content_preview": content[:200],
@@ -529,10 +534,18 @@ def command_probe(
 
     if answer is None:
         raise AdapterError("the reply had no parsable answer line; check the cap and template")
-    if generation.get("enable_thinking") and not reasoning:
+    # Thinking is confirmed either by returned reasoning or by generated tokens
+    # that never appear in the answer. This build gives only the latter.
+    if generation.get("enable_thinking") and thought < MIN_PROBE_REASONING_TOKENS:
         raise AdapterError(
-            "thinking was requested but the reply contains no reasoning at all: "
-            "chat_template_kwargs is not reaching the template"
+            f"thinking was requested but only {thought} reasoning tokens are "
+            "accounted for; chat_template_kwargs is not reaching the template"
+        )
+    if not separated:
+        print(
+            "note: this server strips the think block without returning "
+            "reasoning_content; reasoning_tokens is inferred from the token gap",
+            file=sys.stderr,
         )
     if reasoning and not separated:
         # Recoverable: split_reasoning salvages it, but the server is not doing

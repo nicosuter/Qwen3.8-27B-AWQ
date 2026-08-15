@@ -329,11 +329,21 @@ class ProbeTests(unittest.TestCase):
     def test_missing_reasoning_fails_the_probe(self) -> None:
         def client(base_url, api_key, payload, timeout):
             response = completion("Answer: B", reasoning="")
-            response["usage"]["completion_tokens_details"]["reasoning_tokens"] = 0
+            response["usage"] = {"completion_tokens": 4}
             return response
 
         with self.assertRaises(adapter.AdapterError):
             adapter.command_probe(self.args(), client=client)
+
+    def test_stripped_reasoning_is_inferred_from_the_token_gap(self) -> None:
+        # The pinned vLLM build removes the think block and returns nothing in
+        # reasoning_content; the only evidence is tokens generated but unseen.
+        def client(base_url, api_key, payload, timeout):
+            response = completion("Answer: B", reasoning="")
+            response["usage"] = {"completion_tokens": 2431}
+            return response
+
+        self.assertEqual(adapter.command_probe(self.args(), client=client), 0)
 
     def test_base_url_is_required(self) -> None:
         with self.assertRaises(adapter.AdapterError):

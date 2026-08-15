@@ -574,7 +574,7 @@ def score_response(
     reasoning, answer = split_reasoning(content, raw_reasoning)
     segment = answer_segment(answer)
     score = score_answer(entry["expected"], segment)
-    thought = reasoning_tokens(usage, reasoning)
+    thought = reasoning_tokens(usage, reasoning, answer)
 
     row = base_row(SUITE, item_id, replicate)
     row.update(
