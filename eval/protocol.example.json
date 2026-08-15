@@ -229,7 +229,7 @@
     ],
     "concurrencies": [
       1,
-      8
+      384
     ],
     "enabled_server_flags": [
       "--speculative-config",
