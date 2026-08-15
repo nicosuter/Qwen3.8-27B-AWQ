@@ -22,6 +22,7 @@ check() { # check <desc> <expected> <actual>
 
 # Pull the two functions verbatim out of the sbatch.
 awk '/^suite_is_current\(\) \{/,/^\}/' "$SBATCH" > "$WORK/fns.sh"
+awk '/^count_alive\(\) \{/,/^\}/'     "$SBATCH" >> "$WORK/fns.sh"
 awk '/^score_variant\(\) \{/,/^\}/'   "$SBATCH" >> "$WORK/fns.sh"
 grep -q "score_variant" "$WORK/fns.sh" || { echo "could not extract functions"; exit 1; }
 
@@ -181,6 +182,20 @@ JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
 check "reused" 1 "$(grep -c 'already scored' <<<"$out")"
+
+echo "== case 10: the telemetry sampler neither occupies a lane nor blocks the wait =="
+setup; SUITES="alpha beta"; REPLICATES=1; PARALLEL=2
+sleep 300 &                      # stands in for sample_telemetry.py
+SAMPLER_PID=$!
+start=$(python3 -c "import time; print(time.time())")
+out="$(score_variant candidate 2>&1)"; rc=$?
+took=$(python3 -c "import time; print(time.time() - $start)")
+kill "$SAMPLER_PID" 2>/dev/null || true
+check "exit 0" 0 "$rc"
+check "returned promptly, not blocked on the sampler" "yes" \
+    "$(python3 -c "print('yes' if $took < 30 else 'no($took)')")"
+check "both lanes still ran" 2 "$(grep -cE 'suite=(alpha|beta) rep=0' <<<"$out")"
+check "sampler did not steal a lane" 2 "$(max_overlap)"
 
 echo
 echo "passed $PASS, failed $FAIL"

@@ -253,6 +253,22 @@ def execute_order(
         return [futures[item_id].result() for item_id in order]
 
 
+def timing(started_wall: float, started_mono: float) -> dict[str, float]:
+    """When a request ran, not just how long it took.
+
+    Duration alone cannot say how many requests were in flight at once, so
+    occupancy has to be reconstructed by replaying the thread pool and assuming
+    how it scheduled. Absolute stamps make that a measurement instead. The
+    monotonic clock still supplies the duration, since the wall clock can step.
+    """
+    elapsed = time.monotonic() - started_mono
+    return {
+        "started_at": round(started_wall, 3),
+        "finished_at": round(started_wall + elapsed, 3),
+        "elapsed_seconds": round(elapsed, 3),
+    }
+
+
 def base_row(suite: str, item_id: str, replicate: int) -> dict[str, Any]:
     row: dict[str, Any] = {"suite": suite, "id": item_id, "replicate": replicate, "score": 0.0}
     row.update({field: False for field in RESULT_BOOL_FIELDS})

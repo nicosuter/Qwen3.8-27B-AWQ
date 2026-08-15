@@ -42,6 +42,7 @@ try:
         require_pin,
         split_reasoning,
         timeout_row as _timeout_row,
+        timing,
         unpack_choice,
         write_json,
         write_jsonl,
@@ -66,6 +67,7 @@ except ModuleNotFoundError:  # loading by file spec puts the repo root on sys.pa
         require_pin,
         split_reasoning,
         timeout_row as _timeout_row,
+        timing,
         unpack_choice,
         write_json,
         write_jsonl,
@@ -448,6 +450,7 @@ def score_response(
             "expected_calls": len(entry["ground_truth"] or []),
             "finish_reason": finish_reason,
             "output_tokens": usage.get("completion_tokens"),
+            "prompt_tokens": usage.get("prompt_tokens"),
             "reasoning_tokens": thought,
         }
     )
@@ -476,7 +479,7 @@ def run_item(
     )
     payload["tools"] = entry["tools"]
     payload["tool_choice"] = "auto"
-    started = time.monotonic()
+    started_wall, started = time.time(), time.monotonic()
     response, attempts = request_with_retries(
         item_id, payload, base_url=base_url, api_key=api_key,
         timeout=args.request_timeout, retries=args.retries, client=client,
@@ -492,7 +495,7 @@ def run_item(
         path = raw_response_path(run_dir, variant, replicate, item_id)
         write_json(path, response)
         row["raw_response"] = str(path)
-    row["elapsed_seconds"] = round(time.monotonic() - started, 3)
+    row.update(timing(started_wall, started))
     row["attempts"] = attempts
     return row
 

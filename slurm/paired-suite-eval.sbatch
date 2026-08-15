@@ -145,7 +145,16 @@ for suite in $SUITES; do
 done
 
 SERVER_PID=""
+SAMPLER_PID=""
+stop_sampler() {
+    if [[ -n "${SAMPLER_PID:-}" ]] && kill -0 "$SAMPLER_PID" 2>/dev/null; then
+        kill "$SAMPLER_PID" 2>/dev/null || true
+        wait "$SAMPLER_PID" 2>/dev/null || true
+    fi
+    SAMPLER_PID=""
+}
 stop_server() {
+    stop_sampler
     if [[ -n "${SERVER_PID:-}" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
         kill "$SERVER_PID" 2>/dev/null || true
         wait "$SERVER_PID" 2>/dev/null || true
@@ -190,6 +199,13 @@ start_server() {
         sleep 5
     done
     echo "server-ready=ok variant=$variant"
+    # Record what the scheduler was actually doing, rather than inferring
+    # occupancy afterwards from how long each request took.
+    "$PYTHON" scripts/sample_telemetry.py \
+        --metrics-url "http://127.0.0.1:$PORT/metrics" \
+        --output "$RUN_DIR/telemetry/$variant-${SLURM_JOB_ID:-manual}.jsonl" \
+        --interval 10 &
+    SAMPLER_PID=$!
 }
 
 variant_is_scored() {
@@ -246,12 +262,22 @@ sys.exit(0)
 PY
 }
 
+# Lanes are counted by pid rather than with `jobs -r`, because the telemetry
+# sampler is also a background job and would otherwise occupy a lane forever.
+count_alive() {
+    local pid alive=0
+    for pid in "$@"; do
+        [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && alive=$(( alive + 1 ))
+    done
+    echo "$alive"
+}
+
 score_variant() {
     local variant="$1" suite rep job label log rc failed=0
     echo "=== generation policy probe ($variant) ==="
     "$PYTHON" scripts/adapters/gpqa_diamond.py probe --base-url "$BASE_URL" --model "$SERVED_NAME"
 
-    local pending=()
+    local pending=() lane_pids=()
     for suite in $SUITES; do
         for (( rep = 0; rep < REPLICATES; rep++ )); do
             if [[ "${PAIRED_FORCE:-0}" != "1" ]] && suite_is_current "$variant" "$suite" "$rep"; then
@@ -289,7 +315,7 @@ score_variant() {
         rm -f "$lane_dir/$label.rc"
         # Hold at `lanes` running jobs. `wait -n` returns the exit status of
         # whichever finished, which is why each job records its own into a file.
-        while (( $(jobs -rp | wc -l) >= lanes )); do wait -n || true; done
+        while (( $(count_alive "${lane_pids[@]}") >= lanes )); do wait -n || true; done
         (
             "$PYTHON" scripts/run_adapter_suite.py \
                 --config "$CONFIG" --suite "$suite" --run-dir "$RUN_DIR" \
@@ -301,8 +327,11 @@ score_variant() {
                 > "$lane_dir/$label.log" 2>&1
             echo $? > "$lane_dir/$label.rc"
         ) &
+        lane_pids+=("$!")
     done
-    wait
+    # Named explicitly: a bare `wait` would also wait on the sampler, which
+    # never exits.
+    (( ${#lane_pids[@]} == 0 )) || wait "${lane_pids[@]}" 2>/dev/null || true
 
     # Replay the lanes in a fixed order; concurrent stdout would be unreadable.
     for job in "${pending[@]}"; do
