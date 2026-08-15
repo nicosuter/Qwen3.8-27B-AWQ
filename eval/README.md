@@ -130,7 +130,7 @@ Then replace the `gpqa_diamond` suite in your protocol JSON with:
     "adapter": "<output of the pin command>"
   },
   "prepare": ["python3", "scripts/adapters/gpqa_diamond.py", "prepare", "--split", "gpqa_diamond"],
-  "run": ["python3", "scripts/adapters/gpqa_diamond.py", "run", "--concurrency", "8"]
+  "run": ["python3", "scripts/adapters/gpqa_diamond.py", "run", "--concurrency", "384"]
 }
 ```
 
@@ -223,9 +223,22 @@ use:
   "prepare": ["python3", "scripts/adapters/ruler.py", "prepare",
               "--lengths", "4096,32768,131072", "--synthesis-seed", "38027",
               "--corpus", "/scratch/.../haystack", "--tokenizer", "/scratch/.../v2/model"],
-  "run": ["python3", "scripts/adapters/ruler.py", "run", "--concurrency", "8"]
+  "run": ["python3", "scripts/adapters/ruler.py", "run", "--concurrency", "96"]
 }
 ```
+
+Size `--concurrency` from KV cache, not intuition. Measured on one H200 serving
+this checkpoint: a short-prompt request occupies about 1.2% of the KV pool and a
+128K request about 6%, so a replica comfortably holds roughly 48 short requests
+or a dozen long ones. Adapter concurrency is total in-flight across the whole
+endpoint, so multiply by the number of data-parallel replicas: at `DP=8` that is
+about 384 for the short suites and 96 for RULER. At 8 in flight on one GPU the
+server generated 480 tokens/s in total, about 60 per stream, which is roughly
+single-stream speed with the GPU idle between tokens.
+
+Keep the number identical for both checkpoints. Batch composition changes
+reduction order, so the same seed does not produce the same tokens at a
+different concurrency, and a run at 8 is not comparable to a run at 384.
 
 `prepare` needs a tokenizer to hit its length targets and defaults to
 `$OUTPUT_DIR`; the runner already asserts that both checkpoints share a
