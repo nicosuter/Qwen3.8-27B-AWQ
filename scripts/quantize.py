@@ -15,6 +15,7 @@ from typing import Any
 import torch
 import torch.distributed as dist
 from compressed_tensors.offload import OffloadCache, init_dist, to_accelerate
+from compressed_tensors.quantization import preset_name_to_scheme
 from llmcompressor import oneshot
 from llmcompressor.modifiers.quantization import QuantizationModifier
 from llmcompressor.modifiers.transform.awq import AWQMapping, AWQModifier
@@ -41,6 +42,9 @@ OUTPUT_DIR = Path(
     os.environ.get("OUTPUT_DIR", "artifacts/Qwen3.8-27B-AWQ")
 ).resolve()
 MAX_LENGTH = int(os.environ.get("MAX_SEQ_LENGTH", "4096"))
+# "source" keeps the Gated DeltaNet input projections in BF16; "fp8" quantizes
+# them the way Qwen's own FP8 release does. Everything else is W4A16 either way.
+GDN_PRECISION = os.environ.get("GDN_PRECISION", "source")
 FULL_MANIFEST_SAMPLES = 256
 NUM_SAMPLES = int(os.environ.get("CALIBRATION_SAMPLES", str(FULL_MANIFEST_SAMPLES)))
 
@@ -364,9 +368,31 @@ def main() -> None:
         "re:.*mtp.*",
         "re:.*linear_attn.in_proj_a$",
         "re:.*linear_attn.in_proj_b$",
-        "re:.*linear_attn.in_proj_qkv$",
-        "re:.*linear_attn.in_proj_z$",
     ]
+    # Targets are listed explicitly rather than as "Linear" so the two schemes
+    # cannot overlap on a module, and so a projection that is neither 4-bit nor
+    # 8-bit shows up as a drop in the packed-tensor count rather than silently
+    # staying in source precision.
+    four_bit_targets = [
+        "re:.*mlp\\.(gate|up|down)_proj$",
+        "re:.*self_attn\\.(q|k|v|o)_proj$",
+        "re:.*linear_attn\\.out_proj$",
+    ]
+    gdn_targets = [
+        "re:.*linear_attn\\.in_proj_qkv$",
+        "re:.*linear_attn\\.in_proj_z$",
+    ]
+    if GDN_PRECISION == "source":
+        ignores.extend(gdn_targets)
+        config_groups = {"group_0": preset_name_to_scheme("W4A16_ASYM", four_bit_targets)}
+    else:
+        # FP8_BLOCK is what Qwen's own FP8 release applies to these projections:
+        # e4m3, 128x128 blocks, dynamic activations. Eight bits on the recurrent
+        # path is a different proposition from four.
+        config_groups = {
+            "group_0": preset_name_to_scheme("W4A16_ASYM", four_bit_targets),
+            "group_1": preset_name_to_scheme("FP8_BLOCK", gdn_targets),
+        }
     mappings = [
         AWQMapping(
             "re:.*post_attention_layernorm$",
@@ -379,7 +405,7 @@ def main() -> None:
         # No kv_cache_scheme: it attaches quantization to the attention module
         # itself, and the distributed branch bin-packs scheme-bearing modules by
         # mod.weight.numel(), which Qwen3_5Attention does not have.
-        QuantizationModifier(targets=["Linear"], scheme="W4A16_ASYM", ignore=ignores),
+        QuantizationModifier(config_groups=config_groups, ignore=ignores),
     ]
     oneshot(
         model=model,
@@ -461,6 +487,16 @@ def main() -> None:
             "world_size": world_size,
             "loading_strategy": "one BF16 model replica per H200; no offload wrapper",
             "ignored_modules": ignores,
+            "gdn_precision": GDN_PRECISION,
+            "config_groups": {
+                name: {
+                    "num_bits": group.weights.num_bits,
+                    "type": str(group.weights.type),
+                    "strategy": str(group.weights.strategy),
+                    "targets": list(group.targets),
+                }
+                for name, group in config_groups.items()
+            },
             "gpu": torch.cuda.get_device_name(local_rank),
             "python": platform.python_version(),
             "elapsed_seconds": round(time.time() - started, 2),
