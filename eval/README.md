@@ -136,7 +136,15 @@ Then replace the `gpqa_diamond` suite in your protocol JSON with:
 
 Adapter argv runs with the repository root as the working directory, so the
 relative path above resolves; use an absolute path if you invoke the runner from
-elsewhere.
+elsewhere. Point the argv at the project venv's interpreter rather than bare
+`python3` — the cluster's system Python is 3.9, which cannot even import the
+adapters, and the adapters need `datasets` and `transformers` from that venv
+anyway:
+
+```json
+"prepare": ["/scratch/$USER/qwen38-27b-awq/repo/.venv/bin/python",
+            "scripts/adapters/gpqa_diamond.py", "prepare", "--split", "gpqa_diamond"]
+```
 
 GPQA is a gated dataset; the account running `prepare` needs accepted terms and
 a token in `HF_HOME`. Scoring is exact-choice, so no judge model is involved.

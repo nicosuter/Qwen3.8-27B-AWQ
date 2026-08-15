@@ -6,6 +6,16 @@ pins before issuing a request, and emits the paired result schema from EVAL.md.
 The parts that must behave identically across suites live here.
 """
 
+import sys
+
+if sys.version_info < (3, 10):
+    # Checked before the first PEP 604 annotation below, which would otherwise
+    # fail with an unreadable TypeError on the cluster's system Python 3.9.
+    raise SystemExit(
+        "the adapters need Python 3.10 or newer; run them with the project venv "
+        f"(this is {sys.version.split()[0]} at {sys.executable})"
+    )
+
 import concurrent.futures
 import hashlib
 import json
