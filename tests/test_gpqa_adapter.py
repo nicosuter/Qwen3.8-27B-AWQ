@@ -219,9 +219,25 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(payload["repetition_penalty"], 1.0)
         self.assertEqual(payload["chat_template_kwargs"]["reasoning_effort"], "xhigh")
         self.assertTrue(payload["chat_template_kwargs"]["enable_thinking"])
-        self.assertEqual(payload["seed"], 38027)
         self.assertTrue(payload["messages"][0]["content"].startswith("Q?"))
         self.assertIn(adapter.ANSWER_INSTRUCTION, payload["messages"][0]["content"])
+
+    def test_seed_is_per_item_and_reproducible(self) -> None:
+        """Items must not share one RNG stream, or their noise is correlated."""
+        def seed_for(text: str, run_seed: int = 38027) -> int:
+            return adapter.build_payload(
+                text, self.generation, model="m", seed=run_seed,
+                max_tokens=16, instruction="x",
+            )["seed"]
+
+        # Same item, same run seed: reproducible.
+        self.assertEqual(seed_for("Q1?"), seed_for("Q1?"))
+        # Different items in one run: independent draws, not a shared stream.
+        self.assertNotEqual(seed_for("Q1?"), seed_for("Q2?"))
+        # A different run seed moves every item, so replicates are independent.
+        self.assertNotEqual(seed_for("Q1?"), seed_for("Q1?", run_seed=99))
+        # Still a valid uint32 for the server.
+        self.assertTrue(0 <= seed_for("Q1?") < 2**32)
 
     def test_missing_generation_key_rejected(self) -> None:
         del self.generation["top_k"]

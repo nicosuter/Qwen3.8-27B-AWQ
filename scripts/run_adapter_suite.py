@@ -12,6 +12,7 @@ produce a release decision. Results from `--limit` runs are diagnostics only.
 """
 
 import argparse
+import hashlib
 import json
 import random
 import sys
@@ -80,6 +81,31 @@ def order_path(run_dir: Path, suite: str) -> Path:
     return run_dir / "orders" / f"{suite}.json"
 
 
+def replicate_seed(config: dict[str, Any], replicate: int, override: int | None) -> int:
+    """The sampling seed for one replicate.
+
+    Replicates exist to measure run-to-run spread, so they have to be
+    independent draws. Reusing one seed across them would leave only batch
+    composition to differ, making the replicates far more alike than genuine
+    samples and pooled intervals correspondingly too tight. `run_eval_protocol`
+    takes these from a `seeds` list; this driver honours that list when present
+    and otherwise derives a distinct seed per replicate.
+    """
+    if override is not None:
+        return override
+    seeds = config.get("seeds")
+    if seeds:
+        if replicate >= len(seeds):
+            raise protocol.ProtocolError(
+                f"config lists {len(seeds)} seeds; replicate {replicate} has none"
+            )
+        return int(seeds[replicate])
+    if replicate == 0:
+        return int(config["order_seed"])
+    digest = hashlib.sha256(f"{config['order_seed']}:{replicate}".encode()).digest()
+    return int.from_bytes(digest[:4], "big")
+
+
 def do_prepare(config: dict[str, Any], suite: str, run_dir: Path) -> list[str]:
     entry = next(item for item in config["suites"] if item["name"] == suite)
     env = protocol.adapter_environment(config, run_dir, suite)
@@ -121,7 +147,7 @@ def do_run(config: dict[str, Any], suite: str, run_dir: Path, args: argparse.Nam
         protocol.write_json(truncated, order)
         print(f"limiting {suite} to {len(order)} of the frozen order", flush=True)
 
-    seed = args.seed if args.seed is not None else config["order_seed"]
+    seed = replicate_seed(config, args.replicate, args.seed)
     output = run_dir / "raw" / args.variant / f"{suite}-r{args.replicate}.jsonl"
     env = protocol.adapter_environment(config, run_dir, suite)
     env.update(

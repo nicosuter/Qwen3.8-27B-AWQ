@@ -147,11 +147,17 @@ def build_payload(
     effort = generation.get("reasoning_effort")
     if effort:
         template_kwargs["reasoning_effort"] = effort
+    # One seed for every request makes each item draw the same uniform stream,
+    # applied to different logits: their sampling noise is then correlated, and
+    # the comparator's item-clustered bootstrap assumes items are independent.
+    # Derive the seed from the prompt so a run stays reproducible while items
+    # stay independent of one another.
+    digest = hashlib.sha256(f"{seed}:{text}".encode("utf-8")).digest()
     return {
         "model": model,
         "messages": [{"role": "user", "content": f"{text}\n\n{instruction}"}],
         "max_tokens": max_tokens,
-        "seed": seed,
+        "seed": int.from_bytes(digest[:4], "big"),
         "temperature": generation["temperature"],
         "top_p": generation["top_p"],
         "top_k": generation["top_k"],

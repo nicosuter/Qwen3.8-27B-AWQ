@@ -341,6 +341,11 @@ def score_response(
             "score": 1.0 if predicted == expected else 0.0,
             "empty_answer": predicted is None,
             "repetition_loop": has_repetition_loop(answer or reasoning),
+            # vLLM discards an unterminated think block, so a reply that ran to
+            # the cap arrives with no text at all -- exactly where a loop is most
+            # likely. Record whether there was anything to inspect, so a False
+            # here is not read as "checked, and clean".
+            "repetition_assessed": bool(answer or reasoning),
             # GPQA is served without tools, so a malformed call cannot occur.
             "malformed_tool_call": False,
             # Thinking was requested but the server returned no reasoning at all.

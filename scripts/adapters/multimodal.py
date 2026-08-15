@@ -391,6 +391,11 @@ def score_response(
             "score": float(score),
             "empty_answer": not segment,
             "repetition_loop": has_repetition_loop(answer or reasoning),
+            # vLLM discards an unterminated think block, so a reply that ran to
+            # the cap arrives with no text at all -- exactly where a loop is most
+            # likely. Record whether there was anything to inspect, so a False
+            # here is not read as "checked, and clean".
+            "repetition_assessed": bool(answer or reasoning),
             "malformed_tool_call": False,
             "premature_final_answer": bool(thinking and segment and thought == 0),
             "context_failure": finish_reason == "length",
