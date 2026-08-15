@@ -12,6 +12,8 @@ tags:
   - w4a16
   - 4-bit
   - int4
+  - fp8
+  - mixed-precision
   - quantized
   - compressed-tensors
   - llm-compressor
@@ -30,10 +32,12 @@ datasets:
 
 > Work in progress: smoke tested so far, scored evals over the coming days.
 
-A W4A16 asymmetric AWQ quantization of the language path in
-[`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B). The vision tower
-stays in source precision, so this is still a multimodal checkpoint: image
-inputs run through an unquantized encoder and a quantized decoder.
+A mixed-precision quantization of the language path in
+[`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B): W4A16 asymmetric
+AWQ on the MLP and attention projections, FP8 block quantization on the Gated
+DeltaNet input projections. The vision tower stays in source precision, so this
+is still a multimodal checkpoint: image inputs run through an unquantized
+encoder and a quantized decoder.
 
 ## Provenance
 
@@ -41,12 +45,12 @@ inputs run through an unquantized encoder and a quantized decoder.
 |---|---|
 | Upstream model | [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B) |
 | Pinned revision | `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0` |
-| Method | AWQ, W4A16 asymmetric, group size 128 |
-| Format | `compressed-tensors` |
+| Method | AWQ W4A16 asymmetric, group size 128, on the MLP and attention projections; `FP8_BLOCK` (e4m3, 128x128 weight blocks, dynamic per-group activations) on `in_proj_qkv` and `in_proj_z` |
+| Format | `compressed-tensors`, `mixed-precision` |
 | Quantized with | [`llm-compressor`](https://github.com/vllm-project/llm-compressor) @ `623c8ce`, `compressed-tensors` 0.18.1a20260806, Transformers @ `a597f97`, PyTorch 2.10.0 |
 | Calibration | 256 pinned public text, long-context, and vision samples, up to 4,096 tokens |
 | Hardware | 4x NVIDIA H200, one BF16 replica per GPU, disjoint 64-row calibration partitions with AWQ statistics reduced across ranks |
-| Recipe source | [`nicosuter/Qwen3.8-27B-AWQ`](https://github.com/nicosuter/Qwen3.8-27B-AWQ) — the `scripts/` and `slurm/` directories |
+| Recipe source | [`nicosuter/Qwen3.8-27B-AWQ`](https://github.com/nicosuter/Qwen3.8-27B-AWQ), the `scripts/` and `slurm/` directories |
 
 The full recipe, calibration builder, and evaluation protocol live in the
 [GitHub repository](https://github.com/nicosuter/Qwen3.8-27B-AWQ).
@@ -60,21 +64,25 @@ These modules stay in source precision:
 
 - the vision tower (`visual`/`vision`)
 - the MTP head
-- Gated DeltaNet input projections (`in_proj_a`, `in_proj_b`, `in_proj_qkv`, `in_proj_z`)
+- Gated DeltaNet `in_proj_a` and `in_proj_b`
 - `lm_head`
 
-Everything else that is a `Linear` gets W4A16. The AWQ scale search itself is
-restricted to two MLP mappings, `post_attention_layernorm → gate_proj/up_proj`
-and `up_proj → down_proj`, with `duo_scaling="both"` over a 20-point grid. The
-remaining quantized projections are quantized without smoothing.
+The Gated DeltaNet `in_proj_qkv` and `in_proj_z` projections are FP8 rather
+than 4-bit. Everything else that is a `Linear` gets W4A16. The AWQ scale search
+itself is restricted to two MLP mappings, `post_attention_layernorm →
+gate_proj/up_proj` and `up_proj → down_proj`, with `duo_scaling="both"` over a
+20-point grid. The remaining projections get no smoothing, and the FP8 group
+gets no AWQ scales at all.
 
-Holding `in_proj_qkv` and `in_proj_z` in source precision across all 48
-linear-attention layers costs about 4.0B parameters, roughly 15% of the model,
-and is most of this checkpoint's size. They are excluded because 48 of the 64
-layers carry their long-range signal in a recurrent state rather than a
-renormalized attention pattern, so error introduced there accumulates along the
-sequence instead of being bounded per token. Whether 4-bit quantization actually
-damages that path is a measurement this repository has not yet made.
+`in_proj_qkv` and `in_proj_z` are 4.0B parameters across all 48
+linear-attention layers, roughly 15% of the model, and they are the difference
+between a 25.5 GB checkpoint and this 21.5 GB one. They are held at 8 bits
+rather than 4 because 48 of the 64 layers carry their long-range signal in a
+recurrent state rather than a renormalized attention pattern, so error
+introduced there accumulates along the sequence instead of being bounded per
+token. `FP8_BLOCK` is the scheme Qwen's own FP8 release applies to these same
+layers. Whether 4 bits would actually damage that path is a measurement this
+repository has not made.
 
 Confining AWQ mappings to the MLP paths also keeps calibration from ever
 wrapping `Qwen3_5GatedDeltaNet`, which sidesteps a compressed-tensors
@@ -182,7 +190,11 @@ not claim either one yet.
 ## Limitations
 
 - Runtime compatibility and quality retention are unestablished until the
-  checks above are posted. If you need a validated W4A16 Qwen3.8, wait.
+  checks above are posted. If you need a validated 4-bit Qwen3.8, wait.
+- The recurrent path is quantized here, at 8 bits. FP8 weights on the DeltaNet
+  input projections need no calibration and carry per-block scales, but error
+  in a recurrent state accumulates along the sequence and only shows at long
+  context. RULER at 128K is that check, and its result is not posted.
 - An unquantized vision tower does not mean multimodal output is unaffected,
   since image tokens still pass through a quantized decoder. That is what the
   vision suites are there to measure.

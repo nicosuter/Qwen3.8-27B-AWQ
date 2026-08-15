@@ -6,6 +6,14 @@ quantization and retained in BF16/FP16. Post-save validation checks its dtype
 and runs an actual image prompt. The calibration blend targets Hermes-style
 tool use, multi-turn agent trajectories, mathematics, and STEM.
 
+The recipe has two variants. They differ only in what happens to the Gated
+DeltaNet input projections `in_proj_qkv` and `in_proj_z`, which are 4.0B
+parameters and most of the checkpoint's size: the default holds them in source
+precision and produces a 25.5 GB checkpoint, `--fp8-gdn=true` quantizes them
+with `FP8_BLOCK` and produces a 21.5 GB one. Everything else is W4A16 either
+way, and both come from the same calibration, so the two can be compared
+directly. `nicosuter/Qwen3.8-27B-AWQ` publishes the FP8 variant.
+
 ## Fast path
 
 On the cluster login node:
@@ -50,6 +58,16 @@ bash scripts/submit_quantize.sh 8
 The argument is the only GPU-count setting: the wrapper requests that many
 GPUs, and the batch job derives both the expected distributed world size and
 `torchrun` process count from the CUDA devices Slurm actually exposes.
+
+`--fp8-gdn=true` selects the FP8 DeltaNet variant:
+
+```bash
+bash scripts/submit_quantize.sh 8 --fp8-gdn=true
+```
+
+The two variants default to different output directories, `v2/model` and
+`v2/model-fp8gdn`, so both can exist at once, and the wrapper refuses to
+overwrite an existing checkpoint. `--output-dir=PATH` overrides the default.
 
 The preparation job owns dependency setup, preflight, and calibration
 construction. The quantization job only validates that the prepared manifest
@@ -96,18 +114,18 @@ an existing valid manifest backfills those caches without another Hub read.
 
 Require at least 250 GB free on fast scratch: roughly 55 GB for the source
 cache, up to another source-sized temporary/offload footprint, calibration and
-environment artifacts, and roughly 28 GB for the result. The conservative
-exclusion set leaves about 8.9B of the model's 27.8B parameters in BF16, so the
-checkpoint is larger than a fully quantized W4 model of this size would be:
-about 2.0x compression against the 55.6 GB BF16 source, against 2.5x for
-QuantTrio's less conservative `Qwen3.6-27B-AWQ` (21.9 GB, same architecture) and
-3.4x for a hypothetical W4A16 group-128 quantization of every `Linear`. A
-warm-cache H200 run is
-expected to take roughly 1-2 hours; first download and environment
-creation can add 10-30 minutes. The job reserves whole-node host memory and 12
-hours to leave production margin. DDP gives each rank a disjoint
-calibration partition (64 rows at four ranks) and synchronizes AWQ activation
-statistics and
+environment artifacts, and roughly 28 GB for the result. The checkpoint is
+21.5 GB, 2.6x compression against the 55.6 GB BF16 source, and 25.5 GB at 2.2x
+without `--fp8-gdn=true`. Both are larger than a fully 4-bit checkpoint of this
+size, because the exclusions leave 4.9B of the model's 27.8B parameters in BF16,
+or 8.9B without the flag.
+
+Once dependencies are installed and preparation has run, a quantization finishes
+inside 30 minutes. The recorded `elapsed_seconds` is 6.1 minutes at eight H200s
+and 9.4 at four. First download and environment creation add 10-30 minutes, and
+preparation reserves an hour. The quantize job reserves whole-node host memory and 24 hours
+to leave production margin. DDP gives each rank a disjoint calibration partition
+(64 rows at four ranks) and synchronizes AWQ activation statistics and
 scale-search errors.
 
 Qwen3.8 is new. `scripts/preflight.py` intentionally fails before the expensive
@@ -161,40 +179,51 @@ positional `hidden_states` argument when AWQ replays
 are still reduced across ranks; only rank 0 saves the identical result. Before
 sequential AWQ starts, each rank runs its image rows through the BF16 vision
 tower and splices those real visual embeddings into the token stream. Text and
-image rows then share one `inputs_embeds` schema, avoiding the sequential FX
-tracer's static optional-pixel branch without discarding vision calibration.
+image rows then share one `inputs_embeds` schema, which avoids the sequential FX
+tracer's static optional-pixel branch and still keeps vision calibration.
 The full BF16 model and rank-local AWQ cache remain on each H200. The target
-set now matches the reference quantizations except in one place: vision, MTP,
-`lm_head`, and the DeltaNet `in_proj_{a,b,qkv,z}` projections stay in source
-precision. Qwen's own FP8 checkpoint keeps the vision tower and `lm_head` in
-BF16 too, so those exclusions are not conservatism.
+set matches the reference quantizations except in one place: vision, MTP,
+`lm_head`, and the DeltaNet `in_proj_{a,b}` projections stay in source
+precision, as do `in_proj_{qkv,z}` unless `--fp8-gdn=true`. Qwen's own FP8
+checkpoint keeps the vision tower and `lm_head` in BF16 too, so those exclusions
+are not conservatism.
 
-`in_proj_qkv` and `in_proj_z` are the exception, and they are the whole
-remaining difference from `cyankiwi/Qwen3.8-27B-AWQ-INT4` at 19.6 GB. Held in
-BF16 across all 48 linear-attention layers they are 4.0B parameters, roughly
-15% of the model. Qwen's FP8 quantizes them, but at 8 bits with per-block
-scales, which is not evidence about 4-bit AWQ: the reported failure mode is
-recurrent-state corruption that only shows at long context. RULER at 128K is
-the measurement that would settle it. AWQ mappings are restricted
-to the MLP paths, so calibration never wraps `Qwen3_5GatedDeltaNet`; this avoids
-the positional-`hidden_states` bug in compressed-tensors cache offload.
+`in_proj_qkv` and `in_proj_z` are the exception, and they are most of the
+remaining difference from `cyankiwi/Qwen3.8-27B-AWQ-INT4` at 19.6 GB. Across all
+48 linear-attention layers they are 4.0B parameters, roughly 15% of the model:
+held in BF16 the checkpoint is 25.5 GB, and at FP8 it is 21.5 GB, within 1.9 GB
+of a checkpoint that quantizes them to 4 bits. `FP8_BLOCK` is what Qwen's own
+FP8 release applies to these same layers, but 8 bits with per-block scales is
+not evidence about 4-bit AWQ: the reported failure mode is recurrent-state
+corruption that only shows at long context, and the FP8 variant does not settle
+it either. RULER at 128K is the measurement that separates them, and both
+variants come from one calibration so that comparison is paired. AWQ mappings
+are restricted to the MLP paths, so calibration never wraps
+`Qwen3_5GatedDeltaNet`; this avoids the positional-`hidden_states` bug in
+compressed-tensors cache offload.
 
 ## Publishing the checkpoint
 
 Use `scripts/publish_checkpoint.py`. It plans the commit, refuses to publish a
 structurally broken artifact, and only uploads when told to. Publishing happens
 from a workstation, not the cluster, so it needs an interpreter that can import
-`huggingface_hub` — the `hf` CLI keeps its copy in a private virtualenv that is
+`huggingface_hub`. The `hf` CLI keeps its copy in a private virtualenv that is
 not on the path, so make one:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install huggingface_hub
 ```
 
+A quantization run does not write a `README.md`, and the script leaves Hub-only
+files alone instead of deleting them. If you do not copy the card in, the old
+one stays live. Copy it first:
+
 ```bash
+cp MODEL_CARD.md artifacts/Qwen3.8-27B-AWQ-FP8GDN/README.md
+
 .venv/bin/python scripts/publish_checkpoint.py \
     --repo nicosuter/Qwen3.8-27B-AWQ \
-    --path artifacts/Qwen3.8-27B-AWQ \
+    --path artifacts/Qwen3.8-27B-AWQ-FP8GDN \
     --message "Requantize"          # add --execute to actually publish
 ```
 
@@ -211,7 +240,7 @@ and left alone.
 Check what a fresh clone would receive before publishing:
 
 ```bash
-ls -a artifacts/Qwen3.8-27B-AWQ
+ls -a artifacts/Qwen3.8-27B-AWQ-FP8GDN
 ```
 
 ## Rapid paired release smoke
