@@ -367,9 +367,6 @@ def main() -> None:
         "re:.*linear_attn.in_proj_b$",
         "re:.*linear_attn.in_proj_qkv$",
         "re:.*linear_attn.in_proj_z$",
-        "re:.*self_attn.q_proj$",
-        "re:.*self_attn.k_proj$",
-        "re:.*self_attn.v_proj$",
     ]
     mappings = [
         AWQMapping(
@@ -419,6 +416,7 @@ def main() -> None:
             OUTPUT_DIR,
             save_compressed=True,
             safe_serialization=True,
+            max_shard_size="5GB",
         )
         # Qwen stores its inference-only speculative head as top-level mtp.*
         # weights. Transformers does not instantiate that module, so its normal
