@@ -143,15 +143,14 @@ redistribute this calibration set, attribute each subset separately.
 
 ## Evaluation
 
-**Preliminary.** The suite set is not final. The macro average below is over the
-four suites scored so far and will change as suites are added. Everything here
-is measured, not projected.
+**Preliminary.** The suite set is not final, so the macro average below covers
+only the four suites scored so far and will change as more are added.
 
-A paired comparison against `Qwen/Qwen3.8-27B-FP8` on the same items in the same
-order. Recovery is candidate/baseline, averaged across suites with the geometric
-mean; intervals are an item-clustered bootstrap. Scored on 4x H200 NVL, four
-replicates per suite per checkpoint. Protocol in
-[`EVAL.md`](https://github.com/nicosuter/Qwen3.8-27B-AWQ/blob/master/EVAL.md).
+These numbers come from a paired comparison against `Qwen/Qwen3.8-27B-FP8` on the
+same items in the same order. Recovery is candidate/baseline, averaged across
+suites with the geometric mean; intervals are an item-clustered bootstrap.
+Scored on 4x H200 NVL, four replicates per suite per checkpoint. The protocol is
+in [`EVAL.md`](https://github.com/nicosuter/Qwen3.8-27B-AWQ/blob/master/EVAL.md).
 
 | suite | items | reps | responses/ckpt | FP8 | AWQ | delta | 95% CI | recovery | recovery 95% CI |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | --- |
@@ -161,34 +160,34 @@ replicates per suite per checkpoint. Protocol in
 | Multimodal | 600 | 4 | 2400 | 86.75 | 86.95 | +0.20 | [-0.70, +1.12] | 100.23% | [99.19, 101.30] |
 | **macro (4 suites)** | | | | **85.89** | **86.08** | **+0.19** | [-0.87, +1.28] | **100.20%** | [98.89, 101.53] |
 
-Multimodal is DocVQA, ChartQA and TextVQA at 200 items each, each keeping its
-own published metric. MathArena is AIME 2026 plus the Apex shortlist.
+Multimodal is DocVQA, ChartQA and TextVQA at 200 items apiece, scored with their
+own published metrics. MathArena is AIME 2026 plus the Apex shortlist.
 
 The pre-registered rule was macro geometric-mean recovery of at least 99% on the
-point estimate; measured 100.20%. Note the interval's lower bound is 98.89%, and
-that no interval on any individual suite excludes zero.
+point estimate. It measured 100.20%. The interval's lower bound is 98.89%, and no
+individual suite's interval excludes zero.
 
-**Upstream anchor.** Qwen publishes GPQA Diamond 89.2 for this model. The FP8
-baseline measured 88.89, 95% CI [87.99, 89.79] over its four replicates, and the
-AWQ checkpoint 89.77, [88.19, 91.36]. Both contain the published value, which is
-the check that the harness reproduces upstream before any delta is read from it.
+Qwen publishes GPQA Diamond 89.2 for this model. The FP8 baseline measured 88.89,
+95% CI [87.99, 89.79] across its four replicates, and the AWQ checkpoint 89.77,
+[88.19, 91.36]. Both intervals contain the published value, which the protocol
+requires before any delta is interpreted.
 
 ### What this does not cover
 
-- **No executable coding or agentic suite has run yet** -- LiveCodeBench v6 and
-  Terminal-Bench 2.1 are both pending. Those are the workloads most likely to
-  expose a 4-bit regression, and nothing above covers them.
-- **MathArena cannot resolve its own effect** at 77 items: the interval is +-3.7
+- No executable coding or agentic suite has run. LiveCodeBench v6 and
+  Terminal-Bench 2.1 are both pending, and those are the workloads where 4-bit
+  weights are most likely to cost something.
+- MathArena cannot resolve its own effect at 77 items. Its interval is +-3.7
   points against a measured -0.65.
-- **Around 83% of items score identically on both checkpoints**, mostly at
-  ceiling. That is partly the result -- a near-lossless candidate moves few
-  items -- but the effective sample is smaller than the item counts suggest.
-- A single suite is not resolvable to a tenth of a point. Two independent draws
-  of BFCL v4 under identical conditions differed by 0.7 points, within the
-  interval but worth knowing before quoting one figure.
+- Around 83% of items score identically on both checkpoints, mostly at ceiling.
+  That is partly the result itself, but it means the effective sample is smaller
+  than the item counts suggest.
+- No suite here resolves to a tenth of a point. Two draws of BFCL v4 under
+  identical conditions differed by 0.7, inside the interval but worth knowing
+  before quoting a single figure.
 
-Third-party quantizations of the same model were scored under the same protocol;
-those results are not reported here because they stand at one replicate.
+Third-party quantizations of this model were scored under the same protocol.
+They are not reported here: one replicate each is too few to publish.
 
 ## Usage
 
