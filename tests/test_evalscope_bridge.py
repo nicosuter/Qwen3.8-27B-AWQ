@@ -497,8 +497,10 @@ class DeferredTwoPassTests(unittest.TestCase):
         self.assertTrue(self.params(task)["execute"])
 
     def test_the_plugin_is_named_so_the_run_loads_it(self) -> None:
-        entry = bridge.load_suite(ROOT / "eval" / "evalscope-suites.json", "livecodebench_v6")
-        self.assertTrue((ROOT / entry["plugin"]).is_file())
+        for suite in ("livecodebench_v6", "hle"):
+            with self.subTest(suite=suite):
+                entry = bridge.load_suite(ROOT / "eval" / "evalscope-suites.json", suite)
+                self.assertTrue((ROOT / entry["plugin"]).is_file())
 
     def test_a_suite_without_a_plugin_is_unaffected(self) -> None:
         entry = bridge.load_suite(ROOT / "eval" / "evalscope-suites.json", "mmlu_pro")
@@ -546,14 +548,16 @@ class JudgeGuardTests(unittest.TestCase):
             bridge.command_run(bridge.parse_args(self.BASE + list(extra_args)))
         return json.loads(out.getvalue())["task"]
 
-    def test_a_judged_suite_without_a_judge_is_refused(self) -> None:
+    def test_a_scoring_pass_without_a_judge_is_refused(self) -> None:
+        # Generating defers judging and needs none; turning judging on without
+        # naming a judge is what must be refused.
         with self.assertRaises(bridge.BridgeError) as caught:
-            self.plan(["--suite", "hle"])
-        message = str(caught.exception)
-        self.assertIn("modelscope", message.lower())
+            self.plan(["--suite", "hle", "--execute", "true"])
+        self.assertIn("modelscope", str(caught.exception).lower())
 
     def test_naming_a_judge_configures_it(self) -> None:
-        task = self.plan(["--suite", "hle", "--judge-model", "openai/gpt-oss-20b",
+        task = self.plan(["--suite", "hle", "--execute", "true",
+                          "--judge-model", "openai/gpt-oss-20b",
                           "--judge-api-url", "http://judge/v1"])
         self.assertEqual(task["judge_strategy"], "llm")
         self.assertEqual(task["judge_model_args"]["model_id"], "openai/gpt-oss-20b")
@@ -563,7 +567,7 @@ class JudgeGuardTests(unittest.TestCase):
         for half in (["--judge-model", "m"], ["--judge-api-url", "http://j/v1"]):
             with self.subTest(half=half[0]):
                 with self.assertRaises(bridge.BridgeError):
-                    self.plan(["--suite", "hle", *half])
+                    self.plan(["--suite", "hle", "--execute", "true", *half])
 
     def test_an_unjudged_suite_never_gets_judge_args(self) -> None:
         task = self.plan(["--suite", "mmlu_pro"])
@@ -580,6 +584,45 @@ class JudgeGuardTests(unittest.TestCase):
         spec = json.loads((ROOT / "eval" / "evalscope-suites.json").read_text())
         judged = {s["suite"] for s in spec["suites"] if s.get("judge_required")}
         self.assertEqual(judged, {"hle"})
+
+class HleDeferredTests(unittest.TestCase):
+    """HLE generates on the cluster before a judge has even been chosen."""
+
+    BASE = ["run", "--model", "m", "--api-url", "http://x/v1",
+            "--work-dir", "/tmp/es", "--variant", "baseline", "--print-only"]
+
+    def plan(self, extra_args):
+        import io, contextlib
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            bridge.command_run(bridge.parse_args(self.BASE + list(extra_args)))
+        return json.loads(out.getvalue())["task"]
+
+    def test_generating_needs_no_judge(self) -> None:
+        # Without deferral this is refused, because EvalScope would fall back to
+        # a hosted third-party judge.
+        task = self.plan(["--suite", "hle"])
+        self.assertNotIn("judge_model_args", task)
+        self.assertFalse(task["dataset_args"]["hle"]["extra_params"]["judge"])
+
+    def test_scoring_turns_the_judge_on_and_reuses_predictions(self) -> None:
+        task = self.plan(["--suite", "hle", "--use-cache", "/prev", "--rerun-review",
+                          "--execute", "true", "--judge-model", "openai/gpt-oss-20b",
+                          "--judge-api-url", "http://j/v1"])
+        self.assertTrue(task["dataset_args"]["hle"]["extra_params"]["judge"])
+        self.assertEqual(task["judge_model_args"]["model_id"], "openai/gpt-oss-20b")
+        self.assertEqual(task["use_cache"], "/prev")
+        self.assertTrue(task["rerun_review"])
+
+    def test_each_suite_names_the_flag_its_adapter_reads(self) -> None:
+        # LiveCodeBench gates execution, HLE gates its judge.
+        spec = json.loads((ROOT / "eval" / "evalscope-suites.json").read_text())
+        flags = {s["suite"]: s.get("defer_flag") for s in spec["suites"] if s.get("plugin")}
+        self.assertEqual(flags, {"livecodebench_v6": "execute", "hle": "judge"})
+
+    def test_execute_on_a_suite_with_no_flag_is_refused(self) -> None:
+        with self.assertRaises(bridge.BridgeError):
+            self.plan(["--suite", "mmlu_pro", "--execute", "false"])
 
 
 if __name__ == "__main__":

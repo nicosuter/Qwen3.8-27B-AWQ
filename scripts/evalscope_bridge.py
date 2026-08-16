@@ -436,8 +436,13 @@ def command_run(args: argparse.Namespace) -> int:
     dataset_args = dict(entry.get("dataset_args") or {})
     dataset_args["dataset_id"] = str(local)
     if args.execute is not None:
+        # The flag differs per suite: LiveCodeBench gates execution, HLE gates
+        # its judge. The suites file names which one this benchmark reads.
+        flag = entry.get("defer_flag")
+        if not flag:
+            raise BridgeError(f"{args.suite} has no defer_flag; --execute means nothing here")
         extra = dict(dataset_args.get("extra_params") or {})
-        extra["execute"] = args.execute == "true"
+        extra[flag] = args.execute == "true"
         dataset_args["extra_params"] = extra
 
     task = {
@@ -467,7 +472,10 @@ def command_run(args: argparse.Namespace) -> int:
             "temperature": args.temperature,
         },
     }
-    if entry.get("judge_required"):
+    # A pass that defers judging needs no judge at all: that is the point of
+    # generating on the cluster before the judge has even been chosen.
+    defers_judging = (dataset_args.get("extra_params") or {}).get("judge") is False
+    if entry.get("judge_required") and not defers_judging:
         if not (args.judge_model and args.judge_api_url):
             raise BridgeError(
                 f"{args.suite} is graded by an LLM judge and none was named. "
@@ -482,7 +490,7 @@ def command_run(args: argparse.Namespace) -> int:
             "api_url": args.judge_api_url,
             "api_key": args.judge_api_key,
         }
-    elif args.judge_model:
+    elif args.judge_model and not entry.get("judge_required"):
         raise BridgeError(f"{args.suite} is not judged; --judge-model would do nothing")
 
     if args.limit is not None:

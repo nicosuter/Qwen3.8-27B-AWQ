@@ -21,8 +21,15 @@
       "metric": "acc",
       "ported": true,
       "note": "Same repo and pin as ours. EvalScope grades HLE with a judge and we grade string-match-then-judge, so compare the delta and never the absolute. EvalScope grades HLE with an LLM judge whose default is Qwen/Qwen3-235B-A22B at https://api-inference.modelscope.cn/v1/, so a run with a ModelScope token configured would send our outputs to a third party and put an unpinned remote judge in the gate. The bridge refuses unless a judge is named explicitly.",
-      "dataset_args": {},
-      "judge_required": true
+      "dataset_args": {
+        "extra_params": {
+          "judge": false
+        }
+      },
+      "judge_required": true,
+      "plugin": "scripts/evalscope_plugins/deferred_scoring.py",
+      "args_note": "judge=False for the generating pass, so the cluster never calls a judge and the choice of one stays open; the scoring pass overrides it to True with --judge-model/--judge-api-url.",
+      "defer_flag": "judge"
     },
     {
       "suite": "gpqa_diamond",
@@ -90,9 +97,10 @@
           "execute": false
         }
       },
-      "plugin": "scripts/evalscope_plugins/lcb_deferred.py",
+      "plugin": "scripts/evalscope_plugins/deferred_scoring.py",
       "args_note": "execute=False for the generating pass; the scoring pass overrides it to True. The bridge marks deferred reviews and the comparator refuses any file containing one.",
-      "judge_required": false
+      "judge_required": false,
+      "defer_flag": "execute"
     },
     {
       "suite": "bfcl_v4",
