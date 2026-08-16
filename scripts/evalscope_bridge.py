@@ -135,6 +135,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run.add_argument("--judge-model", help="judge model id, e.g. openai/gpt-oss-20b")
     run.add_argument("--judge-api-url", help="OpenAI-compatible endpoint for the judge")
     run.add_argument("--judge-api-key", default="EMPTY")
+    run.add_argument(
+        "--no-resume", action="store_true",
+        help="start clean instead of continuing a partially finished lane",
+    )
     run.add_argument("--print-only", action="store_true")
 
     rows = sub.add_parser("rows", help="convert EvalScope reviews into result rows")
@@ -495,10 +499,23 @@ def command_run(args: argparse.Namespace) -> int:
 
     if args.limit is not None:
         task["limit"] = args.limit
-    if args.use_cache:
+    # Preemption safety. EvalScope writes each prediction as it lands, so a
+    # killed lane has kept everything it finished; it just needs to be pointed
+    # back at it. Setting use_cache also stops a new timestamped directory being
+    # created, so a lane accumulates in one place however often it is restarted.
+    resume_from = args.use_cache
+    if resume_from is None and not args.no_resume:
+        previous = sorted(
+            p for p in Path(task["work_dir"]).glob("*")
+            if p.is_dir() and (p / "predictions").is_dir()
+        )
+        if previous:
+            resume_from = previous[-1]
+            print(f"resuming {args.suite} from {resume_from}", flush=True)
+    if resume_from:
         # Note this rewrites the reviews inside the cache directory it is given,
         # so point it at a copy rather than the run that produced them.
-        task["use_cache"] = str(args.use_cache)
+        task["use_cache"] = str(resume_from)
         task["rerun_review"] = bool(args.rerun_review)
 
     print(json.dumps({"suite": args.suite, "pin": pin, "dataset": str(local),

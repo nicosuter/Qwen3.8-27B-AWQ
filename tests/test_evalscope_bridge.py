@@ -624,6 +624,65 @@ class HleDeferredTests(unittest.TestCase):
         with self.assertRaises(bridge.BridgeError):
             self.plan(["--suite", "mmlu_pro", "--execute", "false"])
 
+class ResumeTests(unittest.TestCase):
+    """A preempted lane must not lose what it already finished.
+
+    EvalScope writes every prediction as it lands, so a killed lane has kept its
+    work; it only needs pointing back at it. Our own adapters collect results in
+    memory and write once at the end, so they lose the whole lane -- which for
+    HLE at R=1 is about 31 hours of wall clock.
+    """
+
+    def plan(self, work_dir, extra_args=()):
+        import io, contextlib
+        args = bridge.parse_args([
+            "run", "--suite", "mmlu_pro", "--model", "m", "--api-url", "http://x/v1",
+            "--work-dir", str(work_dir), "--variant", "baseline", "--print-only",
+            *extra_args,
+        ])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            bridge.command_run(args)
+        text = out.getvalue()
+        return json.loads(text[text.index("{"):])["task"]
+
+    def partial(self, root):
+        d = Path(root) / "runs" / "baseline" / "20260816_120000" / "predictions"
+        d.mkdir(parents=True)
+        return d
+
+    def test_a_fresh_lane_does_not_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(self.plan(Path(tmp) / "lane").get("use_cache"))
+
+    def test_a_partial_lane_is_resumed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lane = Path(tmp) / "lane"
+            self.partial(lane)
+            task = self.plan(lane)
+            self.assertIsNotNone(task["use_cache"])
+            # Reviews already computed stay computed; only predictions resume.
+            self.assertFalse(task["rerun_review"])
+
+    def test_no_resume_starts_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lane = Path(tmp) / "lane"
+            self.partial(lane)
+            self.assertIsNone(self.plan(lane, ["--no-resume"]).get("use_cache"))
+
+    def test_an_explicit_cache_wins_over_autodetection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lane = Path(tmp) / "lane"
+            self.partial(lane)
+            task = self.plan(lane, ["--use-cache", "/elsewhere"])
+            self.assertEqual(task["use_cache"], "/elsewhere")
+
+    def test_a_directory_without_predictions_is_not_resumed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lane = Path(tmp) / "lane"
+            (lane / "runs" / "baseline" / "20260816_120000" / "logs").mkdir(parents=True)
+            self.assertIsNone(self.plan(lane).get("use_cache"))
+
 
 if __name__ == "__main__":
     unittest.main()
