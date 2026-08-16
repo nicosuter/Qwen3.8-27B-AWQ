@@ -30,7 +30,8 @@ datasets:
 
 # Qwen3.8-27B-AWQ
 
-> Work in progress: smoke tested so far, scored evals over the coming days.
+> Work in progress: preliminary paired evaluation below, on a suite set that is
+> still growing.
 
 A mixed-precision quantization of the language path in
 [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B): W4A16 asymmetric
@@ -142,14 +143,52 @@ redistribute this calibration set, attribute each subset separately.
 
 ## Evaluation
 
-Not yet scored. Evaluation runs over the coming days: a controlled paired
-comparison against `Qwen/Qwen3.8-27B-FP8`, and against other public
-quantizations of the same model.
+**Preliminary.** The suite set is not final. The macro average below is over the
+four suites scored so far and will change as suites are added. Everything here
+is measured, not projected.
 
-The suites are BFCL v4 for tool calling, Terminal-Bench 2.1 for agentic coding,
-LiveCodeBench v6, GPQA Diamond and MathArena for reasoning, and DocVQA, ChartQA
-and TextVQA for the multimodal path. That set matches what the calibration blend
-targets and where 4-bit weights are most likely to cost something.
+A paired comparison against `Qwen/Qwen3.8-27B-FP8` on the same items in the same
+order. Recovery is candidate/baseline, averaged across suites with the geometric
+mean; intervals are an item-clustered bootstrap. Scored on 4x H200 NVL, four
+replicates per suite per checkpoint. Protocol in
+[`EVAL.md`](https://github.com/nicosuter/Qwen3.8-27B-AWQ/blob/master/EVAL.md).
+
+| suite | items | reps | responses/ckpt | FP8 | AWQ | delta | 95% CI | recovery | recovery 95% CI |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | --- |
+| BFCL v4 | 1240 | 4 | 4960 | 87.42 | 87.74 | +0.32 | [-0.44, +1.11] | 100.37% | [99.50, 101.27] |
+| GPQA Diamond | 198 | 4 | 792 | 88.89 | 89.77 | +0.88 | [-1.01, +2.90] | 100.99% | [98.84, 103.30] |
+| MathArena 2026-06 | 77 | 4 | 308 | 80.52 | 79.87 | -0.65 | [-4.22, +3.25] | 99.19% | [94.74, 104.02] |
+| Multimodal | 600 | 4 | 2400 | 86.75 | 86.95 | +0.20 | [-0.70, +1.12] | 100.23% | [99.19, 101.30] |
+| **macro (4 suites)** | | | | **85.89** | **86.08** | **+0.19** | [-0.87, +1.28] | **100.20%** | [98.89, 101.53] |
+
+Multimodal is DocVQA, ChartQA and TextVQA at 200 items each, each keeping its
+own published metric. MathArena is AIME 2026 plus the Apex shortlist.
+
+The pre-registered rule was macro geometric-mean recovery of at least 99% on the
+point estimate; measured 100.20%. Note the interval's lower bound is 98.89%, and
+that no interval on any individual suite excludes zero.
+
+**Upstream anchor.** Qwen publishes GPQA Diamond 89.2 for this model. The FP8
+baseline measured 88.89, 95% CI [87.99, 89.79] over its four replicates, and the
+AWQ checkpoint 89.77, [88.19, 91.36]. Both contain the published value, which is
+the check that the harness reproduces upstream before any delta is read from it.
+
+### What this does not cover
+
+- **No executable coding or agentic suite has run yet** -- LiveCodeBench v6 and
+  Terminal-Bench 2.1 are both pending. Those are the workloads most likely to
+  expose a 4-bit regression, and nothing above covers them.
+- **MathArena cannot resolve its own effect** at 77 items: the interval is +-3.7
+  points against a measured -0.65.
+- **Around 83% of items score identically on both checkpoints**, mostly at
+  ceiling. That is partly the result -- a near-lossless candidate moves few
+  items -- but the effective sample is smaller than the item counts suggest.
+- A single suite is not resolvable to a tenth of a point. Two independent draws
+  of BFCL v4 under identical conditions differed by 0.7 points, within the
+  interval but worth knowing before quoting one figure.
+
+Third-party quantizations of the same model were scored under the same protocol;
+those results are not reported here because they stand at one replicate.
 
 ## Usage
 

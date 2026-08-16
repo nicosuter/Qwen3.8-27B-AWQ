@@ -112,7 +112,10 @@ CONCURRENCY="${PAIRED_CONCURRENCY:-}"
 # across suites is wrong: RULER holds about six percent of the KV pool per
 # request where a short prompt holds one.
 CONCURRENCY_SCALE="${PAIRED_CONCURRENCY_SCALE:-$(python3 -c "print($DP/8)")}"
-PYTHON="$PROJECT_DIR/.venv/bin/python"
+PYTHON="${EVAL_VENV:-$PROJECT_DIR/.venv}/bin/python"
+# One stamp for the whole job, so everything it supersedes or emits sorts
+# together and can be attributed to a single run.
+RUN_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 # Suite commands in the eval config name their deployment-specific paths as
 # ${EVAL_*} rather than spelling them out, so the config is a tracked, portable
 # artifact instead of a hand-edited file that exists only on one cluster. The
@@ -148,6 +151,36 @@ mkdir -p "$RUN_DIR"
 printf '%s\n%s\n' "$BASELINE_INFO" "$CANDIDATE_INFO" > "$RUN_DIR/checkpoints.jsonl"
 echo "baseline-checkpoint=$BASELINE_INFO"
 echo "candidate-checkpoint=$CANDIDATE_INFO"
+
+# The checkpoint is fingerprinted but the code that scored it was not, and this
+# harness decides lane structure, timeouts, reuse and the gate arithmetic. A
+# result identified by weights alone is only half identified. submit-paired.sh
+# checks out a commit and exports these; a hand-run job records what it can.
+CODE_COMMIT="${EVAL_CODE_COMMIT:-$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)}"
+CODE_DIRTY="${EVAL_CODE_DIRTY:-unknown}"
+if [[ "$CODE_DIRTY" == "unknown" ]] && git -C "$PROJECT_DIR" rev-parse HEAD >/dev/null 2>&1; then
+    if git -C "$PROJECT_DIR" diff --quiet HEAD 2>/dev/null; then CODE_DIRTY=false; else CODE_DIRTY=true; fi
+fi
+CODE_INFO="$("$PYTHON" - "$CODE_COMMIT" "$CODE_DIRTY" "$PROJECT_DIR" "${EVAL_CODE_REMOTE:-}" <<'PY'
+import json, sys
+commit, dirty, project, remote = sys.argv[1:5]
+print(json.dumps({
+    "commit": commit,
+    "dirty": {"true": True, "false": False}.get(dirty),
+    "remote": remote or None,
+    "checkout": project,
+}))
+PY
+)"
+printf '%s\n' "$CODE_INFO" > "$RUN_DIR/code.json"
+echo "code=$CODE_INFO"
+if [[ "$CODE_COMMIT" == "unknown" || "$CODE_DIRTY" == "true" ]]; then
+    echo "warning: results will not be attributable to a published commit" >&2
+    if [[ "${PAIRED_REQUIRE_PINNED_CODE:-0}" == "1" ]]; then
+        echo "PAIRED_REQUIRE_PINNED_CODE=1 and the checkout is not pinned" >&2
+        exit 1
+    fi
+fi
 BASELINE_FP="$(printf '%s' "$BASELINE_INFO" | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin)["fingerprint"])')"
 CANDIDATE_FP="$(printf '%s' "$CANDIDATE_INFO" | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin)["fingerprint"])')"
 
@@ -315,6 +348,24 @@ count_alive() {
     echo "$alive"
 }
 
+# A rescored suite replaces a result that is still evidence. Two draws of the
+# same comparison differing by more than their interval is the most direct
+# measure of reproducibility this protocol produces, and it only exists if the
+# earlier draw survives. Move it aside instead of letting the adapter write over
+# it; raw and metadata travel together so the pair stays interpretable.
+archive_existing() {
+    local variant="$1" suite="$2" rep="$3"
+    local out="$RUN_DIR/raw/$variant/$suite-r$rep.jsonl"
+    local meta="$RUN_DIR/metadata/$suite-$variant-r$rep.json"
+    [[ -s "$out" || -s "$meta" ]] || return 0
+    local dest="$RUN_DIR/superseded/$RUN_STAMP-job${SLURM_JOB_ID:-manual}"
+    mkdir -p "$dest/raw/$variant" "$dest/metadata"
+    [[ -s "$out" ]] && mv "$out" "$dest/raw/$variant/"
+    [[ -s "$meta" ]] && mv "$meta" "$dest/metadata/"
+    echo "superseded $suite r$rep ($variant); previous result kept in $dest"
+    return 0
+}
+
 # Suites are independent measurements, so one that fails is dropped from the
 # comparison rather than taking the whole run with it -- the GPU hours the others
 # already spent are worth keeping. A dropped suite is removed from BOTH variants:
@@ -388,6 +439,7 @@ score_variant() {
                 echo "=== $suite r$rep ($variant) already scored under this policy; reusing ==="
                 continue
             fi
+            archive_existing "$variant" "$suite" "$rep"
             pending+=("$suite:$rep")
         done
     done
@@ -503,11 +555,21 @@ for variant in baseline candidate; do
 done
 
 echo "=== paired comparison ==="
+# Every comparison is kept. A run directory is shared across jobs on purpose --
+# that is what makes an earlier baseline reusable -- but it also meant the last
+# job to finish silently replaced the verdict, and a chained job that rescores
+# two suites produces a genuinely different number. comparison.json stays as the
+# name everything else reads, now pointing at the newest.
+mkdir -p "$RUN_DIR/comparisons"
+COMPARISON="$RUN_DIR/comparisons/$RUN_STAMP-job${SLURM_JOB_ID:-manual}.json"
 "$PYTHON" scripts/compare_eval_results.py \
     --baseline "$RUN_DIR/baseline-all.jsonl" \
     --candidate "$RUN_DIR/candidate-all.jsonl" \
-    --output "$RUN_DIR/comparison.json" \
+    --output "$COMPARISON" \
     --baseline-floor gpqa_diamond="${GPQA_FLOOR:-0.75}" \
     || true   # a failing gate is a result, not a job error
+if [[ -s "$COMPARISON" ]]; then
+    ln -sfn "comparisons/$(basename "$COMPARISON")" "$RUN_DIR/comparison.json"
+fi
 
-echo "paired-eval=complete results=$RUN_DIR"
+echo "paired-eval=complete results=$RUN_DIR comparison=$COMPARISON"
