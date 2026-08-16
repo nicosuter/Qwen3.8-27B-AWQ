@@ -306,6 +306,32 @@ class DeferredReviewTests(unittest.TestCase):
                 comparator.load_rows(path)
         self.assertIn("deferred", str(caught.exception))
 
+class GenerationSeedTests(unittest.TestCase):
+    def plan(self):
+        import io, contextlib
+        args = bridge.parse_args([
+            "run", "--suite", "mmlu_pro", "--model", "m", "--api-url", "http://x/v1",
+            "--work-dir", "/tmp/es", "--variant", "baseline", "--print-only",
+        ])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            bridge.command_run(args)
+        return json.loads(out.getvalue())["task"]
+
+    def test_no_per_request_seed_is_sent(self) -> None:
+        """One seed on every request correlates the items' sampling noise.
+
+        The bootstrap resamples items assuming they are independent draws; a
+        shared uniform stream breaks that and narrows the interval below the
+        truth. EvalScope never copies TaskConfig.seed into GenerateConfig, and
+        we must not add it.
+        """
+        self.assertNotIn("seed", self.plan()["generation_config"])
+
+    def test_the_task_seed_is_still_recorded(self) -> None:
+        # Harmless and useful: it seeds the local RNG and any shuffling.
+        self.assertIn("seed", self.plan())
+
 
 if __name__ == "__main__":
     unittest.main()

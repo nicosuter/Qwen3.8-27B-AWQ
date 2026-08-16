@@ -37,6 +37,8 @@ if [[ "${1:-}" == "-" ]]; then exec python3 "$@"; fi
 case "${1:-}" in
     *gpqa_diamond.py) echo "probe ok"; exit 0 ;;
 esac
+# Which script a lane invoked is the only way to tell the runners apart.
+echo "script=${1##*/}"
 suite=""; rep=""; conc=""; scale=""; variant=""; tscale=""
 while (( $# )); do
     case "$1" in
@@ -305,6 +307,21 @@ echo '{"id":"bad"}'  > "$RUN_DIR/raw/baseline/failsuite-r0.jsonl"
 record_failure baseline failsuite 0 3 /dev/null > /dev/null 2>&1
 concat_variant baseline > /dev/null 2>&1
 check "failed suite excluded" '{"id":"good"}' "$(cat "$RUN_DIR/baseline-all.jsonl")"
+
+echo "== case 17: PAIRED_RUNNER picks which harness scores a lane =="
+setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
+RUNNER=evalscope
+ES_SUITES=eval/evalscope-suites.json; ES_MAX_TOKENS=131072
+ES_REQUEST_TIMEOUT=5400; ORDER_SEED=38027; SERVED_NAME=served
+out="$(score_variant baseline 2>&1)"; rc=$?
+check "exit 0" 0 "$rc"
+check "the evalscope bridge ran" 1 "$(grep -c 'script=evalscope_bridge.py' <<<"$out")"
+check "run_adapter_suite did not" 0 "$(grep -c 'script=run_adapter_suite.py' <<<"$out")"
+RUNNER=adapter
+setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
+out="$(score_variant baseline 2>&1)"; rc=$?
+check "adapter runner still used by default" 1 "$(grep -c 'script=run_adapter_suite.py' <<<"$out")"
+unset RUNNER
 
 echo
 echo "passed $PASS, failed $FAIL"

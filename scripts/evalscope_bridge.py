@@ -26,6 +26,7 @@ plausible wrong number.
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from collections import defaultdict
@@ -97,6 +98,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run.add_argument("--variant", required=True, choices=("baseline", "candidate"))
     run.add_argument("--repeats", type=int, default=1)
     run.add_argument("--limit", type=float, default=None)
+    # A lane writes exactly where the sbatch's concatenation and reuse check
+    # look, so swapping the runner changes nothing downstream of it.
+    run.add_argument("--replicate", type=int, default=0)
+    run.add_argument("--results", type=Path, help="raw/<variant>/<suite>-r<n>.jsonl")
+    run.add_argument("--metadata", type=Path, help="metadata/<suite>-<variant>-r<n>.json")
+    run.add_argument("--request-timeout", type=float, default=5400.0)
     # Matches the protocol's own cap, so a comparison against our adapters is
     # not confounded by one side getting a different budget.
     run.add_argument("--max-tokens", type=int, default=131072)
@@ -400,6 +407,16 @@ def command_run(args: argparse.Namespace) -> int:
         "dataset_args": {entry["benchmark"]: dataset_args},
         "dataset_hub": "local",
         "work_dir": str(args.work_dir / "runs" / args.variant),
+        # TaskConfig.seed feeds seed_everything() and the loader's shuffle,
+        # which we do not use. It is never copied into GenerateConfig, so no
+        # per-request seed reaches the server -- and that is the behaviour we
+        # want. A single seed sent on every request would make each item draw
+        # the same uniform stream against different logits, correlating their
+        # sampling noise, and the item-clustered bootstrap assumes items are
+        # independent. It would report an interval narrower than the truth.
+        # Our own adapters avoid this by deriving a seed per item from the
+        # prompt; EvalScope cannot, so it gets independence without
+        # reproducibility, which is the half that the statistics need.
         "seed": args.seed,
         "repeats": args.repeats,
         "generation_config": {
@@ -419,9 +436,101 @@ def command_run(args: argparse.Namespace) -> int:
         from evalscope import TaskConfig, run_task
     except ImportError as error:
         raise BridgeError("evalscope is required for run") from error
+    if entry.get("plugin"):
+        # LiveCodeBench executes generated code locally unless told not to.
+        import importlib.util as _il
+        spec = _il.spec_from_file_location("_es_plugin", entry["plugin"])
+        module = _il.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(module)  # type: ignore[union-attr]
+
     run_task(TaskConfig(**task))
+
+    if args.results:
+        rows = collect_rows(Path(task["work_dir"]), entry, args)
+        args.results.parent.mkdir(parents=True, exist_ok=True)
+        with args.results.open("w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        if args.metadata:
+            write_lane_metadata(args, entry, pin, rows)
+        print(f"scored {len(rows)} {args.suite} rows to {args.results}", flush=True)
     print(f"pin={pin} work_dir={task['work_dir']}", flush=True)
     return 0
+
+
+def collect_rows(
+    work_dir: Path, entry: dict[str, Any], args: argparse.Namespace
+) -> list[dict[str, Any]]:
+    """Convert every subset's reviews from the newest run under work_dir.
+
+    A benchmark writes one reviews file per subset, and mmlu_pro alone has 14 of
+    them, so a lane's rows are the union rather than a single file.
+    """
+    runs = sorted(p for p in work_dir.glob("*") if p.is_dir())
+    if not runs:
+        raise BridgeError(f"{work_dir}: evalscope wrote no run directory")
+    reviews = sorted((runs[-1] / "reviews").rglob("*.jsonl"))
+    if not reviews:
+        raise BridgeError(f"{runs[-1]}: no reviews written")
+    records: list[dict[str, Any]] = []
+    for path in reviews:
+        records.extend(
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
+    rows = convert(
+        records,
+        suite=args.suite,
+        dataset_pin=f"{entry['repo']}@{entry['revision']}",
+        metric=entry.get("metric"),
+    )
+    # The lane owns the replicate index; EvalScope's group_id only orders
+    # repeats within one invocation, and we run one replicate per lane.
+    for row in rows:
+        row["replicate"] = args.replicate
+    return rows
+
+
+def write_lane_metadata(
+    args: argparse.Namespace, entry: dict[str, Any], pin: str, rows: list[dict[str, Any]]
+) -> None:
+    """Write what suite_is_current reads, so reuse works as it does for adapters."""
+    checkpoint: Any = None
+    raw = os.environ.get("EVAL_CHECKPOINT_JSON", "").strip()
+    if raw:
+        try:
+            checkpoint = json.loads(raw)
+        except json.JSONDecodeError:
+            checkpoint = {"error": "EVAL_CHECKPOINT_JSON was not valid JSON"}
+    args.metadata.parent.mkdir(parents=True, exist_ok=True)
+    args.metadata.write_text(
+        json.dumps(
+            {
+                "suite": args.suite,
+                "variant": args.variant,
+                "replicate": args.replicate,
+                "seed": args.seed,
+                "served_model": args.model,
+                "items": len(rows),
+                "max_tokens": args.max_tokens,
+                "request_timeout_seconds": args.request_timeout,
+                # EvalScope reports no per-request timeout, so none can be
+                # claimed. suite_is_current treats a non-zero value as "a
+                # timeout may have fired", which is the safe reading.
+                "timeouts": None,
+                "checkpoint": checkpoint,
+                "runner": "evalscope",
+                "benchmark": entry["benchmark"],
+                "dataset_pin": pin,
+                "score": round(sum(r["score"] for r in rows) / len(rows), 6) if rows else None,
+                "deferred": any(r.get("deferred") for r in rows),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -122,6 +122,21 @@ variant_requested() {
     for v in $VARIANTS; do [[ "$v" == "$want" ]] && return 0; done
     return 1
 }
+# Which harness scores a lane. `adapter` is ours; `evalscope` runs the upstream
+# task definitions against the same pinned data and converts its per-item output
+# into the same rows. The server lifecycle, lane fan-out, reuse check and
+# comparison are identical either way.
+RUNNER="${PAIRED_RUNNER:-adapter}"
+case "$RUNNER" in
+    adapter|evalscope) ;;
+    *) echo "PAIRED_RUNNER must be 'adapter' or 'evalscope'; got $RUNNER" >&2; exit 1 ;;
+esac
+ES_SUITES="${PAIRED_ES_SUITES:-eval/evalscope-suites.json}"
+# Read from the config so both runners derive replicate seeds from the same
+# number, and a config edit cannot leave them disagreeing.
+ORDER_SEED="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['order_seed'])" "$CONFIG")"
+ES_MAX_TOKENS="${PAIRED_ES_MAX_TOKENS:-131072}"
+ES_REQUEST_TIMEOUT="${PAIRED_ES_REQUEST_TIMEOUT:-5400}"
 PARALLEL="${PAIRED_PARALLEL:-0}"   # 0 means "as many lanes as there are jobs"
 CONCURRENCY="${PAIRED_CONCURRENCY:-}"
 # Default to scaling each suite's configured concurrency by how much of the
@@ -490,6 +505,23 @@ score_variant() {
         # whichever finished, which is why each job records its own into a file.
         while (( $(count_alive "${lane_pids[@]}") >= lanes )); do wait -n || true; done
         (
+            if [[ "${RUNNER:-adapter}" == "evalscope" ]]; then
+                # EvalScope owns the task definitions; we keep the server
+                # lifecycle, the lane fan-out and the comparison. The lane
+                # writes the same two files an adapter lane does, so nothing
+                # downstream of here knows which runner produced them.
+                "$PYTHON" scripts/evalscope_bridge.py run \
+                    --suites "$ES_SUITES" --suite "$suite" \
+                    --variant "$variant" --replicate "$rep" \
+                    --model "$SERVED_NAME" --api-url "$BASE_URL" \
+                    --work-dir "$RUN_DIR/evalscope/$variant/$suite-r$rep" \
+                    --results "$RUN_DIR/raw/$variant/$suite-r$rep.jsonl" \
+                    --metadata "$RUN_DIR/metadata/$suite-$variant-r$rep.json" \
+                    --max-tokens "$ES_MAX_TOKENS" \
+                    --request-timeout "$(python3 -c "print($ES_REQUEST_TIMEOUT*$TIMEOUT_SCALE)")" \
+                    --seed "$(( ORDER_SEED + rep ))" \
+                    > "$lane_dir/$label.log" 2>&1 && rc=0 || rc=$?
+            else
             "$PYTHON" scripts/run_adapter_suite.py \
                 --config "$CONFIG" --suite "$suite" --run-dir "$RUN_DIR" \
                 --phase run --variant "$variant" --replicate "$rep" \
@@ -498,6 +530,7 @@ score_variant() {
                 ${lane_conc:+--concurrency "$lane_conc"} \
                 ${lane_conc:-${lane_scale:+--concurrency-scale "$lane_scale"}} \
                 > "$lane_dir/$label.log" 2>&1 && rc=0 || rc=$?
+            fi
             echo "$rc" > "$lane_dir/$label.rc"
             # Reported twice on purpose: here so the failure is visible the
             # moment it happens, and again in the ordered replay below, because
