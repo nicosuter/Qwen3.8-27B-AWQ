@@ -1,10 +1,10 @@
 # Results for the benchmarks that are registered on the Hub and that we run as
 # the full published set.
 #
-# Deliberately absent: BFCL is registered only for v2 and v3 while we run v4,
-# and multimodal, LiveCodeBench, AA-LCR and AA-Omniscience are not benchmark
-# datasets on the Hub. Publishing our subset under a benchmark's name would
-# invite exactly the comparison it does not support.
+# Deliberately absent: we run five of BFCL v3's static categories, not the full
+# published set, and multimodal, LiveCodeBench, AA-LCR and AA-Omniscience are
+# not benchmark datasets on the Hub. Publishing our subset under a benchmark's
+# name would invite exactly the comparison it does not support.
 #
 # MathArena/apex-shortlist ships an eval.yaml but carries no benchmark:official
 # tag, so it is not on the allow-list and this result may not aggregate into a

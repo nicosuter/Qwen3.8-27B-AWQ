@@ -120,6 +120,31 @@
       ]
     },
     {
+      "name": "matharena_2026_06",
+      "pins": {
+        "dataset": "MathArena/aime_2026@d2de22f3c656b4f56cf8981212186377d1e23bc3,MathArena/apex-shortlist@f3efdf224ef665f129ddaae37699f6098c65781b",
+        "harness": "builtin-matharena-exact-v1",
+        "verifier": "exact-integer-answer-v1",
+        "adapter": "sha256:5994dd409f084e522dda67cb20e7639dc38e5eaa41b0ce82ea4711c80e79ccf2"
+      },
+      "prepare": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/matharena.py",
+        "prepare"
+      ],
+      "run": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/matharena.py",
+        "run",
+        "--concurrency",
+        "64",
+        "--max-tokens",
+        "131072",
+        "--request-timeout",
+        "4200"
+      ]
+    },
+    {
       "name": "aa_omniscience",
       "pins": {
         "dataset": "4a8ffc87c4650054825fb767fe0da4a4fc97ff32",

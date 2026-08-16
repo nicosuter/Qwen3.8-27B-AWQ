@@ -157,14 +157,17 @@ with the geometric mean; intervals are an item-clustered bootstrap. Scored on
 
 | suite | items x reps | FP8 | AWQ | delta | recovery (95% CI) |
 | --- | ---: | ---: | ---: | ---: | --- |
-| BFCL v4 | 1240 x 4 | 87.42 | 87.74 | +0.32 | 100.37% [99.50, 101.27] |
+| BFCL v3 | 1240 x 4 | 87.42 | 87.74 | +0.32 | 100.37% [99.50, 101.27] |
 | GPQA Diamond | 198 x 4 | 88.89 | 89.77 | +0.88 | 100.99% [98.84, 103.30] |
 | MathArena 2026-06 | 77 x 4 | 80.52 | 79.87 | -0.65 | 99.19% [94.74, 104.02] |
 | Multimodal | 600 x 4 | 86.75 | 86.95 | +0.20 | 100.23% [99.19, 101.30] |
 | **macro** | 4 suites | **85.89** | **86.08** | **+0.19** | **100.20%** [98.89, 101.53] |
 
 Multimodal is DocVQA, ChartQA and TextVQA at 200 items apiece, scored with their
-own published metrics. MathArena is AIME 2026 plus the Apex shortlist.
+own published metrics. MathArena is AIME 2026 plus the Apex shortlist. BFCL is
+the v3 static split, simple through parallel-multiple plus irrelevance; the
+executable, live, multi-turn and web-search categories need the Gorilla
+simulators or a live network and are excluded.
 
 The pre-registered rule was macro geometric-mean recovery of at least 99% on the
 point estimate. It measured 100.20%. No individual suite's interval excludes
@@ -184,7 +187,7 @@ requires before any delta is interpreted.
   points against a measured -0.65.
 - Around 83% of items score identically on both checkpoints, mostly at ceiling,
   so the effective sample is smaller than the item counts suggest.
-- No suite here resolves to a tenth of a point. Two draws of BFCL v4 under
+- No suite here resolves to a tenth of a point. Two draws of BFCL v3 under
   identical conditions differed by 0.7, and the FP8 baseline's own four GPQA
   replicates spanned 2.0 points without any quantization involved.
 
