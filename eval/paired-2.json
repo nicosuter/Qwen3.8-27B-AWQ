@@ -32,9 +32,9 @@
         "--concurrency",
         "384",
         "--max-tokens",
-        "65536",
+        "131072",
         "--request-timeout",
-        "3600"
+        "5400"
       ]
     },
     {
@@ -59,9 +59,9 @@
         "--concurrency",
         "256",
         "--max-tokens",
-        "65536",
+        "131072",
         "--request-timeout",
-        "3600"
+        "5400"
       ]
     },
     {
@@ -88,7 +88,7 @@
         "--max-tokens",
         "131072",
         "--request-timeout",
-        "4200"
+        "5400"
       ]
     },
     {
@@ -114,9 +114,9 @@
         "--concurrency",
         "256",
         "--max-tokens",
-        "65536",
+        "131072",
         "--request-timeout",
-        "3600"
+        "5400"
       ]
     },
     {
@@ -141,7 +141,7 @@
         "--max-tokens",
         "131072",
         "--request-timeout",
-        "4200"
+        "5400"
       ]
     },
     {
@@ -164,9 +164,9 @@
         "--concurrency",
         "384",
         "--max-tokens",
-        "32768",
+        "131072",
         "--request-timeout",
-        "1800"
+        "5400"
       ]
     },
     {
@@ -190,9 +190,9 @@
         "--concurrency",
         "32",
         "--max-tokens",
-        "32768",
+        "131072",
         "--request-timeout",
-        "3600"
+        "5400"
       ]
     },
     {
@@ -215,9 +215,9 @@
         "--concurrency",
         "384",
         "--max-tokens",
-        "32768",
+        "131072",
         "--request-timeout",
-        "1800"
+        "5400"
       ]
     },
     {
@@ -240,9 +240,9 @@
         "--concurrency",
         "256",
         "--max-tokens",
-        "32768",
+        "131072",
         "--request-timeout",
-        "1800"
+        "5400"
       ]
     },
     {
@@ -266,9 +266,9 @@
         "--concurrency",
         "256",
         "--max-tokens",
-        "65536",
+        "131072",
         "--request-timeout",
-        "3600"
+        "5400"
       ]
     }
   ]

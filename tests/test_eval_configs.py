@@ -89,8 +89,32 @@ class ShippedConfigTests(unittest.TestCase):
         )
         run = entry["run"]
         self.assertEqual(run[run.index("--max-tokens") + 1], "131072")
-        self.assertEqual(run[run.index("--request-timeout") + 1], "4200")
+        self.assertEqual(run[run.index("--request-timeout") + 1], "5400")
         self.assertEqual(config["order_seed"], 38027)
+
+    def test_every_suite_shares_one_token_cap(self) -> None:
+        """One cap for every suite, in every config.
+
+        Per-suite caps meant a suite's score partly measured its own budget: at
+        65536, LiveCodeBench truncated 19% of baseline items and 27% of
+        candidate items, every one of them at finish_reason=length with an empty
+        answer, and the resulting 8-point 'regression' was entirely the cap.
+        Wrong answers were 7 against 7.
+
+        131072 is half the 262144 context, so the longest-prompt suites still
+        fit their prompt beside it.
+        """
+        caps, timeouts = set(), set()
+        for name in ("paired-1.json", "paired-2.json"):
+            config = json.loads((ROOT / "eval" / name).read_text(encoding="utf-8"))
+            for suite in config["suites"]:
+                run = [str(part) for part in suite["run"]]
+                if "--max-tokens" in run:
+                    caps.add(run[run.index("--max-tokens") + 1])
+                if "--request-timeout" in run:
+                    timeouts.add(run[run.index("--request-timeout") + 1])
+        self.assertEqual(caps, {"131072"}, f"suites disagree on the cap: {caps}")
+        self.assertEqual(timeouts, {"5400"}, f"suites disagree on the timeout: {timeouts}")
 
 
 
