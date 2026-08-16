@@ -37,6 +37,9 @@ DeltaNet input projections. The vision tower stays in source precision, so this
 is still a multimodal checkpoint: image inputs run through an unquantized
 encoder and a quantized decoder.
 
+**Recipe, calibration builder, evaluation protocol and raw results:
+[github.com/nicosuter/Qwen3.8-27B-AWQ](https://github.com/nicosuter/Qwen3.8-27B-AWQ)**
+
 ## Provenance
 
 | | |
@@ -50,11 +53,10 @@ encoder and a quantized decoder.
 | Hardware | 4x NVIDIA H200, one BF16 replica per GPU, disjoint 64-row calibration partitions with AWQ statistics reduced across ranks |
 | Recipe source | [`nicosuter/Qwen3.8-27B-AWQ`](https://github.com/nicosuter/Qwen3.8-27B-AWQ), the `scripts/` and `slurm/` directories |
 
-The full recipe, calibration builder, and evaluation protocol live in the
-[GitHub repository](https://github.com/nicosuter/Qwen3.8-27B-AWQ).
 `run-metadata.json`, `pip-freeze.txt`, the exact calibration `manifest.jsonl`
-and its SHA256 ship alongside the weights in this model repository. Anything you
-want to reproduce or audit should start from those rather than from this card.
+and its SHA256 ship alongside the weights here. Anything you want to reproduce
+or audit should start from those and from the repository, rather than from this
+card.
 
 ## What is and is not quantized
 
