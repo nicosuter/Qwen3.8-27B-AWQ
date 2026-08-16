@@ -152,5 +152,60 @@ class MaterializeTests(unittest.TestCase):
             bridge.command_materialize(args)
 
 
+
+class SuiteMapTests(unittest.TestCase):
+    """The shipped port map has to stay usable and honest."""
+
+    PATH = ROOT / "eval" / "evalscope-suites.json"
+
+    def spec(self):
+        return json.loads(self.PATH.read_text(encoding="utf-8"))
+
+    def test_every_ported_suite_carries_a_pinned_revision(self) -> None:
+        for entry in self.spec()["suites"]:
+            if entry.get("ported"):
+                with self.subTest(suite=entry["suite"]):
+                    self.assertRegex(entry["revision"], r"^[0-9a-f]{40}$")
+                    self.assertIn("/", entry["repo"])
+
+    def test_every_unported_suite_says_why(self) -> None:
+        for entry in self.spec()["suites"]:
+            if not entry.get("ported"):
+                with self.subTest(suite=entry["suite"]):
+                    self.assertTrue(entry.get("note"), "an exclusion needs a reason")
+
+    def test_loading_an_unported_suite_is_refused(self) -> None:
+        unported = [e["suite"] for e in self.spec()["suites"] if not e.get("ported")]
+        self.assertTrue(unported, "the map should still record what we cannot run")
+        with self.assertRaises(bridge.BridgeError):
+            bridge.load_suite(self.PATH, unported[0])
+
+    def test_loading_a_ported_suite_returns_its_pin(self) -> None:
+        ported = [e["suite"] for e in self.spec()["suites"] if e.get("ported")]
+        entry = bridge.load_suite(self.PATH, ported[0])
+        self.assertRegex(entry["revision"], r"^[0-9a-f]{40}$")
+
+    def test_an_unknown_suite_lists_what_exists(self) -> None:
+        with self.assertRaises(bridge.BridgeError) as caught:
+            bridge.load_suite(self.PATH, "not_a_suite")
+        self.assertIn("mmlu_pro", str(caught.exception))
+
+    def test_the_run_task_points_at_the_materialized_pin(self) -> None:
+        import io, contextlib
+        args = bridge.parse_args([
+            "run", "--suite", "mmlu_pro", "--model", "m", "--api-url", "http://x/v1",
+            "--work-dir", "/tmp/es", "--variant", "baseline", "--print-only",
+        ])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            bridge.command_run(args)
+        plan = json.loads(out.getvalue())
+        task = plan["task"]
+        self.assertEqual(task["dataset_hub"], "local")
+        self.assertIn(plan["pin"].split("@")[1], task["dataset_args"]["mmlu_pro"]["dataset_id"])
+        # The cap has to match the protocol's, or the comparison is confounded
+        # by one side getting a different budget.
+        self.assertEqual(task["generation_config"]["max_tokens"], 131072)
+
 if __name__ == "__main__":
     unittest.main()

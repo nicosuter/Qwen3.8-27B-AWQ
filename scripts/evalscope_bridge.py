@@ -62,6 +62,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     materialize.add_argument("--revision", required=True, help="40-character commit")
     materialize.add_argument("--into", required=True, type=Path)
 
+    run = sub.add_parser("run", help="materialize a pinned dataset and score it")
+    run.add_argument("--suites", type=Path, default=Path("eval/evalscope-suites.json"))
+    run.add_argument("--suite", required=True, help="a `suite` name from that file")
+    run.add_argument("--model", required=True, help="served model name")
+    run.add_argument("--api-url", required=True)
+    run.add_argument("--api-key", default="EMPTY")
+    run.add_argument("--work-dir", required=True, type=Path)
+    run.add_argument("--variant", required=True, choices=("baseline", "candidate"))
+    run.add_argument("--repeats", type=int, default=1)
+    run.add_argument("--limit", type=float, default=None)
+    # Matches the protocol's own cap, so a comparison against our adapters is
+    # not confounded by one side getting a different budget.
+    run.add_argument("--max-tokens", type=int, default=131072)
+    run.add_argument("--temperature", type=float, default=1.0)
+    run.add_argument("--seed", type=int, default=38027)
+    run.add_argument("--print-only", action="store_true")
+
     rows = sub.add_parser("rows", help="convert EvalScope reviews into result rows")
     rows.add_argument("--reviews", required=True, type=Path, help="reviews/*.jsonl")
     rows.add_argument("--suite", required=True)
@@ -208,10 +225,84 @@ def command_rows(args: argparse.Namespace) -> int:
     return 0
 
 
+def load_suite(path: Path, name: str) -> dict[str, Any]:
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    for entry in spec["suites"]:
+        if entry["suite"] == name:
+            break
+    else:
+        names = sorted(e["suite"] for e in spec["suites"])
+        raise BridgeError(f"unknown suite {name!r}; {path} has {names}")
+    if not entry.get("ported"):
+        raise BridgeError(
+            f"{name} is listed but not ported: {entry.get('note', 'no reason recorded')}"
+        )
+    if not REVISION_RE.match(entry.get("revision") or ""):
+        raise BridgeError(f"{name} has no pinned revision in {path}")
+    return entry
+
+
+def command_run(args: argparse.Namespace) -> int:
+    entry = load_suite(args.suites, args.suite)
+    pin = f"{entry['repo']}@{entry['revision']}"
+
+    materialize = argparse.Namespace(
+        repo=entry["repo"], revision=entry["revision"], into=args.work_dir / "datasets"
+    )
+    local = args.work_dir / "datasets" / entry["repo"].replace("/", "__") / entry["revision"]
+    if not args.print_only and not local.is_dir():
+        command_materialize(materialize)
+
+    # dataset_id is overridden to the materialized path. EvalScope names
+    # ModelScope mirrors, but its adapters read the original column names, so
+    # pointing it at our own pinned snapshot gives both harnesses the same bytes
+    # -- and is the only way to pin at all, since load_subset never passes the
+    # `version` its DataLoader accepts.
+    # Per-suite overrides: gpqa passes its subset as the HF config name and
+    # EvalScope declares 'default', which is not a config of Idavidrein/gpqa;
+    # mmmu_pro otherwise falls back to the 4-option set with a warning.
+    dataset_args = dict(entry.get("dataset_args") or {})
+    dataset_args["dataset_id"] = str(local)
+
+    task = {
+        "model": args.model,
+        "eval_type": "openai_api",
+        "api_url": args.api_url,
+        "api_key": args.api_key,
+        "datasets": [entry["benchmark"]],
+        "dataset_args": {entry["benchmark"]: dataset_args},
+        "dataset_hub": "local",
+        "work_dir": str(args.work_dir / "runs" / args.variant),
+        "seed": args.seed,
+        "repeats": args.repeats,
+        "generation_config": {
+            "max_tokens": args.max_tokens,
+            "temperature": args.temperature,
+        },
+    }
+    if args.limit is not None:
+        task["limit"] = args.limit
+
+    print(json.dumps({"suite": args.suite, "pin": pin, "dataset": str(local),
+                      "task": task}, indent=2))
+    if args.print_only:
+        return 0
+
+    try:
+        from evalscope import TaskConfig, run_task
+    except ImportError as error:
+        raise BridgeError("evalscope is required for run") from error
+    run_task(TaskConfig(**task))
+    print(f"pin={pin} work_dir={task['work_dir']}", flush=True)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.action == "materialize":
         return command_materialize(args)
+    if args.action == "run":
+        return command_run(args)
     return command_rows(args)
 
 
