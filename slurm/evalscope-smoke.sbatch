@@ -27,7 +27,13 @@ MAX_TOKENS="${SMOKE_MAX_TOKENS:-4096}"
 VENV="${EVAL_VENV:?set EVAL_VENV to the evalscope venv}"
 PYTHON="$VENV/bin/python"
 IMAGE="${EVAL_APPTAINER_IMAGE:?set EVAL_APPTAINER_IMAGE}"
+# A Hugging Face snapshot directory is a farm of symlinks into ../../blobs, so
+# binding the snapshot alone leaves every one of them dangling inside the
+# container and vLLM reports the directory as having no config.json. Bind the
+# repository root and address the snapshot through it, as paired-suite-eval does.
 MODEL_DIR="${SMOKE_MODEL_DIR:?set SMOKE_MODEL_DIR to the checkpoint to serve}"
+MODEL_BIND="${SMOKE_MODEL_BIND:-$MODEL_DIR}"
+MODEL_PATH="${SMOKE_MODEL_PATH:-/mnt/model}"
 OUT="${SMOKE_OUT:-$RUN_BASE/v2/evalscope-smoke}"
 
 PORT="$(( 8000 + (SLURM_JOB_ID % 1000) ))"
@@ -45,7 +51,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-apptainer run --nv --bind "$MODEL_DIR:/mnt/model:ro" "$IMAGE" /mnt/model \
+apptainer run --nv --bind "$MODEL_BIND:/mnt/model:ro" "$IMAGE" "$MODEL_PATH" \
     --served-model-name "$SERVED_NAME" \
     --host 127.0.0.1 --port "$PORT" \
     --tensor-parallel-size 1 --data-parallel-size 4 \

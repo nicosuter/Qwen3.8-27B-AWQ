@@ -34,6 +34,29 @@ if (( $# == 0 )); then
     exit 2
 fi
 
+# The token must never reach the batch system, and saying so in a comment is not
+# a control. sbatch/srun/salloc copy the submitting environment into the job
+# record, which slurmctld and slurmd persist to their spool directories, so a
+# token exported here would outlive this process on disk. Refuse outright.
+case "$(basename -- "${1:-}")" in
+    sbatch|srun|salloc|sattach|sbcast)
+        cat >&2 <<'REFUSED'
+refusing: this would put the token in a Slurm job record.
+
+sbatch/srun/salloc copy the submitting environment into the job, and both
+slurmctld and slurmd write that to their spool directories. --export=HF_TOKEN=...
+is worse still: it lands in argv, where `scontrol show job` prints it.
+
+Nothing in a job needs the token. Materialize the gated dataset here first, then
+submit a job that reads the local path:
+
+    slurm/with-hf-token.sh -- python scripts/evalscope_bridge.py materialize \
+        --repo cais/hle --revision <sha> --into eval-materialized/evalscope
+REFUSED
+        exit 3
+        ;;
+esac
+
 if [[ -n "${HF_TOKEN:-}" ]]; then
     echo "HF_TOKEN is already set in this shell; using it." >&2
 else
