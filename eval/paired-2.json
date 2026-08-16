@@ -97,7 +97,7 @@
         "dataset": "0fe84c3912ea0c4d4a78037083943e8f0c4dd505",
         "harness": "builtin-lcb-exec-v1",
         "verifier": "stdin-and-functional-exec-v1",
-        "adapter": "sha256:8b73c72961bcf271c1fad45710edb2edd222da572f911afac2b1ed97ca69f75d"
+        "adapter": "sha256:cc80dfbeadd5558b58096d69d9f8f89b5fcce3513725dafa1eda9ce5f03dab3e"
       },
       "prepare": [
         "${EVAL_PYTHON}",

@@ -93,5 +93,42 @@ class ShippedConfigTests(unittest.TestCase):
         self.assertEqual(config["order_seed"], 38027)
 
 
+
+class AdapterPinTests(unittest.TestCase):
+    """Every config's adapter pin must match the adapter it points at.
+
+    The pin exists to stop an adapter changing under a result set, and it works:
+    it has refused a run twice. Both times the pin was simply stale, discovered
+    on a cluster after a queue wait. It is a hash of files in this repository,
+    so it can be checked here instead.
+    """
+
+    def adapter_for(self, suite: dict) -> Path | None:
+        for part in suite.get("run", []):
+            if str(part).endswith(".py"):
+                return ROOT / str(part)
+        return None
+
+    def test_every_pin_matches_its_adapter(self) -> None:
+        for name in CONFIGS:
+            raw = json.loads((ROOT / "eval" / name).read_text(encoding="utf-8"))
+            for suite in raw["suites"]:
+                path = self.adapter_for(suite)
+                if path is None or not path.is_file():
+                    continue
+                with self.subTest(config=name, suite=suite["name"]):
+                    spec = importlib.util.spec_from_file_location(
+                        f"pin_{suite['name']}", path
+                    )
+                    assert spec and spec.loader
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                    self.assertEqual(
+                        suite["pins"]["adapter"],
+                        module.self_pin(),
+                        f"{name}: {suite['name']} pin is stale; rerun "
+                        f"`{path.relative_to(ROOT)} pin`",
+                    )
+
 if __name__ == "__main__":
     unittest.main()
