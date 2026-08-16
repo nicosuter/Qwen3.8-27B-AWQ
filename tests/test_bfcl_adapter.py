@@ -84,7 +84,7 @@ IRRELEVANCE_ROW = {
 
 
 def build_key():
-    _, key = adapter.materialize(
+    _, key, _ = adapter.materialize(
         {"simple": [SIMPLE_ROW], "parallel": [PARALLEL_ROW], "irrelevance": [IRRELEVANCE_ROW]},
         {"simple_0": SIMPLE_ANSWER, "parallel_0": PARALLEL_ANSWER},
     )
@@ -145,19 +145,78 @@ class MaterializeTests(unittest.TestCase):
         self.assertEqual(len(key["parallel_0"]["ground_truth"]), 2)
         self.assertIsNone(key["irrelevance_0"]["ground_truth"])
 
-    def test_missing_ground_truth_for_scored_category_is_fatal(self) -> None:
-        with self.assertRaises(adapter.AdapterError):
-            adapter.materialize({"simple": [SIMPLE_ROW]}, {})
+    def test_an_unkeyed_item_is_dropped_and_named(self) -> None:
+        # One upstream id is typo'd at the pinned revision. Pairing it to the
+        # near-miss key would invent a correspondence, so it is dropped.
+        prompts, key, dropped = adapter.materialize({"simple": [SIMPLE_ROW]}, {})
+        self.assertEqual(prompts, [])
+        self.assertEqual(key, {})
+        self.assertEqual(dropped["unkeyed"], [str(SIMPLE_ROW["id"])])
+        self.assertEqual(dropped["no_tools"], [])
 
-    def test_duplicate_ids_rejected(self) -> None:
+    def test_many_unkeyed_items_are_fatal(self) -> None:
+        # A handful is upstream raggedness; a flood means the answer files
+        # changed shape, and scoring a silently smaller suite is the real risk.
+        rows = [dict(SIMPLE_ROW, id=f"simple_{i}") for i in range(adapter.MAX_UNKEYED + 1)]
         with self.assertRaises(adapter.AdapterError):
-            adapter.materialize(
-                {"simple": [SIMPLE_ROW], "multiple": [SIMPLE_ROW]},
-                {"simple_0": SIMPLE_ANSWER},
-            )
+            adapter.materialize({"simple": rows}, {})
+
+    def test_a_toolless_abstention_item_is_dropped_as_undiscriminating(self) -> None:
+        # With no tools offered, calling nothing is automatic: both checkpoints
+        # score 1.0 and the item cannot separate them.
+        row = {"id": "live_irrelevance_0", "question": [[{"role": "user", "content": "hi"}]],
+               "function": []}
+        prompts, _, dropped = adapter.materialize({"live_irrelevance": [row]}, {})
+        self.assertEqual(prompts, [])
+        self.assertEqual(dropped["no_tools"], ["live_irrelevance_0"])
+
+    def test_a_toolless_scored_item_is_still_fatal(self) -> None:
+        with self.assertRaises(adapter.AdapterError):
+            adapter.materialize({"simple": [dict(SIMPLE_ROW, function=[])]}, {})
+
+    def test_a_decision_only_category_needs_no_key(self) -> None:
+        for category in adapter.NO_GROUND_TRUTH:
+            with self.subTest(category=category):
+                self.assertNotIn(category, adapter.SCORED_WITH_GROUND_TRUTH)
+
+    def test_live_relevance_is_the_mirror_of_irrelevance(self) -> None:
+        call = [{"name": "f", "arguments": {}}]
+        for category, calls, expected in (
+            ("irrelevance", [], 1.0),
+            ("irrelevance", call, 0.0),
+            ("live_irrelevance", [], 1.0),
+            ("live_irrelevance", call, 0.0),
+            ("live_relevance", [], 0.0),
+            ("live_relevance", call, 1.0),
+        ):
+            with self.subTest(category=category, called=bool(calls)):
+                entry = {"category": category, "ground_truth": None}
+                self.assertEqual(adapter.score_calls(calls, entry), expected)
+
+    def test_silence_is_success_only_where_abstaining_is_correct(self) -> None:
+        self.assertIn("live_irrelevance", adapter.ABSTENTION_IS_CORRECT)
+        self.assertNotIn("live_relevance", adapter.ABSTENTION_IS_CORRECT)
+
+    def test_a_colliding_id_is_disambiguated_and_both_items_kept(self) -> None:
+        # live_relevance_3-3-0 is two different questions under one id upstream.
+        # Dropping either would lose a real item.
+        prompts, key, notes = adapter.materialize(
+            {"simple": [SIMPLE_ROW], "multiple": [SIMPLE_ROW]},
+            {"simple_0": SIMPLE_ANSWER},
+        )
+        self.assertEqual([p["id"] for p in prompts], ["simple_0", "simple_0#2"])
+        self.assertEqual(notes["renamed"], ["simple_0"])
+        # The key is looked up under the upstream id, so the renamed copy is
+        # still scored rather than silently losing its ground truth.
+        self.assertIsNotNone(key["simple_0#2"]["ground_truth"])
+
+    def test_a_flood_of_colliding_ids_is_fatal(self) -> None:
+        rows = [SIMPLE_ROW] * (adapter.MAX_UNKEYED + 2)
+        with self.assertRaises(adapter.AdapterError):
+            adapter.materialize({"simple": rows}, {"simple_0": SIMPLE_ANSWER})
 
     def test_prompts_satisfy_the_runner(self) -> None:
-        prompts, _ = adapter.materialize(
+        prompts, _, _ = adapter.materialize(
             {"simple": [SIMPLE_ROW]}, {"simple_0": SIMPLE_ANSWER}
         )
         with tempfile.TemporaryDirectory() as tmp:

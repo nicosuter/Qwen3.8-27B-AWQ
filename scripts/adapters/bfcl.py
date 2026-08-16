@@ -1,16 +1,27 @@
 #!/usr/bin/env python3
 """Berkeley Function Calling Leaderboard adapter for scripts/run_eval_protocol.py.
 
-Covers the static AST categories: simple, multiple, parallel, parallel_multiple
-and irrelevance. The model is served its tools natively, so this is the one
-suite where `malformed_tool_call` measures something real.
+Covers every AST-scorable category: simple, multiple, parallel,
+parallel_multiple and irrelevance, plus their six `live` counterparts. The model
+is served its tools natively, so this is the one suite where
+`malformed_tool_call` measures something real.
+
+The `live` categories were previously excluded on the grounds that they need a
+live service. They do not. "Live" describes where the prompts came from, real
+user submissions rather than authored examples; the data is static, the schema
+is identical, and four of the six ship the same `possible_answer` keys the
+authored categories do. They are 2251 of the 3491 items here, and at BFCL's cost
+per item they are the cheapest resolution in the protocol.
+
+What genuinely cannot run is `exec_*`, `rest`, `multi_turn_*` and `chatable`:
+those need the Gorilla API simulators or live endpoints, neither of which
+belongs in a quantization gate. `java`, `javascript` and `sql` ship keys but
+their answers are not Python, and this adapter's matcher parses Python calls.
 
 Note on the version: the protocol names this suite `bfcl_v4`, but no v4 dataset
-is published on the Hub. The pinned data is the v3 static split from
+is published on the Hub. The pinned data is the v3 split from
 `gorilla-llm/Berkeley-Function-Calling-Leaderboard`, and the run metadata records
-exactly which files and revision were scored. Executable, live, multi-turn and
-web-search categories are deliberately excluded: they need the Gorilla API
-simulators or a live network, neither of which belongs in a quantization gate.
+exactly which files and revision were scored.
 """
 
 import argparse
@@ -79,16 +90,37 @@ HARNESS_ID = "builtin-bfcl-ast-v1"
 VERIFIER_ID = "bfcl-ast-match-v1"
 DATASET_REPO = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
 
-# Static AST categories only. irrelevance has no ground truth by design: the
-# correct behavior is to call nothing.
+# Every category that can be scored by matching a Python call against a key, or
+# by whether a call was made at all.
 CATEGORIES = {
     "simple": "BFCL_v3_simple.json",
     "multiple": "BFCL_v3_multiple.json",
     "parallel": "BFCL_v3_parallel.json",
     "parallel_multiple": "BFCL_v3_parallel_multiple.json",
     "irrelevance": "BFCL_v3_irrelevance.json",
+    # "live" is the provenance of the prompts, not a live service: these are
+    # real user-submitted queries, shipped static with the same schema and the
+    # same possible_answer keys as the four above. They need no simulator and no
+    # network, and they are 2251 of the suite's 3491 items.
+    "live_simple": "BFCL_v3_live_simple.json",
+    "live_multiple": "BFCL_v3_live_multiple.json",
+    "live_parallel": "BFCL_v3_live_parallel.json",
+    "live_parallel_multiple": "BFCL_v3_live_parallel_multiple.json",
+    "live_irrelevance": "BFCL_v3_live_irrelevance.json",
+    "live_relevance": "BFCL_v3_live_relevance.json",
 }
-SCORED_WITH_GROUND_TRUTH = tuple(name for name in CATEGORIES if name != "irrelevance")
+# At the pinned revision exactly one prompt id has no matching key, an upstream
+# typo. Anything beyond a handful means the answer files changed, not that a few
+# rows are ragged.
+MAX_UNKEYED = 5
+# These three ship no possible_answer file because the decision, not the
+# arguments, is what is being scored.
+ABSTENTION_IS_CORRECT = ("irrelevance", "live_irrelevance")
+CALL_IS_CORRECT = ("live_relevance",)
+NO_GROUND_TRUTH = ABSTENTION_IS_CORRECT + CALL_IS_CORRECT
+SCORED_WITH_GROUND_TRUTH = tuple(
+    name for name in CATEGORIES if name not in NO_GROUND_TRUTH
+)
 
 DEFAULT_MAX_TOKENS = 32768
 
@@ -222,19 +254,41 @@ def flatten_question(question: Any) -> str:
 def materialize(
     by_category: dict[str, list[dict[str, Any]]],
     answers: dict[str, dict[str, Any]],
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    prompts, key = [], {}
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[str]]]:
+    prompts, key, unkeyed, degenerate, renamed = [], {}, [], [], []
     for category, rows in by_category.items():
         for row in rows:
-            item_id = str(row["id"])
+            source_id = str(row["id"])
+            item_id = source_id
+            if item_id in key:
+                # live_relevance_3-3-0 is two different questions under one id.
+                # Dropping one would lose a real item, so the later occurrence
+                # is suffixed. File order is fixed by the pinned revision, so
+                # both arms derive the same id. The answer key is still looked
+                # up under source_id, which is what upstream indexes by.
+                item_id = f"{source_id}#{renamed.count(source_id) + 2}"
+                renamed.append(source_id)
             functions = row.get("function") or []
             if not functions:
+                if category in ABSTENTION_IS_CORRECT:
+                    # With no tools offered, "call nothing" is automatic. Both
+                    # checkpoints score 1.0 and the item cannot separate them,
+                    # so it only inflates the absolute. Four exist upstream.
+                    degenerate.append(item_id)
+                    continue
                 raise AdapterError(f"{item_id}: no tool schemas")
             ground_truth = None
             if category in SCORED_WITH_GROUND_TRUTH:
-                answer = answers.get(item_id)
+                answer = answers.get(source_id)
                 if answer is None:
-                    raise AdapterError(f"{item_id}: no ground truth for a scored category")
+                    # One upstream id is typo'd: the prompt is
+                    # live_multiple_1052-79-0 and its key is
+                    # live_multiple_1052-279-0. Pairing them up would be
+                    # inventing a correspondence, so the item is dropped and
+                    # named. The cap below is what stops a future revision from
+                    # quietly shrinking the suite.
+                    unkeyed.append(item_id)
+                    continue
                 ground_truth = answer["ground_truth"]
             prompts.append(
                 {
@@ -257,8 +311,18 @@ def materialize(
             }
     ids = [prompt["id"] for prompt in prompts]
     if len(ids) != len(set(ids)):
-        raise AdapterError("duplicate ids across categories")
-    return prompts, key
+        raise AdapterError("duplicate ids survived disambiguation")
+    for label, dropped in (("no ground truth", unkeyed), ("no tool schemas", degenerate),
+                           ("a colliding id", renamed)):
+        if len(dropped) > MAX_UNKEYED:
+            raise AdapterError(
+                f"{len(dropped)} items have {label}, above the {MAX_UNKEYED} known "
+                f"upstream defects: {sorted(dropped)[:10]}. The dataset has changed "
+                "shape; do not score a silently smaller suite."
+            )
+    return prompts, key, {"unkeyed": sorted(unkeyed),
+                          "no_tools": sorted(degenerate),
+                          "renamed": sorted(renamed)}
 
 
 def key_path(run_dir: Path) -> Path:
@@ -286,8 +350,11 @@ def command_prepare(args: argparse.Namespace) -> int:
             ):
                 answers[str(row["id"])] = row
 
-    prompts, key = materialize(by_category, answers)
+    prompts, key, dropped = materialize(by_category, answers)
     write_jsonl(prompts_path, prompts)
+    for reason, ids in sorted(dropped.items()):
+        if ids:
+            print(f"dropped {len(ids)} item(s) [{reason}]: {ids}", file=sys.stderr, flush=True)
     write_json(
         key_path(run_dir),
         {
@@ -295,9 +362,13 @@ def command_prepare(args: argparse.Namespace) -> int:
             "dataset_repo": DATASET_REPO,
             "dataset_revision": pins["dataset"],
             "dataset_files": {name: CATEGORIES[name] for name in selected},
-            "dataset_note": "BFCL v3 static split; no v4 dataset is published on the Hub",
+            "dataset_note": (
+                "BFCL v3 AST-scorable categories, authored and live; "
+                "no v4 dataset is published on the Hub"
+            ),
             "verifier": VERIFIER_ID,
             "adapter": self_pin(),
+            "dropped_items": dropped,
             "items": key,
         },
     )
@@ -360,9 +431,11 @@ def call_matches(call: dict[str, Any], expected: dict[str, Any], allowed: list[s
 
 def score_calls(calls: list[dict[str, Any]], entry: dict[str, Any]) -> float:
     """AST match: every expected call must be produced, and nothing extra."""
-    if entry["category"] == "irrelevance":
-        # The correct behavior is to call nothing at all.
-        return 0.0 if calls else 1.0
+    if entry["category"] in NO_GROUND_TRUTH:
+        # Only the decision is scored. irrelevance wants nothing called;
+        # live_relevance is its mirror and wants something called.
+        wants_call = entry["category"] in CALL_IS_CORRECT
+        return 1.0 if bool(calls) == wants_call else 0.0
     ground_truth = entry["ground_truth"] or []
     if len(calls) != len(ground_truth):
         return 0.0
@@ -434,8 +507,14 @@ def score_response(
     row.update(
         {
             "score": score,
-            # For irrelevance, saying nothing and calling nothing is correct.
-            "empty_answer": not calls and not answer.strip() and entry["category"] != "irrelevance",
+            # Where abstaining is the right answer, saying nothing and calling
+            # nothing is the model succeeding, not an empty reply. live_relevance
+            # is deliberately not on that list: there, silence is a failure.
+            "empty_answer": (
+                not calls
+                and not answer.strip()
+                and entry["category"] not in ABSTENTION_IS_CORRECT
+            ),
             "repetition_loop": has_repetition_loop(answer or reasoning),
             # vLLM discards an unterminated think block, so a reply that ran to
             # the cap arrives with no text at all -- exactly where a loop is most

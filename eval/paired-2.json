@@ -18,7 +18,7 @@
         "dataset": "61fc0608cfd831fcfbbaa676ebdfef0ed963eeda",
         "harness": "builtin-bfcl-ast-v1",
         "verifier": "bfcl-ast-match-v1",
-        "adapter": "sha256:43e03cf9368ad3e345e65939222254da8be0112d0362595e0863c8ce68e2c080"
+        "adapter": "sha256:218c075b89fb78f36e88b1ac95fca29f78bcf03387cb63ab3047abb3190f28fe"
       },
       "prepare": [
         "${EVAL_PYTHON}",
