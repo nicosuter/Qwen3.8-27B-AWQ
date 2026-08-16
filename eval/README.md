@@ -358,3 +358,70 @@ The final `decision.json` deliberately leaves
 `manual_regression_cluster_review_required` true. A passing automated gate is
 not a deployment decision until trajectories and regression clusters are
 reviewed and the FP8 anchors are judged plausible.
+
+## Running a suite through EvalScope
+
+EvalScope implements the task definitions for eight of our suites and grades
+BFCL with Gorilla's own `bfcl-eval`. What it does not have is an immutable
+dataset pin or the paired statistics, so `scripts/evalscope_bridge.py` supplies
+both ends and the comparator is unchanged.
+
+Set `PAIRED_RUNNER=evalscope` and a lane runs EvalScope instead of an adapter.
+Everything else is the same: one server per variant, the same lane fan-out and
+failure ledger, the same reuse check, the same comparison. A lane writes the
+same two files either way, `raw/<variant>/<suite>-r<n>.jsonl` and
+`metadata/<suite>-<variant>-r<n>.json`, so nothing downstream knows which
+harness produced a result.
+
+### Pinning
+
+EvalScope names ModelScope mirrors as its dataset ids, but its adapters read the
+original Hugging Face column names, so a mirror is a straight copy and each
+benchmark can be pointed at our own snapshot instead. That is what makes this a
+cross-check rather than a second measurement: both harnesses read identical
+bytes at the same commit, so a disagreement is scoring, not data.
+
+Pinning has to be supplied because `DefaultDataAdapter.load_subset` builds its
+loader without passing the `version` that `DataLoader` accepts and forwards to
+`load_dataset(revision=...)`. A benchmark run from the Hub therefore tracks
+whatever `main` is that day. Instead:
+
+    python scripts/evalscope_bridge.py materialize \
+        --repo TIGER-Lab/MMLU-Pro --revision <40-hex> \
+        --into eval-materialized/evalscope
+
+`cais/hle` and `Idavidrein/gpqa` are gated. Materialize those through
+`slurm/with-hf-token.sh`, which keeps the credential in one process and refuses
+to hand it to `sbatch`, because Slurm persists a job's environment to its spool
+directories.
+
+BFCL needs building rather than downloading: EvalScope reads one record carrying
+prompt and key together, while upstream ships them as two files.
+
+    python scripts/evalscope_bridge.py bfcl-dataset --into eval-materialized/evalscope
+
+### Two things worth knowing before trusting a number
+
+**Sample ids are positional.** EvalScope defaults to `auto_id=True`, so a
+sample id is that item's index in the loaded split. Two arms scored against
+revisions differing by one row would join perfectly and compare unrelated
+questions. The bridge therefore keys rows on a digest of the item's own prompt
+and target, so a mismatch surfaces as a missing key rather than a plausible
+wrong number.
+
+**No per-request seed is sent, deliberately.** `TaskConfig.seed` only feeds
+`seed_everything()` and the loader's shuffle; it is never copied into
+`GenerateConfig`. Leave it that way. One seed on every request makes each item
+draw the same uniform stream against different logits, correlating their
+sampling noise, and the item-clustered bootstrap assumes items are independent.
+It would report an interval narrower than the truth.
+
+### LiveCodeBench
+
+Scoring runs code the model wrote, and EvalScope executes it in the local
+environment by default with no generate-only mode. Load
+`scripts/evalscope_plugins/lcb_deferred.py` and the generating pass returns a
+deferred marker without reaching the executor; the isolated pass then runs
+`--use-cache <dir> --rerun-review` with `execute: True`. Deferred rows are
+marked, and the comparator refuses any file containing one, so a pass that
+generated but did not execute cannot be read as a suite that scored zero.
