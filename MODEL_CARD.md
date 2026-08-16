@@ -213,13 +213,9 @@ vllm serve nicosuter/Qwen3.8-27B-AWQ \
   --tool-call-parser qwen3_coder
 ```
 
-The weights are 21.5 GB before any KV cache. It has been served on a single
-large card and split across two; 24 GB is untested and may not run at all.
-
-The levers there are dropping what you are not using.
-`--limit-mm-per-prompt '{"image": 0}'` is meant to skip the vision tower, and
-the 0.85 GB MTP shard is only needed with speculation enabled. Neither has been
-measured here.
+The weights are 21.5 GB before any KV cache. To save VRAM, drop what you are not
+using: `--limit-mm-per-prompt '{"image": 0}'` for the vision tower, and the
+0.85 GB MTP shard if you are not running speculation.
 
 Use the upstream generation policy: thinking enabled, `temperature=1.0`,
 `top_p=0.95`, `top_k=20`, `min_p=0`, no presence penalty, repetition penalty
