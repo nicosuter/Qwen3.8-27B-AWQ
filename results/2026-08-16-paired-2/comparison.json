@@ -1,0 +1,296 @@
+{
+  "suites": {
+    "bfcl_v4": {
+      "items": 1240,
+      "observations": 4960,
+      "replicates_per_item": {
+        "min": 4,
+        "max": 4
+      },
+      "baseline": 0.8741935483870967,
+      "candidate": 0.8774193548387097,
+      "delta": 0.0032258064516129032,
+      "ci95": [
+        -0.004435483870967705,
+        0.011088709677419373
+      ],
+      "recovery": 1.0036900369003692,
+      "recovery_ci95": [
+        0.9949587245508591,
+        1.0126933003743046
+      ],
+      "improved_items": 91,
+      "regressed_items": 92,
+      "tied_items": 1057
+    },
+    "gpqa_diamond": {
+      "items": 198,
+      "observations": 792,
+      "replicates_per_item": {
+        "min": 4,
+        "max": 4
+      },
+      "baseline": 0.8888888888888888,
+      "candidate": 0.8977272727272727,
+      "delta": 0.008838383838383838,
+      "ci95": [
+        -0.010101010101010166,
+        0.029040404040403978
+      ],
+      "recovery": 1.0099431818181819,
+      "recovery_ci95": [
+        0.9883547430201026,
+        1.0329985652797704
+      ],
+      "improved_items": 15,
+      "regressed_items": 10,
+      "tied_items": 173
+    },
+    "matharena_2026_06": {
+      "items": 77,
+      "observations": 308,
+      "replicates_per_item": {
+        "min": 4,
+        "max": 4
+      },
+      "baseline": 0.8051948051948052,
+      "candidate": 0.7987012987012987,
+      "delta": -0.006493506493506494,
+      "ci95": [
+        -0.04220779220779225,
+        0.03246753246753242
+      ],
+      "recovery": 0.9919354838709676,
+      "recovery_ci95": [
+        0.9473684210526315,
+        1.0401606425702812
+      ],
+      "improved_items": 8,
+      "regressed_items": 11,
+      "tied_items": 58
+    },
+    "multimodal": {
+      "items": 600,
+      "observations": 2400,
+      "replicates_per_item": {
+        "min": 4,
+        "max": 4
+      },
+      "baseline": 0.8674932253000772,
+      "candidate": 0.8695099739449508,
+      "delta": 0.002016748644873645,
+      "ci95": [
+        -0.007015929137413296,
+        0.011215526637714097
+      ],
+      "recovery": 1.0023248004549845,
+      "recovery_ci95": [
+        0.9919407336865695,
+        1.013018466290705
+      ],
+      "improved_items": 39,
+      "regressed_items": 42,
+      "tied_items": 519
+    }
+  },
+  "macro": {
+    "suites": 4,
+    "baseline": 0.858942616942717,
+    "candidate": 0.8608394750530579,
+    "delta": 0.0018968581103409043,
+    "ci95": [
+      -0.008681073499146858,
+      0.012812161223866156
+    ],
+    "recovery_geomean": 1.0019524563446076,
+    "recovery_ci95": [
+      0.9889238409294265,
+      1.015341648288071
+    ]
+  },
+  "bootstrap": {
+    "samples": 20000,
+    "seed": 38027,
+    "cluster": "item"
+  },
+  "gate": {
+    "passed": true,
+    "max_macro_drop": 0.03,
+    "suite_confident_drop": 0.05,
+    "review_suite_drop": 0.03,
+    "near_lossless": true,
+    "near_lossless_recovery": 0.99,
+    "macro_point_failure": false,
+    "suite_confident_failures": [],
+    "suite_review_flags": [],
+    "baseline_floor_failures": {},
+    "baseline_floor_missing_suites": [],
+    "failure_rates": {
+      "malformed_tool_call": {
+        "macro_increase": 0.0,
+        "worst_suite": "bfcl_v4",
+        "by_suite": {
+          "bfcl_v4": {
+            "baseline": 0.0,
+            "candidate": 0.0,
+            "increase": 0.0
+          },
+          "gpqa_diamond": {
+            "baseline": 0.0,
+            "candidate": 0.0,
+            "increase": 0.0
+          },
+          "matharena_2026_06": {
+            "baseline": 0.0,
+            "candidate": 0.0,
+            "increase": 0.0
+          },
+          "multimodal": {
+            "baseline": 0.0,
+            "candidate": 0.0,
+            "increase": 0.0
+          }
+        }
+      },
+      "premature_final_answer": {
+        "macro_increase": 0.0,
+        "worst_suite": "bfcl_v4",
+        "by_suite": {
+          "bfcl_v4": {
+            "baseline": 0.0,
+            "candidate": 0.0,
+            "increase": 0.0
+          },
+          "gpqa_diamond": {
+            "baseline": 0.0,
+            "candidate": 0.0,
+            "increase": 0.0
+          },
+          "matharena_2026_06": {
+            "baseline": 0.0,
+            "candidate": 0.0,
+            "increase": 0.0
+          },
+          "multimodal": {
+            "baseline": 0.0,
+            "candidate": 0.0,
+            "increase": 0.0
+          }
+        }
+      },
+      "empty_answer": {
+        "macro_increase": 0.0027507215007215014,
+        "worst_suite": "matharena_2026_06",
+        "by_suite": {
+          "bfcl_v4": {
+            "baseline": 0.0,
+            "candidate": 0.0,
+            "increase": 0.0
+          },
+          "gpqa_diamond": {
+            "baseline": 0.005050505050505051,
+            "candidate": 0.006313131313131313,
+            "increase": 0.001262626262626262
+          },
+          "matharena_2026_06": {
+            "baseline": 0.08116883116883117,
+            "candidate": 0.09090909090909091,
+            "increase": 0.009740259740259744
+          },
+          "multimodal": {
+            "baseline": 0.0,
+            "candidate": 0.0,
+            "increase": 0.0
+          }
+        }
+      },
+      "repetition_loop": {
+        "macro_increase": 0.0008116883116883117,
+        "worst_suite": "matharena_2026_06",
+        "by_suite": {
+          "bfcl_v4": {
+            "baseline": 0.0,
+            "candidate": 0.0,
+            "increase": 0.0
+          },
+          "gpqa_diamond": {
+            "baseline": 0.0,
+            "candidate": 0.0,
+            "increase": 0.0
+          },
+          "matharena_2026_06": {
+            "baseline": 0.003246753246753247,
+            "candidate": 0.006493506493506494,
+            "increase": 0.003246753246753247
+          },
+          "multimodal": {
+            "baseline": 0.0,
+            "candidate": 0.0,
+            "increase": 0.0
+          }
+        }
+      },
+      "context_failure": {
+        "macro_increase": 0.002931096681096682,
+        "worst_suite": "matharena_2026_06",
+        "by_suite": {
+          "bfcl_v4": {
+            "baseline": 0.0,
+            "candidate": 0.0,
+            "increase": 0.0
+          },
+          "gpqa_diamond": {
+            "baseline": 0.005050505050505051,
+            "candidate": 0.003787878787878788,
+            "increase": -0.001262626262626263
+          },
+          "matharena_2026_06": {
+            "baseline": 0.07792207792207792,
+            "candidate": 0.09090909090909091,
+            "increase": 0.012987012987012991
+          },
+          "multimodal": {
+            "baseline": 0.0,
+            "candidate": 0.0,
+            "increase": 0.0
+          }
+        }
+      },
+      "timeout": {
+        "macro_increase": 0.0003156565656565657,
+        "worst_suite": "gpqa_diamond",
+        "by_suite": {
+          "bfcl_v4": {
+            "baseline": 0.0,
+            "candidate": 0.0,
+            "increase": 0.0
+          },
+          "gpqa_diamond": {
+            "baseline": 0.0,
+            "candidate": 0.0012626262626262627,
+            "increase": 0.0012626262626262627
+          },
+          "matharena_2026_06": {
+            "baseline": 0.0,
+            "candidate": 0.0,
+            "increase": 0.0
+          },
+          "multimodal": {
+            "baseline": 0.0,
+            "candidate": 0.0,
+            "increase": 0.0
+          }
+        }
+      }
+    },
+    "max_failure_increase": 0.01,
+    "failure_rate_failures": [],
+    "must_pass_threshold": 1.0,
+    "must_pass_declared_items": 0,
+    "must_pass_baseline_passes": 0,
+    "must_pass_retention": null,
+    "required_must_pass_retention": 0.95,
+    "must_pass_failure": false,
+    "must_pass_unusable": false
+  }
+}
