@@ -153,6 +153,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=sys.executable,
         help="interpreter used to execute generated solutions",
     )
+    run.add_argument(
+        "--defer-execution",
+        action="store_true",
+        help="generate only: write generations for `score` to execute elsewhere",
+    )
+
+    # Scoring is a separate command because executing model-written code is the
+    # verifier, and that does not belong on the machine serving the model. It
+    # takes explicit paths rather than the EVAL_* environment so it can run
+    # somewhere with no network and no access to anything else.
+    score = sub.add_parser("score", help="execute deferred generations and score them")
+    score.add_argument("--generations", required=True, type=Path)
+    score.add_argument("--key", required=True, type=Path)
+    score.add_argument("--results", required=True, type=Path)
+    score.add_argument("--metadata", type=Path)
+    score.add_argument("--concurrency", type=int, default=1)
+    score.add_argument("--exec-timeout", type=float, default=DEFAULT_EXEC_TIMEOUT)
+    score.add_argument("--exec-memory-mb", type=int, default=DEFAULT_EXEC_MEMORY_MB)
+    score.add_argument("--item-budget", type=float, default=DEFAULT_ITEM_BUDGET)
+    score.add_argument("--python", default=sys.executable)
 
     pin = sub.add_parser("pin", help="print the pins object to paste into protocol.json")
     pin.add_argument("--dataset", help="the 40-character LiveCodeBench dataset commit")
@@ -256,6 +276,23 @@ def materialize(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[
     if len(ids) != len(set(ids)):
         raise AdapterError("duplicate question_id in the release file")
     return prompts, key
+
+
+def generations_path(run_dir: Path, variant: str, replicate: int) -> Path:
+    return run_dir / "generations" / f"{SUITE}-{variant}-r{replicate}.jsonl"
+
+
+def generations_meta_path(run_dir: Path, variant: str, replicate: int) -> Path:
+    return run_dir / "generations" / f"{SUITE}-{variant}-r{replicate}.meta.json"
+
+
+DEFERRED_VERDICT = {
+    "passed": False,
+    "status": "deferred",
+    "tests_passed": 0,
+    "tests_total": None,
+    "failed_test": None,
+}
 
 
 def key_path(run_dir: Path) -> Path:
@@ -435,13 +472,16 @@ def score_response(
     replicate: int,
     thinking: bool,
     args: argparse.Namespace,
+    execute: bool = True,
 ) -> dict[str, Any]:
     content, raw_reasoning, finish_reason, usage = unpack_choice(item_id, response)
     reasoning, answer = split_reasoning(content, raw_reasoning)
     code = extract_code(answer)
     thought = reasoning_tokens(usage, reasoning, answer)
 
-    if code is None:
+    if not execute:
+        verdict = dict(DEFERRED_VERDICT, tests_total=len(entry["tests"]))
+    elif code is None:
         verdict = {
             "passed": False,
             "status": "no_code_block",
@@ -477,6 +517,10 @@ def score_response(
             # Execution outcomes stay out of the shared failure flags: a slow
             # program is not the server failing to answer.
             "execution_status": verdict["status"],
+            # A zero here means "not executed yet", never "failed". The
+            # comparator refuses a file containing one, so a deferred run cannot
+            # be read as a suite of failures.
+            "deferred": not execute,
             "tests_passed": verdict["tests_passed"],
             "tests_total": verdict["tests_total"],
             "failed_test": verdict["failed_test"],
@@ -522,6 +566,7 @@ def run_item(
         row.update(
             {
                 "execution_status": "not_run",
+                "deferred": bool(getattr(args, "defer_execution", False)),
                 "category": f"{entry.get('platform')}/{entry.get('difficulty')}",
                 "platform": entry.get("platform"),
                 "difficulty": entry.get("difficulty"),
@@ -531,6 +576,7 @@ def run_item(
         row = score_response(
             item_id, response, entry=entry, replicate=replicate,
             thinking=bool(generation["enable_thinking"]), args=args,
+            execute=not getattr(args, "defer_execution", False),
         )
         path = raw_response_path(run_dir, variant, replicate, item_id)
         write_json(path, response)
@@ -577,6 +623,47 @@ def command_run(
     )
     write_jsonl(results_path, rows)
 
+    if args.defer_execution:
+        # One self-contained file per replicate: the raw response plus the
+        # request-side facts scoring cannot recover. With the answer key that is
+        # everything the scorer needs, so it can run with no network at all.
+        records = []
+        for row in rows:
+            raw = row.get("raw_response")
+            records.append(
+                {
+                    "id": row["id"],
+                    "replicate": replicate,
+                    "response": json.loads(Path(raw).read_text(encoding="utf-8")) if raw else None,
+                    "timeout": bool(row.get("timeout")),
+                    "attempts": row.get("attempts"),
+                    "started_at": row.get("started_at"),
+                    "finished_at": row.get("finished_at"),
+                    "elapsed_seconds": row.get("elapsed_seconds"),
+                }
+            )
+        write_jsonl(generations_path(run_dir, variant, replicate), records)
+        write_json(
+            generations_meta_path(run_dir, variant, replicate),
+            {
+                "suite": SUITE,
+                "variant": variant,
+                "replicate": replicate,
+                "seed": seed,
+                "served_model": model,
+                "concurrency": args.concurrency,
+                "max_tokens": args.max_tokens,
+                "generation": generation,
+                "adapter": self_pin(),
+            },
+        )
+        print(
+            f"generated {len(records)} {SUITE} items to "
+            f"{generations_path(run_dir, variant, replicate)}; execution deferred",
+            flush=True,
+        )
+        return 0
+
     statuses: dict[str, int] = {}
     for row in rows:
         statuses[row.get("execution_status", "unknown")] = (
@@ -611,6 +698,93 @@ def command_run(
     return 0
 
 
+def command_score(args: argparse.Namespace) -> int:
+    """Execute deferred generations and produce the results `run` would have.
+
+    Deliberately free of the EVAL_* environment contract: it needs a generations
+    file, an answer key, and somewhere to write. That is what lets it run in an
+    isolated sandbox with no network, which is the point of splitting it out.
+    """
+    key = json.loads(args.key.read_text(encoding="utf-8"))["items"]
+    records = read_jsonl(args.generations)
+    if not records:
+        raise AdapterError(f"{args.generations}: no generations to score")
+
+    meta_path = args.generations.with_suffix(".meta.json")
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+    thinking = bool((meta.get("generation") or {}).get("enable_thinking", True))
+
+    missing = [r["id"] for r in records if r["id"] not in key]
+    if missing:
+        raise AdapterError(f"generations reference unkeyed items: {missing[:10]}")
+
+    by_id = {str(r["id"]): r for r in records}
+    started = time.monotonic()
+
+    def score_one(item_id: str) -> dict[str, Any]:
+        record = by_id[item_id]
+        replicate = int(record.get("replicate", 0))
+        if record.get("response") is None:
+            row = _timeout_row(SUITE, item_id, replicate)
+            entry = key[item_id]
+            row.update(
+                {
+                    "execution_status": "not_run",
+                    "deferred": False,
+                    "category": f"{entry.get('platform')}/{entry.get('difficulty')}",
+                    "platform": entry.get("platform"),
+                    "difficulty": entry.get("difficulty"),
+                }
+            )
+        else:
+            row = score_response(
+                item_id, record["response"], entry=key[item_id],
+                replicate=replicate, thinking=thinking, args=args, execute=True,
+            )
+        # Request-side facts belong to generation and cannot be recovered here.
+        for field in ("started_at", "finished_at", "elapsed_seconds", "attempts"):
+            if record.get(field) is not None:
+                row[field] = record[field]
+        return row
+
+    rows = execute_order([str(r["id"]) for r in records], score_one, args.concurrency)
+    write_jsonl(args.results, rows)
+
+    statuses: dict[str, int] = {}
+    for row in rows:
+        status = row.get("execution_status", "unknown")
+        statuses[status] = statuses.get(status, 0) + 1
+    if args.metadata:
+        write_json(
+            args.metadata,
+            {
+                "suite": SUITE,
+                "variant": meta.get("variant"),
+                "replicate": meta.get("replicate"),
+                "seed": meta.get("seed"),
+                "served_model": meta.get("served_model"),
+                "items": len(rows),
+                "concurrency": meta.get("concurrency"),
+                "max_tokens": meta.get("max_tokens"),
+                "execution": {
+                    "timeout_seconds": args.exec_timeout,
+                    "memory_mb": args.exec_memory_mb,
+                    "item_budget_seconds": args.item_budget,
+                    "interpreter": args.python,
+                    "deferred": True,
+                },
+                "generation": meta.get("generation"),
+                "generation_overrides": {},
+                "adapter": self_pin(),
+                "wall_clock_seconds": round(time.monotonic() - started, 3),
+                "pass_at_1": round(sum(row["score"] for row in rows) / len(rows), 6),
+                "execution_status_counts": statuses,
+            },
+        )
+    print(f"scored {len(rows)} {SUITE} items to {args.results}", flush=True)
+    return 0
+
+
 def command_pin(args: argparse.Namespace) -> int:
     dataset = args.dataset
     if args.resolve_dataset:
@@ -639,6 +813,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_pin(args)
     if args.action == "prepare":
         return command_prepare(args)
+    if args.action == "score":
+        return command_score(args)
     return command_run(args)
 
 

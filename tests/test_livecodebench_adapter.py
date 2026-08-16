@@ -271,3 +271,110 @@ class PinTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeferredExecutionTests(unittest.TestCase):
+    """Generation and execution must be separable without changing the result.
+
+    Executing model-written code is the verifier, and it has no business running
+    on the machine serving the model. Splitting it is only safe if the two-step
+    path produces exactly what the single pass produced.
+    """
+
+    SOLUTION = "```python\nn = int(input())\nprint(n * 2)\n```"
+
+    def key(self) -> dict:
+        _, key = adapter.materialize([dict(STDIN_ROW)])
+        return key
+
+    def test_deferred_run_executes_nothing_and_flags_every_row(self) -> None:
+        key = self.key()
+        item_id = next(iter(key))
+        # A solution that would fail loudly if it were ever executed.
+        row = adapter.score_response(
+            item_id, completion("```python\nraise SystemExit(3)\n```"),
+            entry=key[item_id], replicate=0, thinking=True,
+            args=exec_args(defer_execution=True), execute=False,
+        )
+        self.assertTrue(row["deferred"])
+        self.assertEqual(row["execution_status"], "deferred")
+        self.assertEqual(row["score"], 0.0)
+        self.assertEqual(row["tests_total"], len(key[item_id]["tests"]))
+
+    def test_scoring_a_deferred_generation_matches_a_single_pass(self) -> None:
+        key = self.key()
+        item_id = next(iter(key))
+        response = completion(self.SOLUTION)
+
+        direct = adapter.score_response(
+            item_id, response, entry=key[item_id], replicate=0,
+            thinking=True, args=exec_args(), execute=True,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            gen = work / "gen.jsonl"
+            gen.write_text(json.dumps({
+                "id": item_id, "replicate": 0, "response": response,
+                "timeout": False, "attempts": 1,
+                "started_at": 1.0, "finished_at": 2.0, "elapsed_seconds": 1.0,
+            }) + "\n", encoding="utf-8")
+            (work / "gen.meta.json").write_text(json.dumps({
+                "variant": "candidate", "replicate": 0, "seed": 7,
+                "served_model": "m", "concurrency": 1, "max_tokens": 4096,
+                "generation": {"enable_thinking": True},
+            }), encoding="utf-8")
+            (work / "key.json").write_text(json.dumps({"items": key}), encoding="utf-8")
+
+            rc = adapter.command_score(exec_args(
+                action="score", generations=gen, key=work / "key.json",
+                results=work / "results.jsonl", metadata=work / "meta.json",
+            ))
+            self.assertEqual(rc, 0)
+            rows = [json.loads(l) for l in (work / "results.jsonl").read_text().splitlines() if l.strip()]
+            meta = json.loads((work / "meta.json").read_text())
+
+        self.assertEqual(len(rows), 1)
+        scored = rows[0]
+        self.assertFalse(scored["deferred"])
+        # The verdict must be identical to the one-pass run.
+        for field in ("score", "execution_status", "tests_passed", "tests_total", "category"):
+            self.assertEqual(scored[field], direct[field], field)
+        # Request-side facts survive the hand-off; scoring cannot recompute them.
+        self.assertEqual(scored["elapsed_seconds"], 1.0)
+        self.assertEqual(scored["attempts"], 1)
+        self.assertEqual(meta["seed"], 7)
+        self.assertEqual(meta["variant"], "candidate")
+        self.assertTrue(meta["execution"]["deferred"])
+
+    def test_a_timed_out_generation_scores_without_a_response(self) -> None:
+        key = self.key()
+        item_id = next(iter(key))
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            gen = work / "gen.jsonl"
+            gen.write_text(json.dumps({
+                "id": item_id, "replicate": 0, "response": None, "timeout": True,
+            }) + "\n", encoding="utf-8")
+            (work / "key.json").write_text(json.dumps({"items": key}), encoding="utf-8")
+            adapter.command_score(exec_args(
+                action="score", generations=gen, key=work / "key.json",
+                results=work / "results.jsonl", metadata=None,
+            ))
+            row = json.loads((work / "results.jsonl").read_text().strip())
+        self.assertTrue(row["timeout"])
+        self.assertFalse(row["deferred"])
+        self.assertEqual(row["execution_status"], "not_run")
+
+    def test_generations_referencing_unknown_items_are_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            gen = work / "gen.jsonl"
+            gen.write_text(json.dumps({"id": "nope", "replicate": 0, "response": None}) + "\n",
+                           encoding="utf-8")
+            (work / "key.json").write_text(json.dumps({"items": self.key()}), encoding="utf-8")
+            with self.assertRaises(adapter.AdapterError):
+                adapter.command_score(exec_args(
+                    action="score", generations=gen, key=work / "key.json",
+                    results=work / "results.jsonl", metadata=None,
+                ))

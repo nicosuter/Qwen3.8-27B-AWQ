@@ -86,6 +86,14 @@ def load_rows(path: Path) -> dict[Key, dict[str, Any]]:
                 raise ValueError(f"{path}:{line_number}: invalid result row: {exc}") from exc
             if not math.isfinite(score) or not 0.0 <= score <= 1.0:
                 raise ValueError(f"{path}:{line_number}: score must be finite and in [0, 1]")
+            # A deferred row carries a zero that means "not executed yet". Left
+            # to stand it would read as a failed item, so refuse the file rather
+            # than average it.
+            if row.get("deferred"):
+                raise ValueError(
+                    f"{path}:{line_number}: {suite}/{item_id} is deferred and has not been "
+                    "scored; run the adapter's `score` step first"
+                )
             key = (suite, item_id, replicate)
             if key in rows:
                 raise ValueError(f"{path}:{line_number}: duplicate key {key}")

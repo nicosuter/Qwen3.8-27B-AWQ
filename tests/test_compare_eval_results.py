@@ -186,3 +186,35 @@ class BaselineFloorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeferredRowTests(unittest.TestCase):
+    """A deferred zero means "not executed", and must never average as a failure."""
+
+    def compare(self, baseline_rows, candidate_rows):
+        tmp = tempfile.mkdtemp()
+        base = Path(tmp) / "base.jsonl"
+        cand = Path(tmp) / "cand.jsonl"
+        out = Path(tmp) / "report.json"
+        base.write_text("\n".join(json.dumps(r) for r in baseline_rows), encoding="utf-8")
+        cand.write_text("\n".join(json.dumps(r) for r in candidate_rows), encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "compare_eval_results.py"),
+             "--baseline", str(base), "--candidate", str(cand), "--output", str(out)],
+            capture_output=True, text=True,
+        )
+
+    def test_a_deferred_row_stops_the_comparison(self) -> None:
+        baseline = [row("livecodebench_v6", f"i{i}", 0, 1.0) for i in range(4)]
+        candidate = [row("livecodebench_v6", f"i{i}", 0, 1.0) for i in range(4)]
+        candidate[2]["deferred"] = True
+        candidate[2]["score"] = 0.0
+        proc = self.compare(baseline, candidate)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("deferred", proc.stderr + proc.stdout)
+
+    def test_scored_rows_carrying_deferred_false_are_fine(self) -> None:
+        baseline = [row("livecodebench_v6", f"i{i}", 0, 1.0, deferred=False) for i in range(4)]
+        candidate = [row("livecodebench_v6", f"i{i}", 0, 1.0, deferred=False) for i in range(4)]
+        proc = self.compare(baseline, candidate)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
