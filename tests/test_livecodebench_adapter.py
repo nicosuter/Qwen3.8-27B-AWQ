@@ -378,3 +378,33 @@ class DeferredExecutionTests(unittest.TestCase):
                     action="score", generations=gen, key=work / "key.json",
                     results=work / "results.jsonl", metadata=None,
                 ))
+
+    def test_scoring_preserves_provenance_the_driver_recorded(self) -> None:
+        # The generation step writes metadata so the driver can stamp which
+        # checkpoint served it. Scoring must not throw that away.
+        key = self.key()
+        item_id = next(iter(key))
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            gen = work / "gen.jsonl"
+            gen.write_text(json.dumps({
+                "id": item_id, "replicate": 0, "response": completion(self.SOLUTION),
+            }) + "\n", encoding="utf-8")
+            (work / "key.json").write_text(json.dumps({"items": key}), encoding="utf-8")
+            meta = work / "meta.json"
+            meta.write_text(json.dumps({
+                "suite": "livecodebench_v6", "deferred": True, "pass_at_1": None,
+                "checkpoint": {"fingerprint": "sha256:abc"},
+                "hardware": {"gpu": "test"},
+            }), encoding="utf-8")
+
+            adapter.command_score(exec_args(
+                action="score", generations=gen, key=work / "key.json",
+                results=work / "results.jsonl", metadata=meta,
+            ))
+            after = json.loads(meta.read_text())
+
+        self.assertEqual(after["checkpoint"]["fingerprint"], "sha256:abc")
+        self.assertEqual(after["hardware"]["gpu"], "test")
+        self.assertFalse(after["deferred"])
+        self.assertIsNotNone(after["pass_at_1"])

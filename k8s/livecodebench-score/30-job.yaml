@@ -1,0 +1,60 @@
+# Executes the model's solutions against the pinned tests and writes pass@1.
+#
+# The adapter is stdlib-only, so this runs on a stock python image with nothing
+# installed and nothing fetched. Every containment control is on: non-root, no
+# capabilities, no privilege escalation, read-only root filesystem, seccomp on,
+# and no service account token -- so a solution that goes looking for the
+# Kubernetes API finds neither a token nor a route to it.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: lcb-score
+  namespace: qwen-lcb-score
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: {app: lcb-score}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: score
+          image: python:3.12-slim
+          command: ["python3", "/adapter/livecodebench.py", "score"]
+          args:
+            - --generations=/work/generations.jsonl
+            - --key=/work/livecodebench_v6.key.json
+            - --results=/work/results.jsonl
+            - --metadata=/work/metadata.json
+            - --concurrency=8
+          env:
+            # The adapter imports its shared helpers as a sibling module.
+            - {name: PYTHONPATH, value: /adapter}
+            # Generated code gets a writable scratch that is not the volume
+            # holding the inputs.
+            - {name: TMPDIR, value: /scratch}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: "2", memory: 4Gi, ephemeral-storage: 1Gi}
+            limits:   {cpu: "8", memory: 16Gi, ephemeral-storage: 4Gi}
+          volumeMounts:
+            - {name: adapter, mountPath: /adapter, readOnly: true}
+            - {name: work, mountPath: /work}
+            - {name: scratch, mountPath: /scratch}
+      volumes:
+        - name: adapter
+          configMap: {name: lcb-adapter}
+        - name: work
+          persistentVolumeClaim: {claimName: lcb-work}
+        - name: scratch
+          emptyDir: {sizeLimit: 4Gi}

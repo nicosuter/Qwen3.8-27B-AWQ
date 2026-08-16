@@ -657,6 +657,29 @@ def command_run(
                 "adapter": self_pin(),
             },
         )
+        # Written even though nothing was scored: the driver folds the serving
+        # checkpoint's fingerprint into this file, and a generation whose
+        # provenance is unrecorded cannot be trusted later. `score` merges its
+        # verdict in rather than replacing it.
+        write_json(
+            run_dir / "metadata" / f"{SUITE}-{variant}-r{replicate}.json",
+            {
+                "suite": SUITE,
+                "variant": variant,
+                "replicate": replicate,
+                "seed": seed,
+                "served_model": model,
+                "items": len(rows),
+                "concurrency": args.concurrency,
+                "max_tokens": args.max_tokens,
+                "generation": generation,
+                "generation_overrides": {},
+                "adapter": self_pin(),
+                "wall_clock_seconds": round(time.monotonic() - started, 3),
+                "deferred": True,
+                "pass_at_1": None,
+            },
+        )
         print(
             f"generated {len(records)} {SUITE} items to "
             f"{generations_path(run_dir, variant, replicate)}; execution deferred",
@@ -755,8 +778,14 @@ def command_score(args: argparse.Namespace) -> int:
         status = row.get("execution_status", "unknown")
         statuses[status] = statuses.get(status, 0) + 1
     if args.metadata:
-        write_json(
-            args.metadata,
+        # Merge: the generation step recorded which checkpoint produced these
+        # responses, and that must survive scoring.
+        existing = (
+            json.loads(args.metadata.read_text(encoding="utf-8"))
+            if args.metadata.is_file()
+            else {}
+        )
+        existing.update(
             {
                 "suite": SUITE,
                 "variant": meta.get("variant"),
@@ -779,8 +808,10 @@ def command_score(args: argparse.Namespace) -> int:
                 "wall_clock_seconds": round(time.monotonic() - started, 3),
                 "pass_at_1": round(sum(row["score"] for row in rows) / len(rows), 6),
                 "execution_status_counts": statuses,
-            },
+                "deferred": False,
+            }
         )
+        write_json(args.metadata, existing)
     print(f"scored {len(rows)} {SUITE} items to {args.results}", flush=True)
     return 0
 

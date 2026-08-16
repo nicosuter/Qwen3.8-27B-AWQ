@@ -90,6 +90,34 @@
         "--request-timeout",
         "4200"
       ]
+    },
+    {
+      "name": "livecodebench_v6",
+      "pins": {
+        "dataset": "0fe84c3912ea0c4d4a78037083943e8f0c4dd505",
+        "harness": "builtin-lcb-exec-v1",
+        "verifier": "stdin-and-functional-exec-v1",
+        "adapter": "sha256:8b73c72961bcf271c1fad45710edb2edd222da572f911afac2b1ed97ca69f75d"
+      },
+      "prepare": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/livecodebench.py",
+        "prepare",
+        "--release",
+        "v6"
+      ],
+      "run": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/livecodebench.py",
+        "run",
+        "--defer-execution",
+        "--concurrency",
+        "256",
+        "--max-tokens",
+        "65536",
+        "--request-timeout",
+        "3600"
+      ]
     }
   ]
 }

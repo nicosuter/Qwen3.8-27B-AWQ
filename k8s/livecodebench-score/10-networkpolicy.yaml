@@ -1,0 +1,13 @@
+# The scorer reads two files and writes one. It has no reason to talk to
+# anything, so it is denied everything in both directions -- including DNS.
+# There is no allow-list to get wrong later.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: qwen-lcb-score
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress

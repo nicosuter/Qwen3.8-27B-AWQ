@@ -1,0 +1,14 @@
+# Scoring LiveCodeBench means executing code the model wrote. The tests are the
+# verifier, so this cannot be avoided -- it can only be contained.
+#
+# Its own namespace, deliberately not managed by ArgoCD, so nothing here is
+# reconciled away and nothing here can reach the applications that are.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: qwen-lcb-score
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

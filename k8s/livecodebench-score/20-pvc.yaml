@@ -1,0 +1,13 @@
+# Generations in, results out. Data crosses this boundary as files on a volume
+# rather than over a socket, which is what lets the scorer keep no network.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lcb-work
+  namespace: qwen-lcb-score
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: cephfs
+  resources:
+    requests:
+      storage: 20Gi
