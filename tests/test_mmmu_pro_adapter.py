@@ -197,3 +197,41 @@ class PinTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(HAVE_PIL, "Pillow is not installed")
+class VariableOptionCountTests(unittest.TestCase):
+    """The "standard (10 options)" config does not hold to ten options.
+
+    Across the 1730 test items the counts run 2 through 10 and then 12, with one
+    item at twelve. A ten-letter alphabet refused that item and failed prepare
+    for the whole suite, which is how it was found.
+    """
+
+    def item(self, item_id, options, answer):
+        return row(id=item_id, options=repr(list(options)), answer=answer)
+
+    def test_a_twelve_option_item_materializes(self) -> None:
+        rows = [self.item("test_Computer_Science_61", [f"o{i}" for i in range(12)], "F")]
+        with tempfile.TemporaryDirectory() as tmp:
+            prompts, key = adapter.materialize(rows, Path(tmp))
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("L. o11", prompts[0]["text"])
+
+    def test_the_short_items_are_unaffected(self) -> None:
+        rows = [self.item("two", ["yes", "no"], "B")]
+        with tempfile.TemporaryDirectory() as tmp:
+            prompts, _ = adapter.materialize(rows, Path(tmp))
+        self.assertIn("B. no", prompts[0]["text"])
+        self.assertNotIn("C.", prompts[0]["text"])
+
+    def test_an_answer_past_the_option_count_is_still_refused(self) -> None:
+        rows = [self.item("bad", ["a", "b"], "D")]
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(adapter.AdapterError):
+            adapter.materialize(rows, Path(tmp))
+
+    def test_more_options_than_the_alphabet_is_still_refused(self) -> None:
+        rows = [self.item("huge", [f"o{i}" for i in range(27)], "A")]
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(adapter.AdapterError) as caught:
+            adapter.materialize(rows, Path(tmp))
+        self.assertIn("letters exist", str(caught.exception))

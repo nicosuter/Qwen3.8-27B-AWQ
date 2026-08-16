@@ -92,7 +92,13 @@ VERIFIER_ID = "exact-choice-v1"
 DATASET_REPO = "MMMU/MMMU_Pro"
 DATASET_CONFIG = "standard (10 options)"
 IMAGE_FIELDS = tuple(f"image_{index}" for index in range(1, 8))
-LETTERS = string.ascii_uppercase[:10]
+# The config is named for ten options and does not hold to it. Across the 1730
+# test items the counts run 2, 3, 4, 5, 6, 7, 8, 9, 10 and 12, with 1213 at ten
+# and exactly one at twelve (test_Computer_Science_61, answer F). Capping the
+# alphabet at ten refused that item rather than mislabelling it, which was the
+# right instinct and the wrong bound. The whole alphabet costs nothing and the
+# guard below still refuses anything past it.
+LETTERS = string.ascii_uppercase
 
 DEFAULT_MAX_TOKENS = 32768
 
