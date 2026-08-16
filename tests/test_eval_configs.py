@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -195,3 +196,54 @@ class ProtocolCoverageTests(unittest.TestCase):
             with self.subTest(suite=suite["name"]):
                 for field, value in suite["pins"].items():
                     self.assertNotIn("REPLACE_", value, field)
+
+
+class NarrowExpansionTests(unittest.TestCase):
+    """One suite's deployment variable must not fail the other six.
+
+    RULER names ${EVAL_CORPUS} and ${EVAL_TOKENIZER}. Expanding the whole config
+    meant a deployment that had not set those could not prepare bfcl_v4 either,
+    and a prepare job failed all seven suites on one suite's missing variable.
+    """
+
+    def config(self, directory: Path) -> Path:
+        path = directory / "config.json"
+        path.write_text(json.dumps({
+            "served_model_name": "openai/qwen38-eval",
+            "order_seed": 1,
+            "generation": {},
+            "suites": [
+                {"name": "plain", "replicates": 1, "pins": {"adapter": "a"},
+                 "prepare": ["${EVAL_PYTHON}", "prepare"],
+                 "run": ["${EVAL_PYTHON}", "run"]},
+                {"name": "needs_corpus", "replicates": 1, "pins": {"adapter": "a"},
+                 "prepare": ["${EVAL_PYTHON}", "prepare", "--corpus", "${EVAL_CORPUS}"],
+                 "run": ["${EVAL_PYTHON}", "run"]},
+            ],
+        }), encoding="utf-8")
+        return path
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.previous = os.environ.get("EVAL_CORPUS")
+        os.environ.pop("EVAL_CORPUS", None)
+        os.environ["EVAL_PYTHON"] = "/venv/bin/python"
+
+    def tearDown(self) -> None:
+        if self.previous is not None:
+            os.environ["EVAL_CORPUS"] = self.previous
+
+    def test_a_suite_is_held_only_to_the_variables_it_names(self) -> None:
+        loaded = runner.load_config(self.config(self.dir), "plain")
+        entry = next(s for s in loaded["suites"] if s["name"] == "plain")
+        self.assertEqual(entry["prepare"][0], "/venv/bin/python")
+
+    def test_the_suite_that_needs_it_still_fails_closed(self) -> None:
+        with self.assertRaisesRegex(runner.protocol.ProtocolError, "EVAL_CORPUS"):
+            runner.load_config(self.config(self.dir), "needs_corpus")
+
+    def test_an_unknown_suite_still_lists_what_exists(self) -> None:
+        with self.assertRaisesRegex(runner.protocol.ProtocolError, "plain"):
+            runner.load_config(self.config(self.dir), "absent")

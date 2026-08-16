@@ -32,6 +32,14 @@ CONFIG="${PAIRED_CONFIG:-$PROJECT_DIR/eval/eval-suite-$EVAL_SUITE_VERSION.json}"
 BATCH="${PAIRED_BATCH:-prepare}"
 PYTHON="${EVAL_PYTHON:-python3}"
 
+# The same deployment-specific paths paired-suite-eval.sbatch exports. Suite
+# commands name them rather than spelling out one cluster's layout, and the
+# runner fails closed on an unresolved one.
+export OUTPUT_DIR="${OUTPUT_DIR:-$RUN_BASE/v2/model}"
+export EVAL_PYTHON="$PYTHON"
+export EVAL_CORPUS="${PAIRED_CORPUS:-$RUN_BASE/eval/haystack.txt}"
+export EVAL_TOKENIZER="${PAIRED_TOKENIZER:-$OUTPUT_DIR}"
+
 SUITES="$("$PYTHON" scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" --batch "$BATCH")"
 echo "eval-suite=$EVAL_SUITE_VERSION batch=$BATCH suites=$SUITES"
 echo "run-dir=$RUN_DIR config=$CONFIG"

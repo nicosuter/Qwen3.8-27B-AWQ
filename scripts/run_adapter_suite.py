@@ -74,11 +74,22 @@ def load_config(path: Path, suite: str) -> dict[str, Any]:
     # it. Configs name it ${EVAL_PYTHON}, which resolves here under the runner's
     # existing fail-closed rule -- an unset variable stops the run rather than
     # exec'ing a file literally named "${EVAL_PYTHON}".
-    config = protocol.expand_environment(json.loads(path.read_text(encoding="utf-8")))
+    #
+    # Expanded one suite at a time, not wholesale. RULER names ${EVAL_CORPUS}
+    # and ${EVAL_TOKENIZER}; expanding the whole file meant a deployment that had
+    # not set those could not prepare bfcl_v4 either, and seven suites failed on
+    # one suite's missing variable. A suite is only held to the variables it
+    # actually names.
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    suites = raw.get("suites")
+    if not isinstance(suites, list):
+        raise protocol.ProtocolError(f"{path}: suites must be a list")
+    chosen = [entry for entry in suites if entry.get("name") == suite]
+    config = protocol.expand_environment({**raw, "suites": chosen})
     missing = [key for key in REQUIRED_CONFIG_KEYS if key not in config]
     if missing:
         raise protocol.ProtocolError(f"{path}: missing {missing}")
-    names = [entry["name"] for entry in config["suites"]]
+    names = [entry.get("name") for entry in suites]
     if suite not in names:
         raise protocol.ProtocolError(f"{path}: no suite named {suite!r}; has {names}")
     entry = next(item for item in config["suites"] if item["name"] == suite)
