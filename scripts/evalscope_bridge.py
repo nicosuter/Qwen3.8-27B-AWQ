@@ -129,6 +129,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                      help="with --use-cache, discard the cached reviews and score again")
     run.add_argument("--execute", choices=("true", "false"),
                      help="override the suite's execute param; false defers scoring")
+    # A judged suite must name its judge. EvalScope's default is
+    # Qwen/Qwen3-235B-A22B at ModelScope's hosted API, which would both send our
+    # outputs to a third party and put an unpinned remote model in the gate.
+    run.add_argument("--judge-model", help="judge model id, e.g. openai/gpt-oss-20b")
+    run.add_argument("--judge-api-url", help="OpenAI-compatible endpoint for the judge")
+    run.add_argument("--judge-api-key", default="EMPTY")
     run.add_argument("--print-only", action="store_true")
 
     rows = sub.add_parser("rows", help="convert EvalScope reviews into result rows")
@@ -461,6 +467,24 @@ def command_run(args: argparse.Namespace) -> int:
             "temperature": args.temperature,
         },
     }
+    if entry.get("judge_required"):
+        if not (args.judge_model and args.judge_api_url):
+            raise BridgeError(
+                f"{args.suite} is graded by an LLM judge and none was named. "
+                "EvalScope would fall back to Qwen/Qwen3-235B-A22B at "
+                "https://api-inference.modelscope.cn/v1/, sending every reply to "
+                "a third party and putting an unpinned remote model inside the "
+                "gate. Pass --judge-model and --judge-api-url."
+            )
+        task["judge_strategy"] = "llm"
+        task["judge_model_args"] = {
+            "model_id": args.judge_model,
+            "api_url": args.judge_api_url,
+            "api_key": args.judge_api_key,
+        }
+    elif args.judge_model:
+        raise BridgeError(f"{args.suite} is not judged; --judge-model would do nothing")
+
     if args.limit is not None:
         task["limit"] = args.limit
     if args.use_cache:

@@ -526,6 +526,61 @@ class SubsetQualifiedIdTests(unittest.TestCase):
         rows = bridge.convert([review(0)], suite="s", dataset_pin=PIN)
         self.assertNotIn("/", rows[0]["id"])
 
+class JudgeGuardTests(unittest.TestCase):
+    """A judged suite must name its judge, or nothing runs.
+
+    EvalScope's llm_judge defaults to Qwen/Qwen3-235B-A22B at
+    https://api-inference.modelscope.cn/v1/. Left alone on a machine with a
+    ModelScope token, HLE would send every reply to a third party and grade our
+    gate with an unpinned remote model. It only failed loudly here because the
+    cluster had no token.
+    """
+
+    BASE = ["run", "--model", "m", "--api-url", "http://x/v1",
+            "--work-dir", "/tmp/es", "--variant", "baseline", "--print-only"]
+
+    def plan(self, extra_args):
+        import io, contextlib
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            bridge.command_run(bridge.parse_args(self.BASE + list(extra_args)))
+        return json.loads(out.getvalue())["task"]
+
+    def test_a_judged_suite_without_a_judge_is_refused(self) -> None:
+        with self.assertRaises(bridge.BridgeError) as caught:
+            self.plan(["--suite", "hle"])
+        message = str(caught.exception)
+        self.assertIn("modelscope", message.lower())
+
+    def test_naming_a_judge_configures_it(self) -> None:
+        task = self.plan(["--suite", "hle", "--judge-model", "openai/gpt-oss-20b",
+                          "--judge-api-url", "http://judge/v1"])
+        self.assertEqual(task["judge_strategy"], "llm")
+        self.assertEqual(task["judge_model_args"]["model_id"], "openai/gpt-oss-20b")
+        self.assertEqual(task["judge_model_args"]["api_url"], "http://judge/v1")
+
+    def test_half_a_judge_is_still_refused(self) -> None:
+        for half in (["--judge-model", "m"], ["--judge-api-url", "http://j/v1"]):
+            with self.subTest(half=half[0]):
+                with self.assertRaises(bridge.BridgeError):
+                    self.plan(["--suite", "hle", *half])
+
+    def test_an_unjudged_suite_never_gets_judge_args(self) -> None:
+        task = self.plan(["--suite", "mmlu_pro"])
+        self.assertNotIn("judge_model_args", task)
+        self.assertNotIn("judge_strategy", task)
+
+    def test_naming_a_judge_for_an_unjudged_suite_is_refused(self) -> None:
+        # Silently ignoring it would suggest a judge was in use when it was not.
+        with self.assertRaises(bridge.BridgeError):
+            self.plan(["--suite", "mmlu_pro", "--judge-model", "m",
+                       "--judge-api-url", "http://j/v1"])
+
+    def test_only_hle_is_marked_judged(self) -> None:
+        spec = json.loads((ROOT / "eval" / "evalscope-suites.json").read_text())
+        judged = {s["suite"] for s in spec["suites"] if s.get("judge_required")}
+        self.assertEqual(judged, {"hle"})
+
 
 if __name__ == "__main__":
     unittest.main()

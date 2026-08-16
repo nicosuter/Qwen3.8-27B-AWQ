@@ -10,7 +10,8 @@
       "metric": "acc",
       "ported": true,
       "note": "EvalScope's dataset id is TIGER-Lab/MMLU-Pro already; same repo, same pin as ours.",
-      "dataset_args": {}
+      "dataset_args": {},
+      "judge_required": false
     },
     {
       "suite": "hle",
@@ -19,8 +20,9 @@
       "revision": "5a81a4c7271a2a2a312b9a690f0c2fde837e4c29",
       "metric": "acc",
       "ported": true,
-      "note": "Same repo and pin as ours. EvalScope grades HLE with a judge and we grade string-match-then-judge, so compare the delta and never the absolute.",
-      "dataset_args": {}
+      "note": "Same repo and pin as ours. EvalScope grades HLE with a judge and we grade string-match-then-judge, so compare the delta and never the absolute. EvalScope grades HLE with an LLM judge whose default is Qwen/Qwen3-235B-A22B at https://api-inference.modelscope.cn/v1/, so a run with a ModelScope token configured would send our outputs to a third party and put an unpinned remote judge in the gate. The bridge refuses unless a judge is named explicitly.",
+      "dataset_args": {},
+      "judge_required": true
     },
     {
       "suite": "gpqa_diamond",
@@ -35,7 +37,8 @@
           "gpqa_diamond"
         ]
       },
-      "args_note": "reformat_subset=False, so the subset is passed as the HF config name. EvalScope declares 'default', which is not a config of Idavidrein/gpqa, so the load fails without this."
+      "args_note": "reformat_subset=False, so the subset is passed as the HF config name. EvalScope declares 'default', which is not a config of Idavidrein/gpqa, so the load fails without this.",
+      "judge_required": false
     },
     {
       "suite": "multimodal_chartqa",
@@ -44,7 +47,8 @@
       "revision": "9e63b7df1592a1c2158e735cc1725454aef0d6d9",
       "metric": "relaxed_acc",
       "ported": true,
-      "dataset_args": {}
+      "dataset_args": {},
+      "judge_required": false
     },
     {
       "suite": "multimodal_docvqa",
@@ -54,7 +58,8 @@
       "metric": "anls",
       "ported": true,
       "note": "EvalScope evaluates the validation split; our suite scores 200 items of it.",
-      "dataset_args": {}
+      "dataset_args": {},
+      "judge_required": false
     },
     {
       "suite": "mmmu_pro",
@@ -69,7 +74,8 @@
           "dataset_format": "standard (10 options)"
         }
       },
-      "args_note": "Defaults to the 4-option set and warns; our suite scores the 10-option standard split."
+      "args_note": "Defaults to the 4-option set and warns; our suite scores the 10-option standard split.",
+      "judge_required": false
     },
     {
       "suite": "livecodebench_v6",
@@ -85,7 +91,8 @@
         }
       },
       "plugin": "scripts/evalscope_plugins/lcb_deferred.py",
-      "args_note": "execute=False for the generating pass; the scoring pass overrides it to True. The bridge marks deferred reviews and the comparator refuses any file containing one."
+      "args_note": "execute=False for the generating pass; the scoring pass overrides it to True. The bridge marks deferred reviews and the comparator refuses any file containing one.",
+      "judge_required": false
     },
     {
       "suite": "bfcl_v4",
@@ -115,7 +122,8 @@
       "requires": [
         "bfcl-eval==2025.10.27.1",
         "soundfile"
-      ]
+      ],
+      "judge_required": false
     }
   ]
 }
