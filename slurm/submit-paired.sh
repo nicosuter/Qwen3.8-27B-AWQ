@@ -79,7 +79,11 @@ echo "commit   $FULL_SHA (dirty=$DIRTY)"
 echo "checkout $CODE_DIR"
 echo "venv     $VENV"
 
-EXPORT_LIST="ALL,EVAL_VENV=$VENV,EVAL_CODE_COMMIT=$FULL_SHA,EVAL_CODE_DIRTY=$DIRTY"
+# A checkout carries no .env -- that file is a local deployment detail and is
+# gitignored. load_env.sh prefers an exported RUN_BASE precisely so a checkout
+# does not need one.
+EXPORT_LIST="ALL,RUN_BASE=$RUN_BASE,EVAL_VENV=$VENV"
+EXPORT_LIST="$EXPORT_LIST,EVAL_CODE_COMMIT=$FULL_SHA,EVAL_CODE_DIRTY=$DIRTY"
 EXPORT_LIST="$EXPORT_LIST,EVAL_CODE_REMOTE=$REMOTE,PAIRED_REQUIRE_PINNED_CODE=1"
 [[ -n "$EXPORTS" ]] && EXPORT_LIST="$EXPORT_LIST,$EXPORTS"
 
