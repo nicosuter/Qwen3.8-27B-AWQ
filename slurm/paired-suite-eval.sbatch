@@ -67,21 +67,21 @@ if [[ -n "$BATCH" ]]; then
         echo "set PAIRED_BATCH or PAIRED_SUITES, not both" >&2
         exit 1
     fi
-    SUITES="$(python3 scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" --batch "$BATCH")"
+    SUITES="$("${EVAL_PYTHON:-python3}" scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" --batch "$BATCH")"
     # A batch carries more than a suite list. The shakedown is fifty items of one
     # arm, and a plan that recorded that without the runner acting on it would
     # have quietly scored all 1730.
-    BATCH_LIMIT="$(python3 scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" --batch-field "$BATCH" limit)"
-    BATCH_VARIANTS="$(python3 scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" --batch-field "$BATCH" variants)"
+    BATCH_LIMIT="$("${EVAL_PYTHON:-python3}" scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" --batch-field "$BATCH" limit)"
+    BATCH_VARIANTS="$("${EVAL_PYTHON:-python3}" scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" --batch-field "$BATCH" variants)"
     [[ -n "$BATCH_LIMIT" && -z "${PAIRED_LIMIT:-}" ]] && PAIRED_LIMIT="$BATCH_LIMIT"
     [[ -n "$BATCH_VARIANTS" && -z "${PAIRED_VARIANTS:-}" ]] && PAIRED_VARIANTS="$BATCH_VARIANTS"
     echo "batch=$BATCH limit=${PAIRED_LIMIT:-none} variants=${PAIRED_VARIANTS:-both}"
 fi
 if [[ -z "$SUITES" ]]; then
-    SUITES="$(python3 scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" \
+    SUITES="$("${EVAL_PYTHON:-python3}" scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" \
         | awk '/^  /{print $1}' | tr '\n' ' ')"
 else
-    SUITES="$(python3 scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" --select $SUITES)"
+    SUITES="$("${EVAL_PYTHON:-python3}" scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" --select $SUITES)"
 fi
 echo "eval-suite=$EVAL_SUITE_VERSION suites=$SUITES"
 # Four, not eight: the node is shared and the rest is somebody else's.

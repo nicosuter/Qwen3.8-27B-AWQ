@@ -225,5 +225,27 @@ class BatchFieldTests(unittest.TestCase):
     def test_an_absent_field_prints_nothing_rather_than_failing(self) -> None:
         self.assertEqual(eval_suite.main(["--batch-field", "short-context", "limit"]), 0)
 
+
+class InterpreterCompatibilityTests(unittest.TestCase):
+    """Scripts a batch job shells out to run under whatever python3 resolves to.
+
+    On the clusters that is 3.9, where a `Path | None` annotation raises at
+    import time. Two whole job chains died on it, four seconds each, because the
+    sbatch called bare `python3` while the rest of the job used the venv.
+    """
+
+    SHELLED_OUT = ("scripts/eval_suite.py",)
+
+    def test_shelled_out_modules_defer_their_annotations(self) -> None:
+        for name in self.SHELLED_OUT:
+            with self.subTest(module=name):
+                source = (ROOT / name).read_text(encoding="utf-8")
+                self.assertIn("from __future__ import annotations", source)
+
+    def test_the_sbatch_prefers_the_configured_interpreter(self) -> None:
+        text = (ROOT / "slurm" / "paired-suite-eval.sbatch").read_text(encoding="utf-8")
+        self.assertNotIn("$(python3 scripts/eval_suite.py", text)
+        self.assertIn('"${EVAL_PYTHON:-python3}" scripts/eval_suite.py', text)
+
 if __name__ == "__main__":
     unittest.main()

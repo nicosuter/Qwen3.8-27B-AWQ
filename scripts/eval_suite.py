@@ -20,6 +20,12 @@ protocol *measures* is a pre-registration decision and belongs here. Conflating
 them is how a job that scored five of seven suites could still report a macro.
 """
 
+# The suite definition is read from shell, by whatever `python3` resolves to.
+# On the clusters that is 3.9, where `Path | None` in a signature raises at
+# import time. Deferring annotations costs nothing and keeps this module
+# loadable by any interpreter that can parse the file.
+from __future__ import annotations
+
 import json
 from pathlib import Path
 from typing import Any
