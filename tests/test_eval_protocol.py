@@ -20,11 +20,11 @@ def valid_config() -> dict:
     suites = []
     replicas = {
         "bfcl_v4": 1,
-        "terminal_bench_2_1": 3,
-        "livecodebench_v6": 4,
-        "gpqa_diamond": 4,
-        "matharena_2026_06": 4,
+        "livecodebench_v6": 1,
+        "gpqa_diamond": 1,
+        "matharena_2026_06": 1,
         "multimodal": 1,
+        "mmmu_pro": 1,
         "ruler": 1,
     }
     for name, count in replicas.items():
@@ -107,7 +107,7 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = self.write_config(Path(temporary), valid_config())
             loaded = protocol.load_config(path)
-            self.assertEqual(len(loaded["suites"]), 7)
+            self.assertEqual(len(loaded["suites"]), len(protocol.REQUIRED_SUITES))
             self.assertIn("ruler", {suite["name"] for suite in loaded["suites"]})
 
     def test_rejects_speculation_in_primary_server(self) -> None:

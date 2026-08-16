@@ -22,16 +22,33 @@ executable tasks, the real Hermes scaffold, and recent reasoning problems.
 | Domain | Evaluation | Run | Main metrics | Why it is here |
 |---|---|---:|---|---|
 | Tool use | BFCL v4 static single- and multi-turn categories | full, 1 seeded sample | AST accuracy by category; irrelevance accuracy; malformed-call rate | Large, executable check of native function selection, arguments, parallel calls, missing tools/parameters, and long multi-turn context. |
-| Agentic / coding | Terminal-Bench 2.1 through Harbor's `hermes` adapter | 30-task locked pilot x 3 seeds, then full x 3 | task reward; pass@1; tool errors; turns; tokens; timeout rate | This is the actual Hermes Agent loop with terminal feedback, not a tool-call proxy. |
-| Coding | LiveCodeBench v6 code generation | full lite set, 4 seeds | item-level pass@1; compile/runtime/timeout failure counts | Executable competitive-programming signal and a published Qwen3.8 upstream anchor. |
-| Science | GPQA Diamond | full, 4 seeds | exact-choice accuracy by biology/chemistry/physics | Hard expert-written science questions with objective scoring. |
-| Current reasoning | MathArena ArXivMath June 2026 plus BrokenArXiv June 2026 | full snapshots, 4 seeds | answer/proof score; correct refusal on false premises | Recent research-level material. BrokenArXiv also catches confident reasoning through a false premise. |
+| Coding | LiveCodeBench v6 code generation | full lite set, 1 seeded sample | item-level pass@1; compile/runtime/timeout failure counts | Executable competitive-programming signal and a published Qwen3.8 upstream anchor. |
+| Science | GPQA Diamond | full, 1 seeded sample | exact-choice accuracy by biology/chemistry/physics | Hard expert-written science questions with objective scoring. |
+| Current reasoning | MathArena ArXivMath June 2026 plus BrokenArXiv June 2026 | full snapshots, 1 seeded sample | answer/proof score; correct refusal on false premises | Recent research-level material. BrokenArXiv also catches confident reasoning through a false premise. |
 | Multimodal | DocVQA, ChartQA, TextVQA, and a frozen UI-screenshot pack | public validation splits plus private screenshots, 1 deterministic sample | accuracy/ANLS; OCR, grounding, empty-answer failures | Source-precision vision outputs still traverse the quantized language path. |
+| Multimodal reasoning | MMMU-Pro, standard 10-option config | full, 1 seeded sample | exact-choice accuracy by subject | The perception suite above sits near ceiling and 86% of its items score identically on both checkpoints, so it measures the vision tower, which this recipe leaves in source precision. MMMU-Pro reasons about the image afterwards, and that reasoning runs entirely through the quantized language path. It is the only suite that stresses that path through an image. |
 | Long context | RULER at 4K, 32K, and 128K | full synthetic set per length, 1 seeded sample | per-length string-match accuracy; effective context length; `context_failure` rate | Every other suite here runs at a few thousand tokens. In 48 of 64 layers the DeltaNet recurrent state is the only long-range carrier, and quantization error in that path accumulates through the state rather than being renormalized away per token. Nothing else in this protocol would see it. |
 
-The locked Terminal-Bench pilot must be sampled once, before either model is
-run, stratified by task category and difficulty. It is only a cheap failure
-detector. A publishable or deployment decision uses the full set.
+The agentic family is out of this run. Terminal-Bench 2.0 is 89 tasks, which at
+a 0.35 baseline makes its recovery ratio the noisiest quantity in the protocol
+and sets the width of the macro almost on its own; Terminal-Bench Pro would fix
+that but has no published Qwen number to anchor against, and pooling the two
+changes what the suite label means. None of those are settled, so the suite is
+parked rather than run badly. The adapter and the pilot machinery stay; the
+runner treats a protocol without Terminal-Bench as a protocol without a pilot.
+
+The consequence is worth stating in the pre-registration rather than discovered
+later: **this run makes no agentic claim at all**. Tool use is still covered by
+BFCL and code generation by LiveCodeBench, but neither exercises a multi-turn
+agent loop with environment feedback, so nothing here would catch a regression
+that only appears over many turns.
+
+SWE-bench Pro was evaluated as an eighth suite and dropped. Harbor's Singularity
+backend hardcodes `--fakeroot`, our account has no `/etc/subuid` mapping, and the
+bundled `faked` needs a newer glibc than the task images carry, so the containers
+cannot start on this cluster at all. The adapter, the pre-registered subset and
+the image baker are kept for the day that changes; nothing in this protocol
+depends on them.
 
 RULER is here as a paired FP8-versus-AWQ measurement, not as an upstream
 reproduction: Qwen publishes RULER for earlier generations but reports no
@@ -113,8 +130,8 @@ forty or more.
 - Do not use SWE-bench Verified as the main coding result. It is expensive,
   scaffold-sensitive, and now has documented contamination and task-quality
   problems. Terminal-Bench under Hermes plus LiveCodeBench gives cleaner
-  information for this deployment. SWE-bench Pro can be an optional release
-  run if its licensed task snapshot and verifier revisions are available.
+  information for this deployment. SWE-bench Pro cannot run on this cluster;
+  see the note under the primary suite.
 - Smoke prompts from `scripts/validate_generate.py` are gates for a broken
   artifact, not capability evidence.
 
@@ -295,18 +312,47 @@ The default automated release gate is intentionally practical for a W4A16 27B mo
 4. at least 95% of FP8-passed private must-pass tasks still pass under AWQ,
    where passing means reaching the full verifier reward, counted once per task
    rather than once per replicate;
-5. every suite with a declared baseline floor clears it, which is the only check
-   that would notice a harness broken identically for both checkpoints;
+5. baseline floors are reported as alerts rather than gates. They are the only
+   check that would notice a harness broken identically for both checkpoints,
+   but a broken harness is not a bad checkpoint, and the two want different
+   responses: a floor that fires sends someone to look at the run, it does not
+   fail the release. The comparator prints `ALERT baseline floor` and records
+   `baseline_floor_alerted`;
 6. no regression cluster has a credible common cause (for example long context,
    parallel tool calls, vision/OCR, chemistry, or dynamic programming) merely
    hidden by the macro average. This last review remains manual; the script
    reports `automated-quality-gate` rather than claiming it passed.
 
 Gates 1 and 2 replace an earlier rule that failed the run whenever any suite's
-point estimate fell 3 points. Seven suites is seven chances, and the smaller
-ones carry intervals twice the width of that margin: simulated against the
-planned sample sizes, that rule rejected 60% of runs with no degradation at all,
-while the macro rule rejects 2%. Suites that fall past 3 points without clearing
+point estimate fell 3 points. Eight suites is eight chances, and the smaller ones
+carry intervals twice the width of that margin. `scripts/simulate_gates.py`
+re-derives this from the per-suite intervals the paired runs actually produced,
+rescaled to the full@1 configuration, 200,000 draws under the null:
+
+| rule | six suites | with the agentic family added back |
+|---|---:|---:|
+| any suite falls 3 points | 33.3% | 52.0% |
+| macro falls 3 points (gate 1) | 0.02% | 0.02% |
+| a suite falls 5 points with an interval clear of zero (gate 2) | 4.2% | 7.4% |
+| near-lossless denied at 98% | 3.6% | 16.7% |
+
+An earlier, uncommitted simulation put the any-suite rule at 60% and the macro
+rule at 2%. Neither reproduces, and the macro gate is considerably safer than it
+was advertised as being.
+
+The near-lossless claim is set at **98%**, not 99, and is reported with its own
+interval. That claim is separable from `passed`: it decides what the model card
+may say, not whether the checkpoint ships. The same simulation shows why the bar
+moved. Recovery is a ratio, so its noise is a suite's standard error divided by
+its baseline, and an equally weighted geometric mean is therefore set by
+whichever suite is least precise rather than by the average of them. Over the
+suites we run that interval is about 2.1 points wide under the null, so a 99%
+bar was asking a 1-point question of a measurement that cannot resolve one: it
+would deny the claim to a fifth of checkpoints with no degradation at all,
+against 3.6% at 98%. That width is what parking the agentic family bought.
+Readmitting it takes the interval to 3.8 points and the false denial to 17%,
+which is the number to weigh against whatever the agentic signal is worth. Read the interval rather than the verdict; the comparator prints a note
+whenever the interval is wider than the margin it is being compared against. Suites that fall past 3 points without clearing
 the 5-point evidential bar are printed as review flags and belong in the manual
 cluster review, not in an automatic verdict.
 

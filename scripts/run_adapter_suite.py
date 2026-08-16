@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Drive one benchmark adapter against an already-served endpoint.
 
-`run_eval_protocol.py` validates all seven suites before it will do anything, so
+`run_eval_protocol.py` validates every suite before it will do anything, so
 it cannot execute while most adapters are still missing. This driver runs a
 single suite through the same environment contract, reusing the runner's own
 prompt and result validators, so a dry run exercises the real contract rather

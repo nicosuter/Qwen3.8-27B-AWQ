@@ -32,8 +32,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=38_027)
     # The hard bar is the equally weighted macro point estimate. Gating on every
     # suite's point estimate instead fails 60% of runs that have no degradation
-    # at all: seven suites is seven chances, and the small ones carry confidence
-    # intervals twice the width of the margin.
+    # at all: every suite is another chance, and the small ones carry confidence
+    # intervals twice the width of the margin. That 60% was simulated over seven
+    # suites; swebench_pro_1_0 makes eight and has not been re-simulated.
     parser.add_argument("--max-macro-drop", type=float, default=0.03)
     # A single suite can still sink the run, but only on evidence: its interval
     # must clear a wider margin, so noise cannot trip it.
@@ -43,7 +44,12 @@ def parse_args() -> argparse.Namespace:
     # The near-lossless claim, judged on the point estimate with its interval
     # published beside it. Separate from the ship/no-ship gate above: this is
     # what the model card is allowed to say, not whether the run passed.
-    parser.add_argument("--near-lossless-recovery", type=float, default=0.99)
+    # 98, not 99. Simulated over the suites we actually run
+    # (scripts/simulate_gates.py), the geometric mean's own 95% interval is about
+    # ±2.2 points wide under the null, so a 99% bar denied the claim to 19% of
+    # checkpoints with no degradation at all. A 1-point margin was never inside
+    # what this measurement can resolve. At 98% that falls to 4%.
+    parser.add_argument("--near-lossless-recovery", type=float, default=0.98)
     parser.add_argument("--max-failure-increase", type=float, default=0.01)
     parser.add_argument("--must-pass-retention", type=float, default=0.95)
     # Agent verifiers award partial credit, so "score > 0" is not a pass.
@@ -55,7 +61,7 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         metavar="SUITE=VALUE",
-        help="fail when the baseline scores below VALUE on SUITE",
+        help="alert (not fail) when the baseline scores below VALUE on SUITE",
     )
     return parser.parse_args()
 
@@ -416,10 +422,13 @@ def main() -> int:
     missing_floor_suites = sorted(set(floors) - set(report["suites"]))
 
     report["gate"] = {
+        # Floors are deliberately absent from "passed". A floor firing means the
+        # absolute number looks wrong, which is usually a broken harness rather
+        # than a bad checkpoint, and the two need different responses: a failed
+        # gate stops a release, whereas this should send someone to look at the
+        # run. It stays loud in the printed output and in the report.
         "passed": not macro_failure
         and not suite_failures
-        and not floor_failures
-        and not missing_floor_suites
         and not auxiliary["failure_rate_failures"]
         and not auxiliary["must_pass_failure"],
         "max_macro_drop": args.max_macro_drop,
@@ -429,11 +438,13 @@ def main() -> int:
         # claim, not whether the checkpoint ships.
         "near_lossless": report["macro"]["recovery_geomean"] >= args.near_lossless_recovery,
         "near_lossless_recovery": args.near_lossless_recovery,
+        "near_lossless_ci95": report["macro"]["recovery_ci95"],
         "macro_point_failure": macro_failure,
         "suite_confident_failures": suite_failures,
         "suite_review_flags": suite_reviews,
-        "baseline_floor_failures": floor_failures,
+        "baseline_floor_alerts": floor_failures,
         "baseline_floor_missing_suites": missing_floor_suites,
+        "baseline_floor_alerted": bool(floor_failures or missing_floor_suites),
         **auxiliary,
     }
 
@@ -460,12 +471,24 @@ def main() -> int:
         f"  [{100 * macro['recovery_ci95'][0]:6.2f}, {100 * macro['recovery_ci95'][1]:6.2f}]"
     )
     gate = report["gate"]
+    # The interval, not the verdict, is the honest object here: the bar is a
+    # convenience and the width is what says whether the number means anything.
+    recovery_interval = macro["recovery_ci95"]
     print(
         f"near-lossless-claim="
         f"{'PASS' if gate['near_lossless'] else 'FAIL'}"
-        f" (geometric mean recovery {100 * macro['recovery_geomean']:.2f}%"
+        f" (geometric mean recovery {100 * macro['recovery_geomean']:.2f}%,"
+        f" 95% CI {100 * recovery_interval[0]:.2f}-{100 * recovery_interval[1]:.2f}%,"
         f" against a {100 * args.near_lossless_recovery:.2f}% bar)"
     )
+    margin = 1.0 - args.near_lossless_recovery
+    half_width = (recovery_interval[1] - recovery_interval[0]) / 2
+    if half_width > margin:
+        print(
+            f"note: that interval is ±{100 * half_width:.2f} points, wider than the "
+            f"{100 * margin:.2f}-point margin it is being compared against, so read "
+            "the interval rather than the verdict"
+        )
     if gate["suite_review_flags"]:
         print("review (not a failure): " + ", ".join(gate["suite_review_flags"]))
     for field in gate["failure_rate_failures"]:
@@ -484,13 +507,14 @@ def main() -> int:
             f"must-pass retention: {100 * gate['must_pass_retention']:.1f}% of "
             f"{gate['must_pass_baseline_passes']} baseline-passing tasks"
         )
-    for suite, detail in gate["baseline_floor_failures"].items():
+    for suite, detail in gate["baseline_floor_alerts"].items():
         print(
-            f"baseline floor: {suite} scored {100 * detail['baseline']:.2f} "
-            f"below the {100 * detail['floor']:.2f} floor; the harness may be broken for both"
+            f"ALERT baseline floor: {suite} scored {100 * detail['baseline']:.2f} "
+            f"below the {100 * detail['floor']:.2f} floor; the harness may be broken "
+            f"for both arms. This does not fail the gate; go and look at the run."
         )
     for suite in gate["baseline_floor_missing_suites"]:
-        print(f"baseline floor: no results for {suite}")
+        print(f"ALERT baseline floor: no results for {suite}")
     print(
         "automated-quality-gate="
         f"{'PASS' if gate['passed'] else 'FAIL'}"

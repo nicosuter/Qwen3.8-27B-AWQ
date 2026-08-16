@@ -47,11 +47,11 @@ except ModuleNotFoundError:
 
 REQUIRED_SUITES = {
     "bfcl_v4",
-    "terminal_bench_2_1",
     "livecodebench_v6",
     "gpqa_diamond",
     "matharena_2026_06",
     "multimodal",
+    "mmmu_pro",
     "ruler",
 }
 RESULT_BOOL_FIELDS = (
@@ -139,15 +139,10 @@ def load_config(path: Path) -> dict[str, Any]:
         raise ProtocolError(
             f"suite labels must be exactly {sorted(REQUIRED_SUITES)}; got {sorted(names)}"
         )
-    expected_replicates = {
-        "bfcl_v4": 1,
-        "terminal_bench_2_1": 3,
-        "livecodebench_v6": 4,
-        "gpqa_diamond": 4,
-        "matharena_2026_06": 4,
-        "multimodal": 1,
-        "ruler": 1,
-    }
+    # full@1: every suite runs its whole item set once. At a fixed budget
+    # SE^2 is proportional to R * var_between / C + var_within / C, so replicates
+    # only ever cost precision per unit spend; items reduce both terms.
+    expected_replicates = dict.fromkeys(REQUIRED_SUITES, 1)
     for suite in suites:
         name = suite["name"]
         if suite.get("replicates") != expected_replicates[name]:
@@ -413,8 +408,11 @@ def prepare_suites(config: dict[str, Any], run_dir: Path, dry_run: bool) -> None
         rng.shuffle(ids)
         write_json(Path(env["EVAL_TASK_ORDER_JSON"]), ids)
     terminal = next(
-        suite for suite in config["suites"] if suite["name"] == "terminal_bench_2_1"
+        (suite for suite in config["suites"] if suite["name"] == "terminal_bench_2_1"),
+        None,
     )
+    if terminal is None:
+        return
     pilot_name = "terminal_bench_2_1_pilot"
     env = adapter_environment(config, run_dir, pilot_name)
     env["EVAL_ACTION"] = "prepare-pilot"
@@ -794,9 +792,14 @@ def run_primary(config: dict[str, Any], image: Path, run_dir: Path) -> None:
 
 
 def run_terminal_pilot(config: dict[str, Any], image: Path, run_dir: Path) -> int:
+    """Zero when there is nothing to pilot, so a protocol without Terminal-Bench
+    is a protocol without a pilot rather than a crash."""
     terminal = next(
-        suite for suite in config["suites"] if suite["name"] == "terminal_bench_2_1"
+        (suite for suite in config["suites"] if suite["name"] == "terminal_bench_2_1"),
+        None,
     )
+    if terminal is None:
+        return 0
     name = "terminal_bench_2_1_pilot"
     expected = set(
         validate_prompts(run_dir / "materialized" / f"{name}.jsonl", name)

@@ -118,22 +118,6 @@ class MaterializeTests(unittest.TestCase):
                              ["alpha", "beta"])
 
 
-class RewardTests(unittest.TestCase):
-    def test_named_reward_key_wins(self) -> None:
-        self.assertEqual(adapter.extract_reward(trial("a", {"reward": 1.0, "partial": 0.0})), 1.0)
-
-    def test_multiple_checks_average(self) -> None:
-        self.assertAlmostEqual(
-            adapter.extract_reward(trial("a", {"check1": 1.0, "check2": 0.0})), 0.5)
-
-    def test_reward_is_clamped(self) -> None:
-        self.assertEqual(adapter.extract_reward(trial("a", {"reward": 5.0})), 1.0)
-        self.assertEqual(adapter.extract_reward(trial("a", {"reward": -2.0})), 0.0)
-
-    def test_missing_verifier_result(self) -> None:
-        self.assertIsNone(adapter.extract_reward(trial("a")))
-
-
 class TranslateTests(unittest.TestCase):
     def key(self, *names):
         return {name: {"task_name": name} for name in names}

@@ -158,24 +158,35 @@ class BaselineFloorTests(unittest.TestCase):
     def test_harness_broken_for_both_checkpoints_is_caught(self) -> None:
         # Everything else is paired, so both models scoring 40 looks perfect.
         base, cand = noisy_pair([("gpqa_diamond", 198, 4)], seed=15)
-        broken_base = [dict(r, score=float(r["score"] and random.random() < 0.45)) for r in base]
-        broken_cand = [dict(r, score=float(r["score"] and random.random() < 0.45)) for r in cand]
+        # Seeded: unseeded corruption made both arms drift independently, and the
+        # macro delta between two independently broken arms exceeded 3 points
+        # often enough to fail this test about one run in five.
+        broken = random.Random(15)
+        broken_base = [dict(r, score=float(r["score"] and broken.random() < 0.45)) for r in base]
+        broken_cand = [dict(r, score=float(r["score"] and broken.random() < 0.45)) for r in cand]
         gate, stdout = run_gate(broken_base, broken_cand, "--baseline-floor", "gpqa_diamond=0.80")
-        self.assertIn("gpqa_diamond", gate["baseline_floor_failures"])
-        self.assertFalse(gate["passed"])
-        self.assertIn("may be broken for both", stdout)
+        self.assertIn("gpqa_diamond", gate["baseline_floor_alerts"])
+        self.assertTrue(gate["baseline_floor_alerted"])
+        # An alert, not a gate: a suspect absolute number means go and look at
+        # the run, and a broken harness is not a reason to fail a checkpoint.
+        self.assertTrue(gate["passed"])
+        self.assertIn("ALERT baseline floor", stdout)
+        self.assertIn("may be broken", stdout)
 
     def test_healthy_baseline_clears_the_floor(self) -> None:
         base, cand = noisy_pair([("gpqa_diamond", 198, 4)], seed=16)
         gate, _ = run_gate(base, cand, "--baseline-floor", "gpqa_diamond=0.50")
-        self.assertEqual(gate["baseline_floor_failures"], {})
+        self.assertEqual(gate["baseline_floor_alerts"], {})
+        self.assertFalse(gate["baseline_floor_alerted"])
         self.assertTrue(gate["passed"])
 
-    def test_floor_for_a_missing_suite_fails_loudly(self) -> None:
+    def test_floor_for_a_missing_suite_alerts_loudly(self) -> None:
         base, cand = noisy_pair([("gpqa_diamond", 20, 1)], seed=17)
         gate, stdout = run_gate(base, cand, "--baseline-floor", "livecodebench_v6=0.80")
         self.assertEqual(gate["baseline_floor_missing_suites"], ["livecodebench_v6"])
-        self.assertFalse(gate["passed"])
+        self.assertTrue(gate["baseline_floor_alerted"])
+        self.assertTrue(gate["passed"])
+        self.assertIn("ALERT baseline floor", stdout)
         self.assertIn("no results for livecodebench_v6", stdout)
 
     def test_floor_syntax_is_validated(self) -> None:
@@ -218,3 +229,31 @@ class DeferredRowTests(unittest.TestCase):
         candidate = [row("livecodebench_v6", f"i{i}", 0, 1.0, deferred=False) for i in range(4)]
         proc = self.compare(baseline, candidate)
         self.assertEqual(proc.returncode, 0, proc.stderr)
+
+
+class NearLosslessTests(unittest.TestCase):
+    """The bar is a convenience; the interval is the claim."""
+
+    def test_the_interval_is_printed_with_the_verdict(self) -> None:
+        base, cand = noisy_pair([("gpqa_diamond", 198, 4)], seed=21)
+        gate, stdout = run_gate(base, cand)
+        self.assertIn("near-lossless-claim=", stdout)
+        self.assertIn("95% CI", stdout)
+        self.assertEqual(len(gate["near_lossless_ci95"]), 2)
+
+    def test_the_default_bar_is_98_percent(self) -> None:
+        base, cand = noisy_pair([("gpqa_diamond", 198, 4)], seed=22)
+        gate, _ = run_gate(base, cand)
+        self.assertAlmostEqual(gate["near_lossless_recovery"], 0.98)
+
+    def test_an_interval_wider_than_the_margin_says_so(self) -> None:
+        """One small suite gives an interval far wider than two points."""
+        base, cand = noisy_pair([("matharena_2026_06", 20, 1)], seed=23)
+        _, stdout = run_gate(base, cand)
+        self.assertIn("read the interval rather than the verdict", stdout)
+
+    def test_the_claim_stays_out_of_the_pass_fail_gate(self) -> None:
+        base, cand = noisy_pair([("gpqa_diamond", 198, 4)], seed=24)
+        gate, _ = run_gate(base, cand, "--near-lossless-recovery", "1.5")
+        self.assertFalse(gate["near_lossless"])
+        self.assertTrue(gate["passed"])

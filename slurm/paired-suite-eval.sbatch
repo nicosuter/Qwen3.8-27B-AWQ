@@ -643,13 +643,25 @@ echo "=== paired comparison ==="
 # job to finish silently replaced the verdict, and a chained job that rescores
 # two suites produces a genuinely different number. comparison.json stays as the
 # name everything else reads, now pointing at the newest.
+#
+# Floors sit at 95% of each suite's measured FP8 baseline, from v2/paired-2 and
+# v2/paired-fp8gdn. They alert rather than gate: a baseline that far below where
+# it has always landed means the harness broke for both arms, which is a reason
+# to go and look at the run and not a reason to fail a checkpoint. The three
+# suites with no paired run yet (livecodebench_v6, terminal_bench_2_1,
+# swebench_pro_1_0) get floors once they have a baseline worth taking 95% of;
+# declaring one now would be inventing the number it is supposed to check.
 mkdir -p "$RUN_DIR/comparisons"
 COMPARISON="$RUN_DIR/comparisons/$RUN_STAMP-job${SLURM_JOB_ID:-manual}.json"
 "$PYTHON" scripts/compare_eval_results.py \
     --baseline "$RUN_DIR/baseline-all.jsonl" \
     --candidate "$RUN_DIR/candidate-all.jsonl" \
     --output "$COMPARISON" \
-    --baseline-floor gpqa_diamond="${GPQA_FLOOR:-0.75}" \
+    --baseline-floor bfcl_v4="${BFCL_FLOOR:-0.830}" \
+    --baseline-floor gpqa_diamond="${GPQA_FLOOR:-0.844}" \
+    --baseline-floor matharena_2026_06="${MATHARENA_FLOOR:-0.765}" \
+    --baseline-floor multimodal="${MULTIMODAL_FLOOR:-0.824}" \
+    --baseline-floor ruler="${RULER_FLOOR:-0.760}" \
     || true   # a failing gate is a result, not a job error
 if [[ -s "$COMPARISON" ]]; then
     ln -sfn "comparisons/$(basename "$COMPARISON")" "$RUN_DIR/comparison.json"

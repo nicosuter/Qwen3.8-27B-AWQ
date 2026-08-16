@@ -175,6 +175,25 @@ It sends one request with the model-card policy and fails if the server rejects
 a field, returns no reasoning while thinking is enabled, or produces no parsable
 answer line.
 
+## MMMU-Pro
+
+`scripts/adapters/mmmu_pro.py` covers the multimodal reasoning the DocVQA and
+ChartQA suite does not. Those are perception, scored near ceiling, and 86.5% of
+their items came back identical on both checkpoints in the last paired run: they
+measure the vision tower, which this recipe leaves in source precision. MMMU-Pro
+asks college-level questions about an image across thirty subjects with ten
+options rather than four, so the reasoning after the perception runs through the
+quantized decoder.
+
+It uses the standard config rather than the vision config, where the question
+itself is rendered into the image. That variant measures OCR of the prompt,
+which the unquantized tower would answer, and is a different question from the
+one this protocol asks.
+
+```bash
+python3 scripts/adapters/mmmu_pro.py pin --resolve
+```
+
 ## Reference adapter: RULER
 
 `scripts/adapters/ruler.py` synthesizes every haystack locally. It is not an
@@ -247,12 +266,13 @@ tokens per replicate per checkpoint, which is the number to look at before
 committing the GPU hours: at the default ten items per task that is 210 items
 and roughly 12M prompt tokens per checkpoint.
 
-## The remaining five adapters
+## The remaining four adapters
 
 Each prints its pins with `pin`, refuses a branch name where a commit belongs,
 and hashes its own source together with `_common.py` so an edit without a repin
-stops the run. Three of them score data that differs from what `EVAL.md` names,
-and each records the substitution in its own run metadata:
+stops the run. The two Harbor adapters hash `_harbor.py` as well, since that is
+where their scoring rules live, though neither is in the protocol right now. Three of them score data that differs from what
+`EVAL.md` names, and each records the substitution in its own run metadata:
 
 | suite | adapter | data actually scored | verifier |
 |---|---|---|---|
@@ -260,7 +280,6 @@ and each records the substitution in its own run metadata:
 | `livecodebench_v6` | `livecodebench.py` | release v6, 175 problems, 7000 tests | sandboxed execution, pass@1 |
 | `matharena_2026_06` | `matharena.py` | AIME 2026 + Apex shortlist; the named 2026-06 snapshots are **not published** | exact integer |
 | `multimodal` | `multimodal.py` | DocVQA, ChartQA, TextVQA; the private UI pack does **not exist** here | ANLS / relaxed / VQA |
-| `terminal_bench_2_1` | `terminal_bench.py` | Harbor task pack, driven through the Hermes agent | Harbor's own verifier |
 
 ```bash
 python3 scripts/adapters/bfcl.py           pin --resolve-dataset
@@ -269,6 +288,13 @@ python3 scripts/adapters/matharena.py      pin --resolve
 python3 scripts/adapters/multimodal.py     pin --resolve
 python3 scripts/adapters/terminal_bench.py pin --dataset-version <v> --harbor-version <v> --task-checksums <set>
 ```
+
+SWE-bench Pro is not in the protocol. Harbor's Singularity backend hardcodes
+`--fakeroot`, this account has no `/etc/subuid` mapping, and the bundled
+`faked` needs a newer glibc than the task images carry, so the containers
+never start. `scripts/adapters/swebench_pro.py`,
+`scripts/swebenchpro_subset.py` and `scripts/bake_harbor_sifs.py` are kept
+against that being fixed; the runner does not reference them.
 
 Three things worth knowing before running them.
 
