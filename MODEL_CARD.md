@@ -122,7 +122,6 @@ fit the token budget, the builder tries the other complete-turn window modes
 for that row. Foreign tool schemas and calls are parsed and re-emitted through
 Qwen3.8's own chat template rather than left in their original serialization,
 so the calibration text matches what the model actually sees at inference.
-Cauldron rows carry real pixels, not placeholders.
 
 Each rank first runs its image rows through the BF16 vision tower and splices
 the resulting real visual embeddings into the token stream. Sequential AWQ then
@@ -192,13 +191,15 @@ They are not reported here: one replicate each is too few to publish.
 
 ```bash
 vllm serve nicosuter/Qwen3.8-27B-AWQ \
-  --tensor-parallel-size 1 \
   --max-model-len 262144 \
-  --kv-cache-dtype auto \
   --reasoning-parser qwen3 \
   --enable-auto-tool-choice \
   --tool-call-parser qwen3_coder
 ```
+
+The weights are 21.5 GB. A 262144-token context needs room for the KV cache on
+top of that, so on a 24 GB card you will need a shorter `--max-model-len`, and a
+full-length context wants either a larger card or `--tensor-parallel-size 2`.
 
 Use the upstream generation policy: thinking enabled, `temperature=1.0`,
 `top_p=0.95`, `top_k=20`, `min_p=0`, no presence penalty, repetition penalty
