@@ -228,6 +228,8 @@ def convert(
         # the position within that group, ordered by sample id for determinism.
         group = str(sample.get("group_id") if sample.get("group_id") is not None
                     else sample.get("sample_id"))
+        if record.get("_subset"):
+            group = f"{record['_subset']}/{group}"
         by_group[group].append((sample.get("sample_id"), record))
 
     rows: list[dict[str, Any]] = []
@@ -514,21 +516,27 @@ def collect_rows(
         raise BridgeError(f"{runs[-1]}: no reviews written")
     records: list[dict[str, Any]] = []
     for path in reviews:
-        records.extend(
-            json.loads(line)
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        )
+        # Sample ids restart at zero in every subset, so the id needs the subset
+        # to mean anything. mmlu_pro has 14 of them and the smoke run produced
+        # two different questions both prefixed "0:".
+        subset = path.stem
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            record["_subset"] = subset
+            records.append(record)
     rows = convert(
         records,
         suite=args.suite,
         dataset_pin=f"{entry['repo']}@{entry['revision']}",
         metric=entry.get("metric"),
     )
-    # The lane owns the replicate index; EvalScope's group_id only orders
-    # repeats within one invocation, and we run one replicate per lane.
-    for row in rows:
-        row["replicate"] = args.replicate
+    # The lane owns the replicate index when it runs a single draw. With
+    # repeats>1 the index within the group is the replicate and must survive.
+    if args.repeats <= 1:
+        for row in rows:
+            row["replicate"] = args.replicate
     return rows
 
 

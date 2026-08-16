@@ -504,6 +504,28 @@ class DeferredTwoPassTests(unittest.TestCase):
         entry = bridge.load_suite(ROOT / "eval" / "evalscope-suites.json", "mmlu_pro")
         self.assertIsNone(entry.get("plugin"))
 
+class SubsetQualifiedIdTests(unittest.TestCase):
+    """Sample ids restart at zero in every subset."""
+
+    def test_the_subset_qualifies_the_id(self) -> None:
+        a = dict(review(0, text="q-cs"), _subset="computer science")
+        b = dict(review(0, text="q-law"), _subset="law")
+        rows = bridge.convert([a, b], suite="mmlu_pro", dataset_pin=PIN)
+        ids = sorted(r["id"] for r in rows)
+        self.assertEqual(len(set(ids)), 2)
+        self.assertTrue(any(i.startswith("computer science/") for i in ids), ids)
+        self.assertTrue(any(i.startswith("law/") for i in ids), ids)
+
+    def test_the_same_item_in_both_arms_still_matches(self) -> None:
+        rec = lambda acc: dict(review(0, text="q", acc=acc), _subset="law")
+        a = bridge.convert([rec(1.0)], suite="s", dataset_pin=PIN)
+        b = bridge.convert([rec(0.0)], suite="s", dataset_pin=PIN)
+        self.assertEqual(a[0]["id"], b[0]["id"])
+
+    def test_an_unqualified_record_still_works(self) -> None:
+        rows = bridge.convert([review(0)], suite="s", dataset_pin=PIN)
+        self.assertNotIn("/", rows[0]["id"])
+
 
 if __name__ == "__main__":
     unittest.main()
