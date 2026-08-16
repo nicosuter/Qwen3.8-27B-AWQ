@@ -95,6 +95,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run.add_argument("--api-url", required=True)
     run.add_argument("--api-key", default="EMPTY")
     run.add_argument("--work-dir", required=True, type=Path)
+    # Shared across lanes on purpose: a per-lane default would have every
+    # (suite, replicate) re-download its own copy of the same pinned dataset.
+    run.add_argument(
+        "--datasets-root", type=Path,
+        help="where materialize put the pinned datasets; defaults to the "
+             "materialize_root in the suites file, relative to it",
+    )
     run.add_argument("--variant", required=True, choices=("baseline", "candidate"))
     run.add_argument("--repeats", type=int, default=1)
     run.add_argument("--limit", type=float, default=None)
@@ -373,6 +380,9 @@ def load_suite(path: Path, name: str) -> dict[str, Any]:
         )
     if not REVISION_RE.match(entry.get("revision") or ""):
         raise BridgeError(f"{name} has no pinned revision in {path}")
+    # Carried on the entry so `run` can find the shared materialized datasets
+    # without every caller having to pass the same path.
+    entry["_root"] = spec.get("materialize_root") or "eval-materialized/evalscope"
     return entry
 
 
@@ -380,10 +390,17 @@ def command_run(args: argparse.Namespace) -> int:
     entry = load_suite(args.suites, args.suite)
     pin = f"{entry['repo']}@{entry['revision']}"
 
-    materialize = argparse.Namespace(
-        repo=entry["repo"], revision=entry["revision"], into=args.work_dir / "datasets"
+    root = args.datasets_root or (
+        args.suites.parent.parent / (entry.get("_root") or "eval-materialized/evalscope")
     )
-    local = args.work_dir / "datasets" / entry["repo"].replace("/", "__") / entry["revision"]
+    if entry.get("build") == "bfcl-dataset":
+        # Built rather than downloaded: upstream ships prompts and keys apart.
+        local = root / "bfcl_v3" / entry["revision"]
+    else:
+        local = root / entry["repo"].replace("/", "__") / entry["revision"]
+    materialize = argparse.Namespace(
+        repo=entry["repo"], revision=entry["revision"], into=root
+    )
     if not args.print_only and not local.is_dir():
         command_materialize(materialize)
 

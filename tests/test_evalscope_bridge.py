@@ -403,6 +403,46 @@ class PinAgreementTests(unittest.TestCase):
             loaded = comparator.load_rows(self.write(tmp, "x.jsonl", rows))
         self.assertIsNone(next(iter(loaded.values()))["dataset_pin"])
 
+class DatasetsRootTests(unittest.TestCase):
+    """Lanes share one materialized copy; a per-lane root would re-download it."""
+
+    def plan(self, extra_args=()):
+        import io, contextlib
+        args = bridge.parse_args([
+            "run", "--suite", "mmlu_pro", "--model", "m", "--api-url", "http://x/v1",
+            "--work-dir", "/tmp/lane-7", "--variant", "baseline", "--print-only",
+            *extra_args,
+        ])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            bridge.command_run(args)
+        return json.loads(out.getvalue())
+
+    def test_the_dataset_is_not_under_the_lane_work_dir(self) -> None:
+        dataset = self.plan()["dataset"]
+        self.assertNotIn("/tmp/lane-7", dataset)
+        self.assertIn("eval-materialized/evalscope", dataset)
+
+    def test_an_explicit_root_is_honoured(self) -> None:
+        dataset = self.plan(["--datasets-root", "/shared/pins"])["dataset"]
+        self.assertTrue(dataset.startswith("/shared/pins/"), dataset)
+
+    def test_the_path_ends_in_the_pinned_revision(self) -> None:
+        plan = self.plan()
+        self.assertTrue(plan["dataset"].endswith(plan["pin"].split("@")[1]))
+
+    def test_bfcl_reads_the_built_layout(self) -> None:
+        import io, contextlib
+        args = bridge.parse_args([
+            "run", "--suite", "bfcl_v4", "--model", "m", "--api-url", "http://x/v1",
+            "--work-dir", "/tmp/lane-7", "--variant", "baseline", "--print-only",
+        ])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            bridge.command_run(args)
+        # Built, not downloaded, so it does not live under the repo-named path.
+        self.assertIn("/bfcl_v3/", json.loads(out.getvalue())["dataset"])
+
 
 if __name__ == "__main__":
     unittest.main()

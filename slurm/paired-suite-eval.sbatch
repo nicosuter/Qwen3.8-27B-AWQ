@@ -135,6 +135,9 @@ ES_SUITES="${PAIRED_ES_SUITES:-eval/evalscope-suites.json}"
 # Read from the config so both runners derive replicate seeds from the same
 # number, and a config edit cannot leave them disagreeing.
 ORDER_SEED="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['order_seed'])" "$CONFIG")"
+# One materialized copy for every lane and both variants. Downloading per lane
+# would fetch the same pinned dataset dozens of times.
+ES_DATASETS="${PAIRED_ES_DATASETS:-$RUN_BASE/eval-materialized/evalscope}"
 ES_MAX_TOKENS="${PAIRED_ES_MAX_TOKENS:-131072}"
 ES_REQUEST_TIMEOUT="${PAIRED_ES_REQUEST_TIMEOUT:-5400}"
 PARALLEL="${PAIRED_PARALLEL:-0}"   # 0 means "as many lanes as there are jobs"
@@ -511,15 +514,16 @@ score_variant() {
                 # writes the same two files an adapter lane does, so nothing
                 # downstream of here knows which runner produced them.
                 "$PYTHON" scripts/evalscope_bridge.py run \
-                    --suites "$ES_SUITES" --suite "$suite" \
+                    --suites "${ES_SUITES:-eval/evalscope-suites.json}" --suite "$suite" \
                     --variant "$variant" --replicate "$rep" \
                     --model "$SERVED_NAME" --api-url "$BASE_URL" \
                     --work-dir "$RUN_DIR/evalscope/$variant/$suite-r$rep" \
+                    --datasets-root "${ES_DATASETS:-${RUN_BASE:-.}/eval-materialized/evalscope}" \
                     --results "$RUN_DIR/raw/$variant/$suite-r$rep.jsonl" \
                     --metadata "$RUN_DIR/metadata/$suite-$variant-r$rep.json" \
-                    --max-tokens "$ES_MAX_TOKENS" \
-                    --request-timeout "$(python3 -c "print($ES_REQUEST_TIMEOUT*$TIMEOUT_SCALE)")" \
-                    --seed "$(( ORDER_SEED + rep ))" \
+                    --max-tokens "${ES_MAX_TOKENS:-131072}" \
+                    --request-timeout "$(python3 -c "print(${ES_REQUEST_TIMEOUT:-5400}*$TIMEOUT_SCALE)")" \
+                    --seed "$(( ${ORDER_SEED:-0} + rep ))" \
                     > "$lane_dir/$label.log" 2>&1 && rc=0 || rc=$?
             else
             "$PYTHON" scripts/run_adapter_suite.py \
