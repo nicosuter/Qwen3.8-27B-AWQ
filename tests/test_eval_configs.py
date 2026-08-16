@@ -10,6 +10,7 @@ resolve from the environment rather than being spelled out.
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -247,3 +248,30 @@ class NarrowExpansionTests(unittest.TestCase):
     def test_an_unknown_suite_still_lists_what_exists(self) -> None:
         with self.assertRaisesRegex(runner.protocol.ProtocolError, "plain"):
             runner.load_config(self.config(self.dir), "absent")
+
+
+class EnvironmentContractTests(unittest.TestCase):
+    """Where datasets cache is a property of the deployment, not of a job.
+
+    Left unset, huggingface_hub caches under $HOME. That put benchmark data on a
+    home filesystem while a large scratch cache went unused, and split the two so
+    a dataset fetched by one path was invisible to another: a gated dataset
+    warmed into the scratch cache still failed to load inside a batch job.
+    """
+
+    def source_env(self, **overrides):
+        environment = {**os.environ, "RUN_BASE": "/scratch/example", **overrides}
+        result = subprocess.run(
+            ["bash", "-c", "source scripts/load_env.sh && echo \"$HF_HOME\""],
+            capture_output=True, text=True, cwd=ROOT, env=environment,
+        )
+        return result.stdout.strip()
+
+    def test_the_cache_defaults_under_the_run_base(self) -> None:
+        self.assertEqual(self.source_env(HF_HOME=""), "/scratch/example/huggingface")
+
+    def test_an_explicit_setting_still_wins(self) -> None:
+        self.assertEqual(self.source_env(HF_HOME="/elsewhere/hf"), "/elsewhere/hf")
+
+    def test_it_never_defaults_into_home(self) -> None:
+        self.assertNotIn(os.path.expanduser("~"), self.source_env(HF_HOME=""))
