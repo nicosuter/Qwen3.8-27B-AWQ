@@ -1,0 +1,42 @@
+# Results for the three suites that are registered Hub benchmarks and that we
+# run as the full published set. The other suites in this checkpoint's card are
+# deliberately absent: BFCL is registered only for v2/v3 and we run v4, and the
+# multimodal, LiveCodeBench, AA-LCR and AA-Omniscience sets are not benchmarks
+# here. Publishing a subset under a benchmark's name would invite exactly the
+# comparison it does not support.
+#
+# Self-reported. The GPQA figure is the one with independent corroboration: the
+# FP8 baseline measured 88.89 [87.99, 89.79] under the same harness against
+# Qwen's published 89.2.
+- dataset:
+    id: Idavidrein/gpqa
+    task_id: gpqa_diamond
+  value: 0.8977
+  date: "2026-08-16"
+  source:
+    url: https://github.com/nicosuter/Qwen3.8-27B-AWQ/blob/master/results/2026-08-16-paired-2/README.md
+    name: Paired evaluation, full result set and protocol
+    user: nicosuter
+  notes: "full 198-item Diamond set, 4 replicates, thinking enabled at reasoning_effort=xhigh, exact-choice scoring, no tools"
+
+- dataset:
+    id: MathArena/aime_2026
+    task_id: MathArena/aime_2026
+  value: 0.9833
+  date: "2026-08-16"
+  source:
+    url: https://github.com/nicosuter/Qwen3.8-27B-AWQ/blob/master/results/2026-08-16-paired-2/README.md
+    name: Paired evaluation, full result set and protocol
+    user: nicosuter
+  notes: "all 30 problems, 4 replicates, exact integer answer, no tools"
+
+- dataset:
+    id: MathArena/apex-shortlist
+    task_id: MathArena/apex-shortlist
+  value: 0.6809
+  date: "2026-08-16"
+  source:
+    url: https://github.com/nicosuter/Qwen3.8-27B-AWQ/blob/master/results/2026-08-16-paired-2/README.md
+    name: Paired evaluation, full result set and protocol
+    user: nicosuter
+  notes: "all 47 problems, 4 replicates, exact integer answer, no tools"

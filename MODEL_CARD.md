@@ -5,27 +5,31 @@ base_model_relation: quantized
 library_name: transformers
 pipeline_tag: image-text-to-text
 tags:
-  - qwen3_5
-  - qwen3_6
-  - qwen3_8
-  - awq
-  - w4a16
-  - 4-bit
-  - int4
-  - fp8
-  - mixed-precision
-  - quantized
-  - compressed-tensors
-  - llm-compressor
-  - multimodal
-  - tool-use
-  - vllm
+- qwen3_5
+- qwen3_6
+- qwen3_8
+- awq
+- w4a16
+- 4-bit
+- int4
+- fp8
+- mixed-precision
+- quantized
+- compressed-tensors
+- llm-compressor
+- multimodal
+- tool-use
+- vllm
+- hermes-agent
+- mtp
+- speculative-decoding
+- long-context
 datasets:
-  - nvidia/Open-SWE-Traces
-  - nvidia/Nemotron-Post-Training-Dataset-v1
-  - lambda/hermes-agent-reasoning-traces
-  - HuggingFaceM4/the_cauldron
-  - HuggingFaceFW/fineweb-edu
+- nvidia/Open-SWE-Traces
+- nvidia/Nemotron-Post-Training-Dataset-v1
+- lambda/hermes-agent-reasoning-traces
+- HuggingFaceM4/the_cauldron
+- HuggingFaceFW/fineweb-edu
 ---
 
 # Qwen3.8-27B-AWQ
