@@ -100,6 +100,63 @@ def select(
     return [name for name in defined if name in set(requested)]
 
 
+def batches(version: str = DEFAULT_VERSION, root: Path | None = None) -> list[dict[str, Any]]:
+    """Read the batch plan and hold it to the suite definition.
+
+    Two invariants, and both have already been violated in this repository once.
+    A batch may not name a suite the protocol does not contain, which is how
+    `aa_lcr` reached a macro. And the scoring batches must partition the suite
+    set exactly: a plan that leaves a suite out means running every batch still
+    does not produce the protocol's macro, and a plan that scores one twice means
+    the second run silently overwrites the first.
+    """
+    path = (root or PROJECT_DIR) / "eval" / "batches.json"
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise EvalSuiteError(f"no batch plan at {path}") from error
+    except json.JSONDecodeError as error:
+        raise EvalSuiteError(f"{path}: not valid JSON: {error}") from error
+    if document.get("eval_suite") != version:
+        raise EvalSuiteError(
+            f"{path} plans eval suite {document.get('eval_suite')!r}, not {version!r}"
+        )
+
+    plan = document.get("batches")
+    if not isinstance(plan, list) or not plan:
+        raise EvalSuiteError(f"{path} defines no batches")
+    defined = names(version, root)
+    seen: list[str] = []
+    for batch in plan:
+        name = batch.get("name")
+        if not name:
+            raise EvalSuiteError(f"{path} has a batch with no name")
+        select(batch.get("suites", []), version, root)   # refuses unknown suites
+        if batch.get("scoring"):
+            seen.extend(batch["suites"])
+    duplicated = sorted({s for s in seen if seen.count(s) > 1})
+    if duplicated:
+        raise EvalSuiteError(f"{path}: scoring batches overlap on {duplicated}")
+    uncovered = sorted(defined - set(seen))
+    if uncovered:
+        raise EvalSuiteError(
+            f"{path}: no scoring batch covers {uncovered}, so running every batch "
+            "would still not produce the protocol's macro"
+        )
+    return plan
+
+
+def batch(name: str, version: str = DEFAULT_VERSION,
+          root: Path | None = None) -> dict[str, Any]:
+    plan = batches(version, root)
+    for entry in plan:
+        if entry["name"] == name:
+            return entry
+    raise EvalSuiteError(
+        f"no batch named {name!r}; the plan has {[e['name'] for e in plan]}"
+    )
+
+
 def missing(present: set[str], version: str = DEFAULT_VERSION,
             root: Path | None = None) -> list[str]:
     """Suites the protocol requires that a set of results does not carry."""
@@ -111,11 +168,21 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", default=DEFAULT_VERSION)
-    parser.add_argument("--select", nargs="+", help="resolve a batch and print it")
+    parser.add_argument("--select", nargs="+", help="resolve a suite list and print it")
+    parser.add_argument("--batch", help="print the suites in a named batch")
+    parser.add_argument("--batches", action="store_true", help="list the batch plan")
     args = parser.parse_args(argv)
 
     if args.select:
         print(" ".join(select(args.select, args.version)))
+        return 0
+    if args.batch:
+        print(" ".join(batch(args.batch, args.version)["suites"]))
+        return 0
+    if args.batches:
+        for entry in batches(args.version):
+            kind = "scoring" if entry.get("scoring") else entry.get("phase", "setup")
+            print(f"{entry['name']:16s} {kind:8s} {' '.join(entry['suites'])}")
         return 0
     document = load(args.version)
     print(f"eval suite {args.version}: {len(document['suites'])} suites")

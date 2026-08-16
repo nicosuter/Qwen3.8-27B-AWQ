@@ -32,9 +32,34 @@ python3 scripts/eval_suite.py --select ruler bfcl_v4   # resolve a batch
 ```
 
 Changing what is measured means writing `eval-suite-v2.json` and pointing
-`eval_suite` in the protocol at it. A batch is a different thing: `PAIRED_SUITES`
-selects a subset for one job, and a comparison over a subset is marked
-`--allow-partial` so its macro is never mistaken for the protocol's.
+`eval_suite` in the protocol at it.
+
+## Batches
+
+`eval/batches.json` divides that set across jobs. Batches are scheduling and not
+pre-registration, which is why they live in their own file, but they are held to
+the definition: the scoring batches must partition the suite set exactly. A gap
+means running every batch still would not produce the protocol's macro, and an
+overlap means the second job silently overwrites the first in the shared run
+directory. Both are refused.
+
+| batch | suites | why |
+|---|---|---|
+| `prepare` | all seven, `--phase prepare` | no GPU; resolves every pin and materializes every dataset, so a bad pin fails before an allocation |
+| `short-context` | bfcl_v4, gpqa_diamond, livecodebench_v6, matharena_2026_06, mmmu_pro, multimodal | everything that tolerates forty or more requests in flight |
+| `long-context` | ruler | one 128k sequence holds roughly 8.5 GB of KV, so it wants about a dozen per replica where the others take forty |
+
+```bash
+python3 scripts/eval_suite.py --batches
+PAIRED_BATCH=short-context sbatch slurm/paired-suite-eval.sbatch
+```
+
+RULER is separated because sharing a server with forty-way lanes means one
+starves the other, and it would do so to whichever arm happened to be running.
+The rest are kept together deliberately: lanes fill each other's tails, and each
+split costs another server load per arm. A batch's own comparison is
+`--allow-partial` by construction; the protocol's macro appears once every
+scoring batch has written into the same run directory.
 
 ## Build and run
 

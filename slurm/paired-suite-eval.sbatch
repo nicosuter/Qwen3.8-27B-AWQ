@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=0
 #SBATCH --gres=gpu:4
-#SBATCH --time=03:00:00
+#SBATCH --time=06:00:00
 # %x is the job name, so pass --job-name=<what is being scored>: several
 # checkpoints share this script and "qwen38-paired-suites-4619.out" says nothing
 # about which one it measured. The directory must already exist or slurm drops
@@ -59,6 +59,17 @@ CONFIG="${PAIRED_CONFIG:-$PROJECT_DIR/eval/eval-suite-v1.json}"
 # never contained, used to reach the comparator and enter the macro silently.
 SUITES="${PAIRED_SUITES:-}"
 EVAL_SUITE_VERSION="${PAIRED_EVAL_SUITE:-v1}"
+# PAIRED_BATCH names a plan entry from eval/batches.json, which is the recorded
+# way to run part of the protocol. PAIRED_SUITES stays for one-off lists.
+BATCH="${PAIRED_BATCH:-}"
+if [[ -n "$BATCH" ]]; then
+    if [[ -n "$SUITES" ]]; then
+        echo "set PAIRED_BATCH or PAIRED_SUITES, not both" >&2
+        exit 1
+    fi
+    SUITES="$(python3 scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" --batch "$BATCH")"
+    echo "batch=$BATCH"
+fi
 if [[ -z "$SUITES" ]]; then
     SUITES="$(python3 scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" \
         | awk '/^  /{print $1}' | tr '\n' ' ')"
@@ -675,7 +686,7 @@ COMPARISON="$RUN_DIR/comparisons/$RUN_STAMP-job${SLURM_JOB_ID:-manual}.json"
     --baseline-floor multimodal="${MULTIMODAL_FLOOR:-0.824}" \
     --baseline-floor ruler="${RULER_FLOOR:-0.760}" \
     --eval-suite "$EVAL_SUITE_VERSION" \
-    ${PAIRED_SUITES:+--allow-partial} \
+    ${PAIRED_SUITES:+--allow-partial} ${PAIRED_BATCH:+--allow-partial} \
     || true   # a failing gate is a result, not a job error
 if [[ -s "$COMPARISON" ]]; then
     ln -sfn "comparisons/$(basename "$COMPARISON")" "$RUN_DIR/comparison.json"

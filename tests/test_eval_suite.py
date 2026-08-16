@@ -134,5 +134,75 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(eval_suite.main(["--select", "ruler"]), 0)
 
 
+
+class BatchPlanTests(unittest.TestCase):
+    """A plan that does not cover the protocol is a plan that cannot finish it."""
+
+    def plan(self, root: Path, batches, version="v1", suites=("a", "b")):
+        write_suite(root, version, suites)
+        path = root / "eval" / "batches.json"
+        path.write_text(
+            json.dumps({"eval_suite": version, "batches": batches}), encoding="utf-8"
+        )
+        return path
+
+    def setUp(self) -> None:
+        self.tmp = TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_the_shipped_plan_partitions_the_protocol(self) -> None:
+        scoring = [b for b in eval_suite.batches("v1") if b.get("scoring")]
+        covered = [s for b in scoring for s in b["suites"]]
+        self.assertEqual(sorted(covered), sorted(eval_suite.names("v1")))
+
+    def test_every_batch_records_why_it_exists(self) -> None:
+        for entry in eval_suite.batches("v1"):
+            with self.subTest(batch=entry["name"]):
+                self.assertGreater(len(entry.get("why", "")), 60)
+
+    def test_a_gap_in_coverage_is_refused(self) -> None:
+        self.plan(self.root, [{"name": "one", "scoring": True, "suites": ["a"]}])
+        with self.assertRaises(eval_suite.EvalSuiteError) as caught:
+            eval_suite.batches("v1", root=self.root)
+        self.assertIn("'b'", str(caught.exception))
+
+    def test_scoring_the_same_suite_twice_is_refused(self) -> None:
+        """The second run would overwrite the first in the shared run directory."""
+        self.plan(self.root, [
+            {"name": "one", "scoring": True, "suites": ["a", "b"]},
+            {"name": "two", "scoring": True, "suites": ["b"]},
+        ])
+        with self.assertRaises(eval_suite.EvalSuiteError) as caught:
+            eval_suite.batches("v1", root=self.root)
+        self.assertIn("overlap", str(caught.exception))
+
+    def test_a_non_scoring_batch_does_not_count_toward_coverage(self) -> None:
+        self.plan(self.root, [
+            {"name": "prepare", "scoring": False, "suites": ["a", "b"]},
+            {"name": "one", "scoring": True, "suites": ["a", "b"]},
+        ])
+        self.assertEqual(len(eval_suite.batches("v1", root=self.root)), 2)
+
+    def test_a_batch_naming_an_unknown_suite_is_refused(self) -> None:
+        self.plan(self.root, [{"name": "one", "scoring": True, "suites": ["a", "b", "z"]}])
+        with self.assertRaises(eval_suite.EvalSuiteError) as caught:
+            eval_suite.batches("v1", root=self.root)
+        self.assertIn("z", str(caught.exception))
+
+    def test_a_plan_for_another_version_is_refused(self) -> None:
+        self.plan(self.root, [{"name": "one", "scoring": True, "suites": ["a", "b"]}])
+        write_suite(self.root, "v2", ["a", "b"])
+        with self.assertRaises(eval_suite.EvalSuiteError):
+            eval_suite.batches("v2", root=self.root)
+
+    def test_naming_a_batch_that_does_not_exist_lists_the_ones_that_do(self) -> None:
+        with self.assertRaises(eval_suite.EvalSuiteError) as caught:
+            eval_suite.batch("nope")
+        self.assertIn("short-context", str(caught.exception))
+
+    def test_the_long_context_batch_is_ruler_alone(self) -> None:
+        self.assertEqual(eval_suite.batch("long-context")["suites"], ["ruler"])
+
 if __name__ == "__main__":
     unittest.main()

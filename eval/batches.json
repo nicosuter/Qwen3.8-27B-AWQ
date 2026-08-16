@@ -1,0 +1,42 @@
+{
+  "eval_suite": "v1",
+  "note": "Batches are scheduling, not pre-registration. What the protocol measures lives in eval-suite-v1.json; this only says how it is divided across jobs. The scoring batches must together cover that set exactly, or running all of them would still not produce the protocol's macro.",
+  "batches": [
+    {
+      "name": "prepare",
+      "scoring": false,
+      "phase": "prepare",
+      "suites": [
+        "bfcl_v4",
+        "gpqa_diamond",
+        "livecodebench_v6",
+        "matharena_2026_06",
+        "mmmu_pro",
+        "multimodal",
+        "ruler"
+      ],
+      "why": "No GPU. Resolves every pin, materializes every dataset and writes MMMU-Pro's 1730 images, so a bad pin or a gated dataset fails before an allocation rather than four hours into one. MMMU-Pro has never run, and this is the part of that risk which can be retired for free."
+    },
+    {
+      "name": "short-context",
+      "scoring": true,
+      "suites": [
+        "bfcl_v4",
+        "gpqa_diamond",
+        "livecodebench_v6",
+        "matharena_2026_06",
+        "mmmu_pro",
+        "multimodal"
+      ],
+      "why": "Everything that tolerates forty or more requests in flight. Kept together because lanes fill each other's tails: GPQA averaged 37 of 192 streams busy and multimodal spent 485 of 502 seconds on a single item, so splitting these pays each tail separately and adds a server load per split."
+    },
+    {
+      "name": "long-context",
+      "scoring": true,
+      "suites": [
+        "ruler"
+      ],
+      "why": "RULER alone. One 128k sequence holds roughly 8.5 GB of KV, so it wants about a dozen requests in flight per replica where the others take forty. Sharing a server means one starves the other, and it would do so to one arm at a time, which is exactly the asymmetry a paired delta cannot absorb."
+    }
+  ]
+}
