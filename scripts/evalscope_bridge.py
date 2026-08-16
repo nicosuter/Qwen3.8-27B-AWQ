@@ -47,6 +47,19 @@ BOOL_FIELDS = (
 )
 
 
+BFCL_REPO = "gorilla-llm/Berkeley-Function-Calling-Leaderboard"
+BFCL_REVISION = "61fc0608cfd831fcfbbaa676ebdfef0ed963eeda"
+# Every category scored by matching a call against a key or by whether a call
+# was made. multi_turn is excluded on purpose: its rows need an initial_config
+# and the Gorilla simulators' state, neither of which exists in the static files.
+BFCL_AST_CATEGORIES = (
+    "simple", "multiple", "parallel", "parallel_multiple", "irrelevance",
+    "live_simple", "live_multiple", "live_parallel", "live_parallel_multiple",
+    "live_irrelevance", "live_relevance",
+)
+BFCL_NO_GROUND_TRUTH = ("irrelevance", "live_irrelevance", "live_relevance")
+
+
 class BridgeError(RuntimeError):
     pass
 
@@ -61,6 +74,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     materialize.add_argument("--repo", required=True, help="e.g. cais/hle")
     materialize.add_argument("--revision", required=True, help="40-character commit")
     materialize.add_argument("--into", required=True, type=Path)
+
+    bfcl = sub.add_parser(
+        "bfcl-dataset",
+        help="build EvalScope's BFCL layout from our pinned upstream revision",
+    )
+    bfcl.add_argument("--revision", default=BFCL_REVISION)
+    bfcl.add_argument("--into", required=True, type=Path)
+    bfcl.add_argument(
+        "--categories",
+        default=",".join(BFCL_AST_CATEGORIES),
+        help="comma-separated; multi_turn is not derivable and is refused",
+    )
 
     run = sub.add_parser("run", help="materialize a pinned dataset and score it")
     run.add_argument("--suites", type=Path, default=Path("eval/evalscope-suites.json"))
@@ -190,6 +215,11 @@ def convert(
                 "score": main_score(sample.get("score") or {}, metric),
             }
             row.update({field: False for field in BOOL_FIELDS})
+            # A deferred review is an unscored item, not a failed one. The
+            # comparator refuses any file containing one, so a half-scored
+            # suite cannot be read as a result.
+            if ((sample.get("score") or {}).get("metadata") or {}).get("deferred"):
+                row["deferred"] = True
             extracted = (sample.get("score") or {}).get("extracted_prediction")
             # The one failure flag the review actually supports.
             row["empty_answer"] = extracted is not None and not str(extracted).strip()
@@ -222,6 +252,103 @@ def command_rows(args: argparse.Namespace) -> int:
         f"to {args.output}",
         flush=True,
     )
+    return 0
+
+
+def bfcl_rows(
+    by_category: dict[str, list[dict[str, Any]]],
+    answers: dict[str, dict[str, Any]],
+    build_tools: Any,
+) -> list[dict[str, Any]]:
+    """Reshape upstream BFCL into the layout EvalScope's adapter expects.
+
+    Upstream ships prompts and possible_answer as two files; EvalScope reads one
+    record carrying both, with functions/tools/turns/ground_truth as JSON
+    strings. Everything here comes from the pinned upstream files, so the only
+    thing being trusted is the reshaping.
+    """
+    rows: list[dict[str, Any]] = []
+    for category, records in by_category.items():
+        if category not in BFCL_AST_CATEGORIES:
+            raise BridgeError(
+                f"{category} is not derivable from the static files: multi_turn "
+                "needs an initial_config and the Gorilla simulators' state"
+            )
+        for record in records:
+            item_id = str(record["id"])
+            functions = record.get("function") or []
+            if not functions:
+                # Same degenerate rows our own adapter drops: nothing to call,
+                # so abstaining is automatic and the item separates nothing.
+                continue
+            ground_truth: Any = {}
+            if category not in BFCL_NO_GROUND_TRUTH:
+                answer = answers.get(item_id)
+                if answer is None:
+                    continue  # upstream id typo; our adapter drops it too
+                ground_truth = answer["ground_truth"]
+            rows.append(
+                {
+                    "id": item_id,
+                    "subset": category,
+                    "multi_turn": False,
+                    "functions": json.dumps(functions),
+                    "tools": json.dumps(build_tools(functions)),
+                    "turns": json.dumps(record["question"]),
+                    "missed_functions": json.dumps([]),
+                    "initial_config": json.dumps({}),
+                    "ground_truth": json.dumps(ground_truth),
+                }
+            )
+    if not rows:
+        raise BridgeError("no BFCL rows built")
+    return rows
+
+
+def command_bfcl_dataset(args: argparse.Namespace) -> int:
+    if not REVISION_RE.match(args.revision):
+        raise BridgeError(f"--revision must be a 40-character commit; got {args.revision!r}")
+    categories = [c.strip() for c in args.categories.split(",") if c.strip()]
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "adapters"))
+    try:
+        import bfcl as our_bfcl  # our adapter already converts BFCL schemas
+    except ImportError as error:  # pragma: no cover - environment guard
+        raise BridgeError("scripts/adapters/bfcl.py is required") from error
+
+    by_category, answers = {}, {}
+    for category in categories:
+        name = our_bfcl.CATEGORIES.get(category)
+        if name is None:
+            raise BridgeError(f"unknown category {category!r}")
+        by_category[category] = our_bfcl.download_json_lines(name, args.revision)
+        if category not in BFCL_NO_GROUND_TRUTH:
+            for row in our_bfcl.download_json_lines(
+                f"possible_answer/{name}", args.revision
+            ):
+                answers[str(row["id"])] = row
+
+    rows = bfcl_rows(by_category, answers, our_bfcl.build_tools)
+    target = args.into / "bfcl_v3" / args.revision
+    target.mkdir(parents=True, exist_ok=True)
+    out = target / "train.jsonl"
+    with out.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    (target / ".pin.json").write_text(
+        json.dumps(
+            {"repo": BFCL_REPO, "revision": args.revision,
+             "categories": categories, "rows": len(rows),
+             "built_by": "evalscope_bridge.py bfcl-dataset"},
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row["subset"]] = counts.get(row["subset"], 0) + 1
+    print(json.dumps({"path": str(target), "rows": len(rows),
+                      "by_subset": dict(sorted(counts.items()))}, indent=2))
     return 0
 
 
@@ -301,6 +428,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.action == "materialize":
         return command_materialize(args)
+    if args.action == "bfcl-dataset":
+        return command_bfcl_dataset(args)
     if args.action == "run":
         return command_run(args)
     return command_rows(args)

@@ -77,9 +77,15 @@
       "repo": "livecodebench/code_generation_lite",
       "revision": "0fe84c3912ea0c4d4a78037083943e8f0c4dd505",
       "metric": null,
-      "ported": false,
-      "note": "Schema matches (question_content, contest_date, evaluation_sample, format_prompt), so the data side is ready. Held back because scoring executes model-written code and EvalScope runs review inline on the generating machine; needs the sandbox engine settled first.",
-      "dataset_args": {}
+      "ported": true,
+      "note": "EvalScope executes generated code in the local environment and has no generate-only mode, so a cluster run would execute model-written code beside the checkpoints. The plugin adds an `execute` param: the cluster pass returns a deferred marker and never reaches the executor, then the isolated pass runs --use-cache --rerun-review with execute=True. Both must register as `live_code_bench`, since the prediction cache path is keyed by benchmark name, so the plugin swaps the adapter on the existing metadata rather than adding a second entry.",
+      "dataset_args": {
+        "extra_params": {
+          "execute": false
+        }
+      },
+      "plugin": "scripts/evalscope_plugins/lcb_deferred.py",
+      "args_note": "execute=False for the generating pass; the scoring pass overrides it to True. The bridge marks deferred reviews and the comparator refuses any file containing one."
     },
     {
       "suite": "bfcl_v4",
@@ -87,9 +93,29 @@
       "repo": "gorilla-llm/Berkeley-Function-Calling-Leaderboard",
       "revision": "61fc0608cfd831fcfbbaa676ebdfef0ed963eeda",
       "metric": "acc",
-      "ported": false,
-      "note": "The only one needing real work. EvalScope's adapter reads a merged {question, ground_truth} record, while upstream ships prompts and possible_answer as separate files, so its mirror pre-merges them. Needs a custom dataset built from our pin. Its 17 subsets include every live_* category and multi_turn_*, which is more than we can score today.",
-      "dataset_args": {}
+      "ported": true,
+      "note": "EvalScope reads one record carrying prompt and key together, with functions/tools/turns/ground_truth as JSON strings; upstream ships prompts and possible_answer as two files. `bfcl-dataset` reshapes our pin into that layout, 3486 rows matching our own adapter exactly. Scoring then runs through Gorilla's official bfcl-eval, which is more authoritative than our AST reimplementation.",
+      "dataset_args": {
+        "subset_list": [
+          "simple",
+          "multiple",
+          "parallel",
+          "parallel_multiple",
+          "irrelevance",
+          "live_simple",
+          "live_multiple",
+          "live_parallel",
+          "live_parallel_multiple",
+          "live_irrelevance",
+          "live_relevance"
+        ]
+      },
+      "build": "bfcl-dataset",
+      "args_note": "multi_turn is excluded: those rows need an initial_config and the Gorilla simulators' state, which the static files do not carry.",
+      "requires": [
+        "bfcl-eval==2025.10.27.1",
+        "soundfile"
+      ]
     }
   ]
 }

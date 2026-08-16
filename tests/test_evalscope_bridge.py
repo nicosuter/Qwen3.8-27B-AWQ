@@ -175,10 +175,27 @@ class SuiteMapTests(unittest.TestCase):
                     self.assertTrue(entry.get("note"), "an exclusion needs a reason")
 
     def test_loading_an_unported_suite_is_refused(self) -> None:
-        unported = [e["suite"] for e in self.spec()["suites"] if not e.get("ported")]
-        self.assertTrue(unported, "the map should still record what we cannot run")
-        with self.assertRaises(bridge.BridgeError):
-            bridge.load_suite(self.PATH, unported[0])
+        # Written against a synthetic entry rather than the shipped map: every
+        # suite is ported now, and this guards the mechanism, not the contents.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suites.json"
+            path.write_text(json.dumps({"suites": [
+                {"suite": "held", "benchmark": "b", "repo": "o/n",
+                 "revision": "a" * 40, "ported": False, "note": "why not"}
+            ]}))
+            with self.assertRaises(bridge.BridgeError) as caught:
+                bridge.load_suite(path, "held")
+        self.assertIn("why not", str(caught.exception))
+
+    def test_a_ported_suite_without_a_pin_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suites.json"
+            path.write_text(json.dumps({"suites": [
+                {"suite": "loose", "benchmark": "b", "repo": "o/n",
+                 "revision": "main", "ported": True}
+            ]}))
+            with self.assertRaises(bridge.BridgeError):
+                bridge.load_suite(path, "loose")
 
     def test_loading_a_ported_suite_returns_its_pin(self) -> None:
         ported = [e["suite"] for e in self.spec()["suites"] if e.get("ported")]
@@ -206,6 +223,89 @@ class SuiteMapTests(unittest.TestCase):
         # The cap has to match the protocol's, or the comparison is confounded
         # by one side getting a different budget.
         self.assertEqual(task["generation_config"]["max_tokens"], 131072)
+
+class BfclDatasetTests(unittest.TestCase):
+    """Reshaping upstream BFCL into the layout EvalScope's adapter reads."""
+
+    ROW = {"id": "simple_0", "question": [[{"role": "user", "content": "q"}]],
+           "function": [{"name": "f", "description": "d",
+                         "parameters": {"type": "dict", "properties": {}}}]}
+    ANSWER = {"id": "simple_0", "ground_truth": [{"f": {}}]}
+
+    @staticmethod
+    def build_tools(functions):
+        return [{"type": "function", "function": {"name": f["name"]}} for f in functions]
+
+    def build(self, by_cat, answers):
+        return bridge.bfcl_rows(by_cat, answers, self.build_tools)
+
+    def test_prompt_and_key_are_merged_into_one_record(self) -> None:
+        rows = self.build({"simple": [self.ROW]}, {"simple_0": self.ANSWER})
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["subset"], "simple")
+        self.assertFalse(row["multi_turn"])
+        # Every structured field is a JSON string, which is what the adapter
+        # json.loads back out in preprocess_row.
+        for field in ("functions", "tools", "turns", "missed_functions",
+                      "initial_config", "ground_truth"):
+            with self.subTest(field=field):
+                self.assertIsInstance(row[field], str)
+                json.loads(row[field])
+        self.assertEqual(json.loads(row["ground_truth"]), [{"f": {}}])
+
+    def test_a_decision_only_category_needs_no_key(self) -> None:
+        rows = self.build({"irrelevance": [dict(self.ROW, id="irrelevance_0")]}, {})
+        self.assertEqual(json.loads(rows[0]["ground_truth"]), {})
+
+    def test_an_unkeyed_item_is_dropped(self) -> None:
+        with self.assertRaises(bridge.BridgeError):
+            self.build({"simple": [self.ROW]}, {})
+
+    def test_a_toolless_item_is_dropped(self) -> None:
+        with self.assertRaises(bridge.BridgeError):
+            self.build({"irrelevance": [dict(self.ROW, id="x", function=[])]}, {})
+
+    def test_multi_turn_is_refused_rather_than_faked(self) -> None:
+        # Those rows need an initial_config and the simulators' state.
+        with self.assertRaises(bridge.BridgeError):
+            self.build({"multi_turn_base": [self.ROW]}, {})
+
+    def test_the_ast_categories_match_our_adapter(self) -> None:
+        ours = load_module("bfcl_adapter", "scripts/adapters/bfcl.py")
+        self.assertEqual(set(bridge.BFCL_AST_CATEGORIES), set(ours.CATEGORIES))
+        self.assertEqual(set(bridge.BFCL_NO_GROUND_TRUTH), set(ours.NO_GROUND_TRUTH))
+
+class DeferredReviewTests(unittest.TestCase):
+    """A deferred review is an unscored item, never a failed one."""
+
+    def deferred(self, sample_id=0):
+        rec = review(sample_id)
+        rec["sample_score"]["score"]["metadata"] = {
+            "deferred": True, "execution_method": "deferred"
+        }
+        return rec
+
+    def test_a_deferred_review_is_marked(self) -> None:
+        rows = bridge.convert([self.deferred()], suite="lcb", dataset_pin=PIN)
+        self.assertTrue(rows[0]["deferred"])
+
+    def test_a_scored_review_is_not_marked(self) -> None:
+        rows = bridge.convert([review(0)], suite="lcb", dataset_pin=PIN)
+        self.assertNotIn("deferred", rows[0])
+
+    def test_the_comparator_refuses_a_deferred_row(self) -> None:
+        # The whole point: a generating pass that did not execute cannot be
+        # mistaken for a suite that scored zero.
+        comparator = load_module("compare_eval2", "scripts/compare_eval_results.py")
+        rows = bridge.convert([self.deferred()], suite="lcb", dataset_pin=PIN)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rows.jsonl"
+            path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+            with self.assertRaises(ValueError) as caught:
+                comparator.load_rows(path)
+        self.assertIn("deferred", str(caught.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
