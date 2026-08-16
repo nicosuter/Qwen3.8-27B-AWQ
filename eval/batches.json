@@ -18,6 +18,18 @@
       "why": "No GPU. Resolves every pin, materializes every dataset and writes MMMU-Pro's 1730 images, so a bad pin or a gated dataset fails before an allocation rather than four hours into one. MMMU-Pro has never run, and this is the part of that risk which can be retired for free."
     },
     {
+      "name": "shakedown",
+      "scoring": false,
+      "suites": [
+        "mmmu_pro"
+      ],
+      "limit": 50,
+      "variants": [
+        "baseline"
+      ],
+      "why": "MMMU-Pro has never met a live server, and at 1730 items it is the second largest suite in the protocol: an adapter fault at item 1600 would cost the whole short-context batch. Fifty items of the frozen order against one arm proves image encoding, answer parsing and the token budget for about twenty minutes. run_adapter_suite.py --limit marks these results diagnostics, so they cannot be mistaken for a score."
+    },
+    {
       "name": "short-context",
       "scoring": true,
       "suites": [
