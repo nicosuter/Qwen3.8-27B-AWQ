@@ -224,9 +224,10 @@
       "name": "hle",
       "pins": {
         "dataset": "5a81a4c7271a2a2a312b9a690f0c2fde837e4c29",
-        "harness": "builtin-hle-exact-v1",
-        "verifier": "exact-answer-v1",
-        "adapter": "sha256:62f068b42ade475c4e43b4141bef6dc7f0c03db0618ed064cd1ba5bb19096f09"
+        "judge": "hf:openai/gpt-oss-20b@6cee5e81ee83917806bbde320786a8fb61efebee",
+        "harness": "builtin-hle-judged-v1",
+        "verifier": "judged-equivalence-v1",
+        "adapter": "sha256:31edff1a5d31057939c3bce46eaa51a13a3823b70299882798a97421d4203039"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -237,6 +238,7 @@
         "${EVAL_PYTHON}",
         "scripts/adapters/hle.py",
         "run",
+        "--defer-judging",
         "--concurrency",
         "256",
         "--max-tokens",

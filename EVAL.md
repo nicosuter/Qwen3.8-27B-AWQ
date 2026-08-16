@@ -71,7 +71,20 @@ forty or more.
 - HLE text-only reproduces another score on the Qwen model card and supplies
   broad academic coverage. Keep it secondary because it uses an LLM judge,
   its public test set is no longer clean with respect to pre-training, and its
-  rolling corrections must be pinned.
+  rolling corrections must be pinned. We grade with our own pinned judge rather
+  than the published `openai/o3-mini`, which means our absolute is not
+  comparable to a published HLE score. The judge may be served here or hosted,
+  but it is pinned either way: `hf:owner/name@<40-hex>` for weights we hold, or
+  `api:provider/model-id@<snapshot>` for one we call. The second is the weaker
+  record and should be read as such, since a hosted model cannot be hashed and
+  a moving alias could grade the two arms differently. It must not be either
+  checkpoint under test. A string match settles every item it can before the
+  judge sees anything, since string equality has no false positives, and
+  verdicts are cached on (item, normalized answer) so both arms inherit one
+  ruling per distinct answer. That last point is not an optimization: it is
+  what stops the judge from turning two responses that agreed into a discordant
+  pair. Record the judge pin beside the result, and do not let a judged suite
+  set a per-suite floor.
 - IFBench is a cheap structured-instruction sentinel. Report its 58 constraint
   types separately; do not let a high score mask agent or reasoning losses.
 - BFCL `memory` can be added if Hermes persistent memory is a deployment
