@@ -30,7 +30,12 @@ RUN_DIR="${PAIRED_RUN_DIR:?set PAIRED_RUN_DIR to the run directory to prepare}"
 EVAL_SUITE_VERSION="${PAIRED_EVAL_SUITE:-v1}"
 CONFIG="${PAIRED_CONFIG:-$PROJECT_DIR/eval/eval-suite-$EVAL_SUITE_VERSION.json}"
 BATCH="${PAIRED_BATCH:-prepare}"
-PYTHON="${EVAL_PYTHON:-python3}"
+# Same convention as paired-suite-eval.sbatch: EVAL_VENV names the environment,
+# and EVAL_PYTHON is derived from it. Two entry points that disagreed about
+# which variable chooses the interpreter is how a chain died at the first line
+# that used one.
+PYTHON="${EVAL_VENV:+$EVAL_VENV/bin/python}"
+PYTHON="${PYTHON:-${EVAL_PYTHON:-python3}}"
 
 # The same deployment-specific paths paired-suite-eval.sbatch exports. Suite
 # commands name them rather than spelling out one cluster's layout, and the
