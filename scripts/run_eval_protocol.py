@@ -29,6 +29,7 @@ from typing import Any
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 try:
+    import eval_suite
     from preserve_mtp import (
         QWEN38_MTP_KEYS,
         QWEN38_MTP_LINEAR_MODULES,
@@ -38,6 +39,7 @@ try:
 except ModuleNotFoundError:
     # Importing this file by module spec in the local unit tests puts the
     # repository root, rather than scripts/, on sys.path.
+    from scripts import eval_suite  # type: ignore[no-redef]
     from scripts.preserve_mtp import (
         QWEN38_MTP_KEYS,
         QWEN38_MTP_LINEAR_MODULES,
@@ -45,15 +47,12 @@ except ModuleNotFoundError:
         validate_mtp_artifact,
     )
 
-REQUIRED_SUITES = {
-    "bfcl_v4",
-    "livecodebench_v6",
-    "gpqa_diamond",
-    "matharena_2026_06",
-    "multimodal",
-    "mmmu_pro",
-    "ruler",
-}
+# Derived, never declared here. The protocol's suite set is a versioned file so
+# that changing what gets measured means writing a new version rather than
+# editing a constant that three other places also believe they own.
+DEFAULT_EVAL_SUITE = eval_suite.DEFAULT_VERSION
+REQUIRED_SUITES = eval_suite.names()
+
 RESULT_BOOL_FIELDS = (
     "must_pass",
     "timeout",
@@ -135,14 +134,17 @@ def load_config(path: Path) -> dict[str, Any]:
     names = [suite.get("name") for suite in suites if isinstance(suite, dict)]
     if len(names) != len(suites) or len(set(names)) != len(names):
         raise ProtocolError("suite entries must have unique names")
-    if set(names) != REQUIRED_SUITES:
+    version = config.get("eval_suite", DEFAULT_EVAL_SUITE)
+    try:
+        required = eval_suite.names(version)
+        expected_replicates = eval_suite.replicates(version)
+    except eval_suite.EvalSuiteError as error:
+        raise ProtocolError(str(error)) from error
+    if set(names) != required:
         raise ProtocolError(
-            f"suite labels must be exactly {sorted(REQUIRED_SUITES)}; got {sorted(names)}"
+            f"eval suite {version} requires exactly {sorted(required)}; "
+            f"got {sorted(names)}"
         )
-    # full@1: every suite runs its whole item set once. At a fixed budget
-    # SE^2 is proportional to R * var_between / C + var_within / C, so replicates
-    # only ever cost precision per unit spend; items reduce both terms.
-    expected_replicates = dict.fromkeys(REQUIRED_SUITES, 1)
     for suite in suites:
         name = suite["name"]
         if suite.get("replicates") != expected_replicates[name]:

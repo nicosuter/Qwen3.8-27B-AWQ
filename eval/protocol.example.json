@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "eval_suite": "v1",
   "served_model_name": "openai/qwen38-eval",
   "order_seed": 38027,
   "seeds": [

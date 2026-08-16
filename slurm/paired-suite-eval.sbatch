@@ -52,8 +52,20 @@ else
 fi
 
 RUN_DIR="${PAIRED_RUN_DIR:-$RUN_BASE/v2/paired-1}"
-CONFIG="${PAIRED_CONFIG:-$RUN_BASE/eval/paired-1.json}"
-SUITES="${PAIRED_SUITES:-gpqa_diamond ruler}"
+CONFIG="${PAIRED_CONFIG:-$PROJECT_DIR/eval/eval-suite-v1.json}"
+# A batch selects from the protocol; scripts/eval_suite.py refuses a name the
+# definition does not contain. Empty means every suite in it. Resolving here
+# rather than trusting the string is the point: a typo, or a suite the protocol
+# never contained, used to reach the comparator and enter the macro silently.
+SUITES="${PAIRED_SUITES:-}"
+EVAL_SUITE_VERSION="${PAIRED_EVAL_SUITE:-v1}"
+if [[ -z "$SUITES" ]]; then
+    SUITES="$(python3 scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" \
+        | awk '/^  /{print $1}' | tr '\n' ' ')"
+else
+    SUITES="$(python3 scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" --select $SUITES)"
+fi
+echo "eval-suite=$EVAL_SUITE_VERSION suites=$SUITES"
 # Four, not eight: the node is shared and the rest is somebody else's.
 DP="${PAIRED_DP:-4}"
 # The header's --gres and this DP are set independently, so they can disagree.
@@ -662,6 +674,8 @@ COMPARISON="$RUN_DIR/comparisons/$RUN_STAMP-job${SLURM_JOB_ID:-manual}.json"
     --baseline-floor matharena_2026_06="${MATHARENA_FLOOR:-0.765}" \
     --baseline-floor multimodal="${MULTIMODAL_FLOOR:-0.824}" \
     --baseline-floor ruler="${RULER_FLOOR:-0.760}" \
+    --eval-suite "$EVAL_SUITE_VERSION" \
+    ${PAIRED_SUITES:+--allow-partial} \
     || true   # a failing gate is a result, not a job error
 if [[ -s "$COMPARISON" ]]; then
     ln -sfn "comparisons/$(basename "$COMPARISON")" "$RUN_DIR/comparison.json"

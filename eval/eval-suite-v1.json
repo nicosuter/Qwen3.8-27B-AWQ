@@ -1,6 +1,19 @@
 {
-  "order_seed": 38027,
+  "eval_suite": "v1",
+  "description": "The suite set this protocol measures. One file, versioned: what is measured changes by bumping the version, not by editing a list in one place and hoping another agrees.",
+  "rationale": {
+    "replicates": "One pass per suite over its whole item set. At a fixed budget SE^2 = R * var_between / C + var_within / C rises with R, so items buy precision that replicates do not.",
+    "parked": {
+      "terminal_bench_2_1": "89 items at a 0.35 baseline made its recovery ratio the noisiest quantity in the protocol and set the width of the macro almost alone. Readmitting it costs about 1.8 points of macro interval.",
+      "swebench_pro_1_0": "Harbor's Singularity backend hardcodes --fakeroot, this account has no /etc/subuid mapping, and the bundled faked needs a newer glibc than the task images carry, so the containers never start.",
+      "mmlu_pro": "Dropped on cost during campaign planning.",
+      "hle": "Secondary: judged, so it sets no per-suite floor.",
+      "aa_lcr": "Never part of the protocol; ran as a diagnostic.",
+      "aa_omniscience": "Never part of the protocol; ran as a diagnostic."
+    }
+  },
   "served_model_name": "qwen38-eval",
+  "order_seed": 38027,
   "generation": {
     "enable_thinking": true,
     "reasoning_effort": "xhigh",
@@ -35,7 +48,8 @@
         "131072",
         "--request-timeout",
         "5400"
-      ]
+      ],
+      "replicates": 1
     },
     {
       "name": "gpqa_diamond",
@@ -62,7 +76,8 @@
         "131072",
         "--request-timeout",
         "5400"
-      ]
+      ],
+      "replicates": 1
     },
     {
       "name": "livecodebench_v6",
@@ -90,7 +105,8 @@
         "131072",
         "--request-timeout",
         "5400"
-      ]
+      ],
+      "replicates": 1
     },
     {
       "name": "matharena_2026_06",
@@ -115,7 +131,8 @@
         "131072",
         "--request-timeout",
         "5400"
-      ]
+      ],
+      "replicates": 1
     },
     {
       "name": "mmmu_pro",
@@ -140,7 +157,8 @@
         "131072",
         "--request-timeout",
         "5400"
-      ]
+      ],
+      "replicates": 1
     },
     {
       "name": "multimodal",
@@ -167,7 +185,8 @@
         "131072",
         "--request-timeout",
         "5400"
-      ]
+      ],
+      "replicates": 1
     },
     {
       "name": "ruler",
@@ -200,7 +219,8 @@
         "96",
         "--max-tokens",
         "131072"
-      ]
+      ],
+      "replicates": 1
     }
   ]
 }

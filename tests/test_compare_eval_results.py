@@ -257,3 +257,57 @@ class NearLosslessTests(unittest.TestCase):
         gate, _ = run_gate(base, cand, "--near-lossless-recovery", "1.5")
         self.assertFalse(gate["near_lossless"])
         self.assertTrue(gate["passed"])
+
+
+def gate_stderr(baseline_rows, candidate_rows, *extra):
+    """Run the comparator and return (returncode, stderr) rather than a report.
+
+    A refusal writes no report, so the failing path cannot be inspected through
+    run_gate.
+    """
+    tmp = tempfile.mkdtemp()
+    base, cand = Path(tmp) / "base.jsonl", Path(tmp) / "cand.jsonl"
+    base.write_text("\n".join(json.dumps(r) for r in baseline_rows), encoding="utf-8")
+    cand.write_text("\n".join(json.dumps(r) for r in candidate_rows), encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "compare_eval_results.py"),
+         "--baseline", str(base), "--candidate", str(cand),
+         "--bootstrap-samples", "200", *extra],
+        capture_output=True, text=True,
+    )
+    return proc.returncode, proc.stderr
+
+
+class SuiteSetTests(unittest.TestCase):
+    """The macro is an average, so what it averages over has to be pinned down."""
+
+    def rows(self, suites):
+        return noisy_pair([(s, 40, 1) for s in suites], seed=31)
+
+    def test_a_suite_outside_the_definition_is_refused(self) -> None:
+        """aa_lcr entered a macro this way; it must now stop the comparison."""
+        code, err = gate_stderr(*self.rows(["gpqa_diamond", "aa_lcr"]), "--eval-suite", "v1")
+        self.assertNotEqual(code, 0)
+        self.assertIn("aa_lcr", err)
+
+    def test_a_partial_batch_is_refused_by_default(self) -> None:
+        code, err = gate_stderr(*self.rows(["gpqa_diamond"]), "--eval-suite", "v1")
+        self.assertNotEqual(code, 0)
+        self.assertIn("ruler", err)
+
+    def test_a_partial_batch_can_be_scored_deliberately(self) -> None:
+        gate, _ = run_gate(*self.rows(["gpqa_diamond"]), "--eval-suite", "v1",
+                           "--allow-partial")
+        self.assertIn("passed", gate)
+
+    def test_a_batch_may_not_smuggle_in_an_extra_suite(self) -> None:
+        """--allow-partial forgives absence, never addition."""
+        code, err = gate_stderr(*self.rows(["gpqa_diamond", "aa_lcr"]),
+                                "--eval-suite", "v1", "--allow-partial")
+        self.assertNotEqual(code, 0)
+        self.assertIn("aa_lcr", err)
+
+    def test_without_the_flag_nothing_is_checked(self) -> None:
+        """Existing invocations keep working; the check is opt-in per run."""
+        gate, _ = run_gate(*self.rows(["gpqa_diamond", "aa_lcr"]))
+        self.assertIn("passed", gate)

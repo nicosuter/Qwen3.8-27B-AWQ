@@ -158,6 +158,8 @@ if __name__ == "__main__":
     unittest.main()
 
 
+import eval_suite  # noqa: E402  (scripts/ is on sys.path above)
+
 _PROTOCOL_SPEC = importlib.util.spec_from_file_location(
     "run_eval_protocol", ROOT / "scripts" / "run_eval_protocol.py"
 )
@@ -166,32 +168,30 @@ _PROTOCOL_SPEC.loader.exec_module(protocol)
 
 
 class ProtocolCoverageTests(unittest.TestCase):
-    """The suite set lives in two places, so something has to hold them equal.
+    """The suite set is derived from one versioned file, so this checks it is."""
 
-    `REQUIRED_SUITES` decides what the protocol measures and the paired config
-    decides what the runner can actually invoke. They drifted once already:
-    RULER was required while the config that ran everything else did not define
-    it, so the campaign could not have been launched as specified. That is the
-    kind of thing to find in a test rather than on the night.
-    """
+    def test_the_runner_derives_its_required_set(self) -> None:
+        self.assertEqual(protocol.REQUIRED_SUITES, eval_suite.names("v1"))
 
-    def test_paired_3_covers_exactly_the_required_suites(self) -> None:
-        config = json.loads((ROOT / "eval" / "paired-3.json").read_text(encoding="utf-8"))
+    def test_the_example_protocol_declares_a_version(self) -> None:
+        config = json.loads(
+            (ROOT / "eval" / "protocol.example.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(config["eval_suite"], "v1")
         self.assertEqual(
-            {suite["name"] for suite in config["suites"]}, set(protocol.REQUIRED_SUITES)
+            {suite["name"] for suite in config["suites"]}, eval_suite.names("v1")
         )
 
-    def test_the_earlier_batches_are_not_expected_to_cover_it(self) -> None:
-        """paired-1 and paired-2 are batches, not versions; only paired-3 is the protocol."""
+    def test_the_earlier_batches_are_history_not_the_protocol(self) -> None:
+        """paired-1 and paired-2 are batches that accreted; neither defines it."""
         for name in ("paired-1", "paired-2"):
             config = json.loads((ROOT / "eval" / f"{name}.json").read_text(encoding="utf-8"))
             names = {suite["name"] for suite in config["suites"]}
             with self.subTest(config=name):
-                self.assertNotEqual(names, set(protocol.REQUIRED_SUITES))
+                self.assertNotEqual(names, eval_suite.names("v1"))
 
-    def test_every_required_suite_is_pinned_in_paired_3(self) -> None:
-        config = json.loads((ROOT / "eval" / "paired-3.json").read_text(encoding="utf-8"))
-        for suite in config["suites"]:
+    def test_every_required_suite_is_pinned(self) -> None:
+        for suite in eval_suite.load("v1")["suites"]:
             with self.subTest(suite=suite["name"]):
                 for field, value in suite["pins"].items():
                     self.assertNotIn("REPLACE_", value, field)

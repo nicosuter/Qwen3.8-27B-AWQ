@@ -23,8 +23,26 @@ FAILURE_FIELDS = (
 )
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import eval_suite  # noqa: E402
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
+    # The macro used to be an average over whatever suites happened to appear in
+    # the rows. A job that scored a superset (aa_lcr, aa_omniscience) or a subset
+    # of the protocol produced a macro anyway, silently over a different suite
+    # set than the one the gates were designed against.
+    parser.add_argument(
+        "--eval-suite",
+        default=None,
+        help="hold the results to a versioned suite definition, for example v1",
+    )
+    parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="score a batch that covers only part of the suite definition",
+    )
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--output", type=Path)
@@ -384,6 +402,26 @@ def main() -> int:
         raise ValueError("--bootstrap-samples must be positive")
     baseline = load_rows(args.baseline)
     candidate = load_rows(args.candidate)
+    if args.eval_suite:
+        # The macro is an equal-weight average, so which suites it averages has
+        # to be the set the gates were calibrated against. Rows from outside it
+        # used to be included silently.
+        present = {suite for suite, _, _ in baseline}
+        defined = eval_suite.names(args.eval_suite)
+        extra = sorted(present - defined)
+        if extra:
+            raise ValueError(
+                f"eval suite {args.eval_suite} does not contain {extra}; these "
+                "rows would enter the macro as equal-weight members of a suite "
+                "set the gates were never calibrated against"
+            )
+        absent = sorted(defined - present)
+        if absent and not args.allow_partial:
+            raise ValueError(
+                f"eval suite {args.eval_suite} requires {absent}, which these "
+                "results do not carry. Pass --allow-partial to score a batch, "
+                "accepting that its macro is not the protocol's macro"
+            )
     report = summarize(
         baseline,
         candidate,

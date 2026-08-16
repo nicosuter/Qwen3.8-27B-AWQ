@@ -12,6 +12,30 @@ lock file. Copy it to persistent scratch and replace every `REPLACE_...` command
 and `PINNED_VERSION` with reviewed adapter argv and immutable revisions. The
 runner refuses placeholders.
 
+## What gets measured
+
+`eval/eval-suite-v1.json` is the one place that says which suites this protocol
+measures, and everything derives from it: `run_eval_protocol.py` reads its
+`REQUIRED_SUITES` from there rather than declaring one, the paired sbatch
+resolves its lane list through it, and `compare_eval_results.py --eval-suite v1`
+refuses results carrying a suite it does not contain.
+
+That set previously lived in four places at once, and they drifted. RULER was
+required by the runner and absent from the config that ran everything else, so
+the campaign could not have been launched as specified; meanwhile `aa_lcr` and
+`aa_omniscience` were scored into a macro they were never part of. Both are now
+loud failures.
+
+```bash
+python3 scripts/eval_suite.py                      # what v1 measures, and what is parked
+python3 scripts/eval_suite.py --select ruler bfcl_v4   # resolve a batch
+```
+
+Changing what is measured means writing `eval-suite-v2.json` and pointing
+`eval_suite` in the protocol at it. A batch is a different thing: `PAIRED_SUITES`
+selects a subset for one job, and a comparison over a subset is marked
+`--allow-partial` so its macro is never mistaken for the protocol's.
+
 ## Build and run
 
 The repository defaults to the official Qwen3.8-specific vLLM image for
