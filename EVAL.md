@@ -83,8 +83,15 @@ forty or more.
   verdicts are cached on (item, normalized answer) so both arms inherit one
   ruling per distinct answer. That last point is not an optimization: it is
   what stops the judge from turning two responses that agreed into a discordant
-  pair. Record the judge pin beside the result, and do not let a judged suite
-  set a per-suite floor.
+  pair. Do not let a judged suite set a per-suite floor.
+
+  Generation names no judge. `run --defer-judging` produces the responses and
+  `score --judge ...` grades them later, so the choice of grader can stay open
+  while the expensive half runs, and changing it costs a re-score rather than a
+  re-generation. The verdict file is what binds the comparison: the first judge
+  to write to it grades both arms, and a later pass asking for a different one
+  is refused. Record the judge pin beside the result, and re-scoring under a
+  new judge means a new verdict file and both arms done again.
 - IFBench is a cheap structured-instruction sentinel. Report its 58 constraint
   types separately; do not let a high score mask agent or reasoning losses.
 - BFCL `memory` can be added if Hermes persistent memory is a deployment

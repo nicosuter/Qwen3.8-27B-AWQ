@@ -311,34 +311,36 @@ class DeferredTests(unittest.TestCase):
                 self.assertFalse(row["deferred"])
                 self.assertEqual(row["graded_by"], expected)
 
-    def write_run(self, tmp, rows, judge=None):
+    def write_run(self, tmp, rows, variant="candidate"):
         run = Path(tmp)
-        generations = run / "hle-candidate-r0.jsonl"
+        generations = run / f"hle-{variant}-r0.jsonl"
         with generations.open("w", encoding="utf-8") as handle:
             for row in rows:
                 handle.write(json.dumps(row) + "\n")
-        (run / "hle-candidate-r0.meta.json").write_text(json.dumps(
-            {"suite": "hle", "variant": "candidate", "replicate": 0,
-             "judge": self.JUDGE_PIN if judge is None else judge}))
+        # Deliberately no judge: a deferred run does not name one.
+        (run / f"hle-{variant}-r0.meta.json").write_text(json.dumps(
+            {"suite": "hle", "variant": variant, "replicate": 0, "deferred": True}))
         key = run / "hle.key.json"
         with tempfile.TemporaryDirectory() as inner:
             _, items = adapter.materialize([EXACT, CHOICE], Path(inner))
         key.write_text(json.dumps({"dataset": "cais/hle@x", "items": items}))
         return generations, key
 
-    def score(self, tmp, rows, replies=("reasoning: same.\ncorrect: yes",), judge=None):
+    def score(self, tmp, rows, replies=("reasoning: same.\ncorrect: yes",),
+              judge=None, variant="candidate"):
         sent = []
 
         def client(base_url, api_key, payload, timeout):
             sent.append(payload)
             return completion(replies[min(len(sent) - 1, len(replies) - 1)])
 
-        generations, key = self.write_run(tmp, rows, judge=judge)
-        results = Path(tmp) / "results.jsonl"
-        metadata = Path(tmp) / "meta.json"
+        generations, key = self.write_run(tmp, rows, variant=variant)
+        results = Path(tmp) / f"results-{variant}.jsonl"
+        metadata = Path(tmp) / f"meta-{variant}.json"
         args = adapter.parse_args([
             "score", "--generations", str(generations), "--key", str(key),
             "--results", str(results), "--metadata", str(metadata),
+            "--judge", judge or self.JUDGE_PIN,
         ])
         os.environ["EVAL_JUDGE_BASE_URL"] = "http://judge/v1"
         try:
@@ -347,6 +349,42 @@ class DeferredTests(unittest.TestCase):
             os.environ.pop("EVAL_JUDGE_BASE_URL", None)
         rows_out = [json.loads(line) for line in results.read_text().splitlines()]
         return rows_out, json.loads(metadata.read_text()), sent
+
+    def test_generation_can_defer_without_naming_a_judge(self) -> None:
+        pins = {"dataset": "a" * 40, "harness": adapter.HARNESS_ID,
+                "verifier": adapter.VERIFIER_ID, "adapter": adapter.self_pin()}
+        adapter.validate_pins(pins, require_judge=False)
+        with self.assertRaises(adapter.AdapterError):
+            adapter.validate_pins(pins, require_judge=True)
+
+    def test_the_judge_is_chosen_at_scoring_time(self) -> None:
+        rows = [{"id": "hle_1", "score": 0.0, "graded_by": "deferred",
+                 "deferred": True, "submitted": "eighteen", "replicate": 0}]
+        with tempfile.TemporaryDirectory() as tmp:
+            pin = "api:anthropic/claude-opus-5@2026-08-16"
+            out, meta, sent = self.score(tmp, rows, judge=pin)
+            self.assertEqual(meta["judge"], pin)
+            self.assertEqual(sent[0]["model"], "claude-opus-5")
+            self.assertEqual(out[0]["score"], 1.0)
+
+    def test_the_second_arm_cannot_use_a_different_judge(self) -> None:
+        rows = [{"id": "hle_1", "score": 0.0, "graded_by": "deferred",
+                 "deferred": True, "submitted": "eighteen", "replicate": 0}]
+        with tempfile.TemporaryDirectory() as tmp:
+            self.score(tmp, rows, variant="baseline")
+            with self.assertRaises(adapter.JudgeError):
+                self.score(tmp, rows, variant="candidate",
+                           judge="api:anthropic/claude-opus-5@2026-08-16")
+
+    def test_the_second_arm_reuses_the_first_arm_verdicts(self) -> None:
+        rows = [{"id": "hle_1", "score": 0.0, "graded_by": "deferred",
+                 "deferred": True, "submitted": "eighteen", "replicate": 0}]
+        with tempfile.TemporaryDirectory() as tmp:
+            self.score(tmp, rows, variant="baseline")
+            out, meta, sent = self.score(tmp, rows, variant="candidate")
+            self.assertEqual(sent, [], "the same string was judged twice")
+            self.assertEqual(out[0]["score"], 1.0)
+            self.assertEqual(meta["judge_cache_hits"], 1)
 
     def test_a_deferred_row_is_judged_and_a_settled_one_is_not(self) -> None:
         rows = [
@@ -381,11 +419,11 @@ class DeferredTests(unittest.TestCase):
             self.assertEqual(meta["judge_calls"], 1)
             self.assertEqual(meta["judge_cache_hits"], 1)
 
-    def test_an_unpinned_judge_in_the_metadata_is_refused(self) -> None:
+    def test_an_unpinned_judge_is_refused_at_scoring_time(self) -> None:
         rows = [{"id": "hle_1", "score": 0.0, "graded_by": "deferred",
                  "deferred": True, "submitted": "eighteen", "replicate": 0}]
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(adapter.JudgeError):
+            with self.assertRaises(adapter.AdapterError):
                 self.score(tmp, rows, judge="openai/gpt-oss-20b")
 
 

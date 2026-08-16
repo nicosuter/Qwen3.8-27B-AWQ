@@ -24,10 +24,17 @@ responses that said the same thing are guaranteed the same grade rather than
 merely likely to get one, and replicates are nearly free.
 
 Grading and generation are split. `run --defer-judging` leaves the open items
-unscored and `score` grades them afterwards, because a data-parallel serve of
-the model under test already holds every GPU, and because a judge fault should
-not cost the generation. The comparator refuses a file with a deferred row, so
-a half-graded suite cannot be read as a result.
+unscored and `score --judge ...` grades them afterwards, because a
+data-parallel serve of the model under test already holds every GPU, and
+because a judge fault should not cost the generation. The comparator refuses a
+file with a deferred row, so a half-graded suite cannot be read as a result.
+
+A deferred run names no judge. Which model grades is a fact about scoring, not
+about the responses, so generation can finish while that is still open and the
+choice costs nothing to revisit. What holds the comparison together instead is
+the verdict file: the first judge to write to it binds both arms, and a later
+pass asking for a different one is refused rather than silently putting a model
+change inside the delta.
 
 The absolute is still not comparable to a published HLE score, because that
 leaderboard grades with `openai/o3-mini` and this does not. The delta is what
@@ -213,6 +220,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     score.add_argument("--results", required=True, type=Path)
     score.add_argument("--metadata", type=Path)
     score.add_argument("--concurrency", type=int, default=8)
+    score.add_argument(
+        "--judge",
+        required=True,
+        help="hf:owner/name@<40-hex> or api:provider/model-id@<snapshot>; "
+             "chosen here rather than at generation time",
+    )
 
     for parser_with_judge in (run, score):
         parser_with_judge.add_argument(
@@ -239,14 +252,18 @@ def raw_response_path(run_dir: Path, variant: str, replicate: int, item_id: str)
     return _raw_response_path(run_dir, SUITE, variant, replicate, item_id)
 
 
-def validate_pins(pins: dict[str, str]) -> None:
+def validate_pins(pins: dict[str, str], require_judge: bool = True) -> None:
     dataset = pins.get("dataset", "")
     if not re.fullmatch(r"[0-9a-f]{40}", dataset):
         raise AdapterError(
             "pins.dataset must be the 40-character HLE dataset commit; "
             f"got {dataset!r}. A branch or tag is not an immutable pin."
         )
-    judge_pin_parts(pins.get("judge", ""))
+    # Deferred generation names no judge. Which model grades is a fact about
+    # scoring, not about the responses, and forcing the choice up front would
+    # mean re-generating to change your mind about a grader.
+    if require_judge:
+        judge_pin_parts(pins.get("judge", ""))
     require_pin(pins, "harness", HARNESS_ID)
     require_pin(pins, "verifier", VERIFIER_ID)
     require_pin(pins, "adapter", self_pin())
@@ -384,12 +401,23 @@ class JudgeCache:
     failure mode a per-response judge would reintroduce.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, pin: str | None = None) -> None:
         self.path = path
         self._lock = threading.Lock()
         self._entries: dict[str, dict[str, Any]] = {}
         if path.is_file():
             for record in read_jsonl(path):
+                # Both arms are scored in separate invocations against this one
+                # file. Grading them with different judges would put a model
+                # change inside the delta, so the first judge to write here
+                # binds the comparison.
+                recorded = str(record.get("judge") or "")
+                if pin is not None and recorded and recorded != pin:
+                    raise JudgeError(
+                        f"{path} holds verdicts from {recorded}, but this run "
+                        f"asks for {pin}. Grade both arms with one judge, or "
+                        "start a fresh verdict file."
+                    )
                 self._entries[str(record["key"])] = record
 
     @staticmethod
@@ -690,7 +718,7 @@ def build_judge(
         model=model,
         pin=pin,
         scheme=parts["scheme"],
-        cache=JudgeCache(run_dir / "judgements" / f"{SUITE}.jsonl"),
+        cache=JudgeCache(run_dir / "judgements" / f"{SUITE}.jsonl", pin),
         max_tokens=args.judge_max_tokens,
         timeout=args.judge_timeout,
         retries=args.judge_retries,
@@ -709,7 +737,7 @@ def command_run(
 ) -> int:
     check_action("run", SUITE)
     pins = load_pins()
-    validate_pins(pins)
+    validate_pins(pins, require_judge=not args.defer_judging)
 
     run_dir = env_path("EVAL_RUN_DIR")
     judge = None if args.defer_judging else build_judge(
@@ -759,7 +787,7 @@ def command_run(
                 "seed": seed, "served_model": model, "items": len(rows),
                 "concurrency": args.concurrency, "max_tokens": args.max_tokens,
                 "dataset": stored.get("dataset"), "generation": generation,
-                "adapter": self_pin(), "judge": pins["judge"],
+                "adapter": self_pin(),
                 "deferred_items": open_items, "deferred": True,
                 "wall_clock_seconds": round(time.monotonic() - started, 3),
             },
@@ -839,14 +867,8 @@ def command_score(
 
     meta_path = args.generations.with_suffix(".meta.json")
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
-    pin = meta.get("judge") or ""
-    try:
-        parts = judge_pin_parts(pin)
-    except AdapterError as error:
-        raise JudgeError(
-            f"{meta_path}: no usable pinned judge recorded, so these rows "
-            f"cannot be graded reproducibly: {error}"
-        ) from error
+    pin = args.judge
+    parts = judge_pin_parts(pin)
 
     missing = [row["id"] for row in rows if row["id"] not in key]
     if missing:
@@ -860,7 +882,7 @@ def command_score(
         model=parts["model"],
         pin=pin,
         scheme=parts["scheme"],
-        cache=JudgeCache(args.generations.parent / f"{SUITE}-judgements.jsonl"),
+        cache=JudgeCache(args.generations.parent / f"{SUITE}-judgements.jsonl", pin),
         max_tokens=args.judge_max_tokens,
         timeout=args.judge_timeout,
         retries=args.judge_retries,
