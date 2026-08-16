@@ -87,6 +87,18 @@ class PassThroughTests(unittest.TestCase):
         self.assertEqual(done.returncode, 2)
         self.assertIn("with-hf-token.sh", done.stderr)
 
+    def test_no_controlling_terminal_explains_itself(self) -> None:
+        """Claude Code and cron both run commands with no tty.
+
+        [[ -r /dev/tty ]] passes in that case while the read then fails with a
+        bare "Device not configured", which says nothing about what to do.
+        """
+        done = run(["--", "true"], stdin=subprocess.DEVNULL, timeout=20)
+        if done.returncode == 0:
+            self.skipTest("this environment supplied a terminal")
+        self.assertIn("no controlling terminal", done.stderr)
+        self.assertNotIn("Device not configured", done.stderr)
+
     def test_a_missing_token_never_hangs(self) -> None:
         """With no token and no terminal it must fail, not block on /dev/tty.
 

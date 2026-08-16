@@ -62,11 +62,17 @@ if [[ -n "${HF_TOKEN:-}" ]]; then
 else
     # -s so it is not echoed, -r so a backslash is not eaten. Reading from the
     # terminal rather than stdin keeps this usable inside a pipeline.
-    if [[ -r /dev/tty ]]; then
-        read -rsp "Hugging Face token (input hidden): " HF_TOKEN < /dev/tty
+    # Opening it is the test, not [[ -r /dev/tty ]]. That file can be readable
+    # while the process has no controlling terminal at all, which is the case
+    # under a tool that runs commands for you, and the read then fails with
+    # "Device not configured" instead of the message below.
+    if { exec 3</dev/tty; } 2>/dev/null; then
+        read -rsp "Hugging Face token (input hidden): " HF_TOKEN <&3
+        exec 3<&-
         echo >&2
     else
-        echo "no terminal to prompt on; export HF_TOKEN yourself" >&2
+        echo "no controlling terminal to prompt on. Run this from a shell you" >&2
+        echo "are typing into, or export HF_TOKEN in that shell yourself." >&2
         exit 1
     fi
 fi
