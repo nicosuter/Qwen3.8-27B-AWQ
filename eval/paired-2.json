@@ -143,6 +143,32 @@
         "--request-timeout",
         "1800"
       ]
+    },
+    {
+      "name": "aa_lcr",
+      "pins": {
+        "dataset": "bdae010bbce259820c0e34c1d7cce210d966fb75",
+        "harness": "builtin-lcr-exact-v1",
+        "verifier": "exact-answer-v1",
+        "adapter": "sha256:2ec35f246dd1fde406dee784de8b7c36800eeede76229fb14e187ad51daf833e"
+      },
+      "prepare": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/aa_lcr.py",
+        "prepare",
+        "--skip-incomplete"
+      ],
+      "run": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/aa_lcr.py",
+        "run",
+        "--concurrency",
+        "32",
+        "--max-tokens",
+        "32768",
+        "--request-timeout",
+        "3600"
+      ]
     }
   ]
 }
