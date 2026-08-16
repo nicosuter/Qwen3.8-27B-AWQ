@@ -187,6 +187,20 @@ requires before any delta is interpreted.
 Third-party quantizations of this model were scored under the same protocol.
 They are not reported here: one replicate each is too few to publish.
 
+### What this cost
+
+The four-suite comparison above took **48 H200-hours**: two jobs on 4x H200, of
+2h43 and 9h22. Most of that is replicates and one slow suite.
+
+Scoring a different quantization of this model against the same FP8 baseline,
+three suites at one replicate, including re-running the baseline half on the
+same hardware, took **5 to 7 A100-hours** per checkpoint.
+
+That second figure is the one worth knowing. A paired quality check against the
+model you quantized is a few GPU-hours on four cards. If you publish a
+quantization, you can afford to measure it rather than inherit the upstream
+model's numbers.
+
 ## Usage
 
 ### vLLM
