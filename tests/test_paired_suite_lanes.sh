@@ -23,6 +23,9 @@ check() { # check <desc> <expected> <actual>
 # Pull the two functions verbatim out of the sbatch.
 awk '/^suite_is_current\(\) \{/,/^\}/' "$SBATCH" > "$WORK/fns.sh"
 awk '/^count_alive\(\) \{/,/^\}/'     "$SBATCH" >> "$WORK/fns.sh"
+for fn in suite_failed record_failure usable_suites report_failures require_usable_suites; do
+    awk -v f="^${fn}\\\\(\\\\) \\\\{" '$0 ~ f, /^\}/' "$SBATCH" >> "$WORK/fns.sh"
+done
 awk '/^score_variant\(\) \{/,/^\}/'   "$SBATCH" >> "$WORK/fns.sh"
 grep -q "score_variant" "$WORK/fns.sh" || { echo "could not extract functions"; exit 1; }
 
@@ -71,6 +74,8 @@ JSON
     BASELINE_FP="sha256:aaa"; CANDIDATE_FP="sha256:bbb"
     BASELINE_INFO='{"label":"baseline","fingerprint":"sha256:aaa"}'
     CANDIDATE_INFO='{"label":"candidate","fingerprint":"sha256:bbb"}'
+    FAILURE_LOG="$RUN_DIR/logs/suite-failures.tsv"
+    FAILED_SUITES=()
 }
 
 max_overlap() {
@@ -113,12 +118,50 @@ check "scale split 2 ways" 4 "$(grep -c 'scale=0.25' <<<"$out")"
 overlap="$(max_overlap)"
 check "never exceeded 2 concurrent" "yes" "$([[ "$overlap" -le 2 ]] && echo yes || echo "no($overlap)")"
 
-echo "== case 3: a failing lane fails the variant but still reports siblings =="
+# The sbatch calls score_variant directly, so the failure ledger it builds has
+# to survive into the caller. Capturing through $(...) would run it in a subshell
+# and hide exactly the bug that matters here.
+run_variant() { # run_variant <variant>  -> sets $out, $rc
+    score_variant "$1" > "$WORK/variant.out" 2>&1
+    rc=$?
+    out="$(cat "$WORK/variant.out")"
+}
+
+echo "== case 3: a failing suite is dropped, its siblings carry on =="
 setup; SUITES="alpha failsuite"; REPLICATES=1; PARALLEL=0
-out="$(score_variant candidate 2>&1)"; rc=$?
-check "exit 1" 1 "$rc"
+run_variant candidate
+check "exit 0" 0 "$rc"
 check "failure named with its code" 1 "$(grep -c 'failsuite-r0 (candidate) failed with exit 3' <<<"$out")"
+check "reported the drop" 1 "$(grep -c 'failsuite is dropped from the comparison' <<<"$out")"
+check "reported at the moment it happened" 1 "$(grep -c 'failsuite-r0 (candidate) exited 3' <<<"$out")"
 check "sibling log still printed" 1 "$(grep -c 'suite=alpha rep=0' <<<"$out")"
+check "only the failure is dropped" "alpha" "$(usable_suites)"
+check "ledger written" 1 "$(grep -c 'failsuite' "$RUN_DIR/logs/suite-failures.tsv")"
+
+echo "== case 3b: a suite that failed on one variant is not rerun on the other =="
+SUITES="alpha failsuite"; REPLICATES=1; PARALLEL=0
+run_variant baseline
+check "exit 0" 0 "$rc"
+check "skipped on the second variant" 1 "$(grep -c 'failsuite (baseline) skipped' <<<"$out")"
+check "no lane spent on it" 0 "$(grep -c 'suite=failsuite' <<<"$out")"
+check "sibling still scored" 1 "$(grep -c 'suite=alpha rep=0 variant=baseline' <<<"$out")"
+
+echo "== case 3c: the only suite failing leaves nothing to compare =="
+setup; SUITES="failsuite"; REPLICATES=1; PARALLEL=0
+run_variant candidate
+check "score_variant still returns 0" 0 "$rc"
+check "nothing usable" "" "$(usable_suites)"
+out="$( (require_usable_suites) 2>&1 )"; rc=$?
+check "the run is aborted" 1 "$rc"
+check "said why" 1 "$(grep -c 'every suite failed; nothing left to compare' <<<"$out")"
+
+echo "== case 3d: one failed replicate drops the whole suite =="
+setup; SUITES="alpha failsuite"; REPLICATES=3; PARALLEL=0
+run_variant candidate
+check "exit 0" 0 "$rc"
+check "every replicate is recorded" 3 "$(grep -c 'failsuite' "$RUN_DIR/logs/suite-failures.tsv")"
+check "the suite is named once" 1 "${#FAILED_SUITES[@]}"
+check "alpha survives whole" "alpha" "$(usable_suites)"
 
 echo "== case 4: an already-scored replicate is reused, not rerun =="
 setup; SUITES="alpha"; REPLICATES=2; PARALLEL=0

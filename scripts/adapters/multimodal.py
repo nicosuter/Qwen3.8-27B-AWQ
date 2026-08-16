@@ -298,7 +298,10 @@ def materialize(
                 "set": name,
                 "metric": metric,
                 "answers": row["answers"],
-                "image": str(path),
+                # Relative to the run directory: a materialized set is meant to
+                # be copied to another run, cluster or filesystem, and an
+                # absolute path silently points back at the run that built it.
+                "image": str(path.relative_to(run_dir)),
                 "image_sha256": digest,
                 "kind": row["kind"],
             }
@@ -367,8 +370,28 @@ def answer_segment(content: str) -> str:
     return content[matches[-1].end():].strip() if matches else content.strip()
 
 
-def image_data_url(path: str) -> str:
-    payload = Path(path).read_bytes()
+def resolve_image(run_dir: Path, stored: str) -> Path:
+    """Locate an image recorded in the key file.
+
+    Key files written before paths were made relative carry an absolute path
+    into whichever run first materialized the set, which does not resolve once
+    the set is copied elsewhere. Prefer this run's own copy; the sha256 check on
+    read is what makes that substitution safe.
+    """
+    candidate = Path(stored)
+    if not candidate.is_absolute():
+        return run_dir / candidate
+    local = image_dir(run_dir) / candidate.name
+    return local if local.is_file() else candidate
+
+
+def image_data_url(path: Path, expected_sha256: str) -> str:
+    payload = path.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    if digest != expected_sha256:
+        raise AdapterError(
+            f"{path}: sha256 {digest} does not match the materialized {expected_sha256}"
+        )
     return "data:image/png;base64," + base64.b64encode(payload).decode()
 
 
@@ -438,7 +461,8 @@ def run_item(
     # Swap the text-only message for a text-plus-image one; the instruction and
     # every sampling field stay exactly as the shared builder produced them.
     payload["messages"][0]["content"] = [
-        {"type": "image_url", "image_url": {"url": image_data_url(entry["image"])}},
+        {"type": "image_url", "image_url": {"url": image_data_url(
+            resolve_image(run_dir, entry["image"]), entry["image_sha256"])}},
         {"type": "text", "text": f"{text}\n\n{ANSWER_INSTRUCTION}"},
     ]
     started_wall, started = time.time(), time.monotonic()

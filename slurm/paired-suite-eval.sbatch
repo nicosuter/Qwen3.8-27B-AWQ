@@ -308,8 +308,58 @@ count_alive() {
     echo "$alive"
 }
 
+# Suites are independent measurements, so one that fails is dropped from the
+# comparison rather than taking the whole run with it -- the GPU hours the others
+# already spent are worth keeping. A dropped suite is removed from BOTH variants:
+# the comparator pairs per item and would otherwise weigh a suite that only one
+# side scored. If nothing survives there is nothing to compare, and that is fatal.
+FAILURE_LOG="$RUN_DIR/logs/suite-failures.tsv"
+FAILED_SUITES=()
+
+suite_failed() {
+    local suite="$1" name
+    for name in ${FAILED_SUITES[@]+"${FAILED_SUITES[@]}"}; do
+        [[ "$name" == "$suite" ]] && return 0
+    done
+    return 1
+}
+
+record_failure() {
+    local variant="$1" suite="$2" rep="$3" rc="$4" log="$5"
+    suite_failed "$suite" || FAILED_SUITES+=("$suite")
+    mkdir -p "$(dirname "$FAILURE_LOG")"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$(date -Iseconds)" "$variant" "$suite" "$rep" "$rc" "$log" >> "$FAILURE_LOG"
+}
+
+usable_suites() {
+    local suite out=()
+    for suite in $SUITES; do
+        suite_failed "$suite" || out+=("$suite")
+    done
+    echo "${out[@]+${out[@]}}"
+}
+
+report_failures() {
+    (( ${#FAILED_SUITES[@]} > 0 )) || return 0
+    echo "=== suite failures ===" >&2
+    cat "$FAILURE_LOG" >&2
+    echo "dropped from the comparison: ${FAILED_SUITES[*]}" >&2
+    echo "kept: $(usable_suites)" >&2
+}
+
+# Called after each variant: once every suite is dead the remaining work is pure
+# waste, and serving the second checkpoint would burn hours to produce nothing.
+require_usable_suites() {
+    if [[ -z "$(usable_suites)" ]]; then
+        echo "every suite failed; nothing left to compare" >&2
+        report_failures
+        exit 1
+    fi
+}
+
 score_variant() {
-    local variant="$1" suite rep job label log rc failed=0
+    local variant="$1" suite rep job label log rc
     echo "=== generation policy probe ($variant) ==="
     "$PYTHON" scripts/adapters/gpqa_diamond.py probe --base-url "$BASE_URL" --model "$SERVED_NAME"
     # Travels with every result this variant produces, so the checkpoint is
@@ -322,6 +372,10 @@ score_variant() {
 
     local pending=() lane_pids=()
     for suite in $SUITES; do
+        if suite_failed "$suite"; then
+            echo "=== $suite ($variant) skipped; it already failed on the other variant ==="
+            continue
+        fi
         for (( rep = 0; rep < REPLICATES; rep++ )); do
             if [[ "${PAIRED_FORCE:-0}" != "1" ]] && suite_is_current "$variant" "$suite" "$rep"; then
                 echo "=== $suite r$rep ($variant) already scored under this policy; reusing ==="
@@ -367,8 +421,13 @@ score_variant() {
                 --request-timeout-scale "$TIMEOUT_SCALE" \
                 ${lane_conc:+--concurrency "$lane_conc"} \
                 ${lane_conc:-${lane_scale:+--concurrency-scale "$lane_scale"}} \
-                > "$lane_dir/$label.log" 2>&1
-            echo $? > "$lane_dir/$label.rc"
+                > "$lane_dir/$label.log" 2>&1 && rc=0 || rc=$?
+            echo "$rc" > "$lane_dir/$label.rc"
+            # Reported twice on purpose: here so the failure is visible the
+            # moment it happens, and again in the ordered replay below, because
+            # concurrent lanes finish in an order nobody can read.
+            (( rc == 0 )) || echo "[$(date +%H:%M:%S)] $label ($variant) exited $rc;" \
+                "see $lane_dir/$label.log" >&2
         ) &
         lane_pids+=("$!")
     done
@@ -385,11 +444,13 @@ score_variant() {
         cat "$lane_dir/$label.log" 2>/dev/null || true
         rc="$(cat "$lane_dir/$label.rc" 2>/dev/null || echo 1)"
         if [[ "$rc" != "0" ]]; then
-            echo "$label ($variant) failed with exit $rc" >&2
-            failed=1
+            echo "$label ($variant) failed with exit $rc; $suite is dropped from the comparison" >&2
+            record_failure "$variant" "$suite" "$rep" "$rc" "$lane_dir/$label.log"
         fi
     done
-    return "$failed"
+    # Always 0: which suites survived is decided once, after both variants, so a
+    # failure here cannot abort the run through `set -e`.
+    return 0
 }
 
 # A cancelled run leaves one side already scored. Reusing it costs nothing in
@@ -401,6 +462,7 @@ else
     start_server baseline "$BASELINE_REPO" "/mnt/model/snapshots/$BASELINE_REVISION"
     score_variant baseline
     stop_server
+    require_usable_suites
 fi
 
 if [[ "${PAIRED_FORCE:-0}" != "1" ]] && variant_is_scored candidate; then
@@ -409,12 +471,28 @@ else
     start_server candidate "$OUTPUT_DIR" "/mnt/model"
     score_variant candidate
     stop_server
+    require_usable_suites
 fi
+
+report_failures
 
 # One file per checkpoint so the comparator sees every suite at once; it
 # requires identical keys on both sides and will say so if a suite is missing.
+# Everything on disk is swept, not just this job's $SUITES: a chained job scores
+# one suite and reuses the rest, and narrowing to $SUITES here would silently
+# drop them from the macro. Failed suites are the one exclusion.
 for variant in baseline candidate; do
-    cat "$RUN_DIR"/raw/"$variant"/*.jsonl > "$RUN_DIR/$variant-all.jsonl"
+    : > "$RUN_DIR/$variant-all.jsonl"
+    for path in "$RUN_DIR"/raw/"$variant"/*.jsonl; do
+        [[ -e "$path" ]] || continue
+        suite="$(basename "$path")"
+        suite="${suite%-r*}"
+        if suite_failed "$suite"; then
+            echo "excluding $(basename "$path") from the comparison" >&2
+            continue
+        fi
+        cat "$path" >> "$RUN_DIR/$variant-all.jsonl"
+    done
 done
 
 echo "=== paired comparison ==="

@@ -117,7 +117,8 @@ class MaterializeTests(unittest.TestCase):
             prompts, key = adapter.materialize(self.rows(), run_dir)
             self.assertEqual(len(prompts), 2)
             for item_id, entry in key.items():
-                self.assertTrue(Path(entry["image"]).exists())
+                self.assertFalse(Path(entry["image"]).is_absolute())
+                self.assertTrue((run_dir / entry["image"]).exists())
                 self.assertEqual(len(entry["image_sha256"]), 64)
             # Identical pixels for both checkpoints is the point of hashing them.
             again = adapter.materialize(self.rows(), run_dir)[1]
@@ -184,6 +185,52 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(seen[0]["chat_template_kwargs"]["reasoning_effort"], "xhigh")
         self.assertEqual(seen[0]["temperature"], 1.0)
         self.assertEqual(row["score"], 1.0)
+
+
+class ImageResolutionTests(unittest.TestCase):
+    """A materialized set has to survive being copied to another run."""
+
+    def materialized(self, run_dir: Path) -> dict:
+        return adapter.materialize(
+            {"docvqa": [{"id": "docvqa-1", "question": "q", "answers": ["0.28"],
+                         "image": fake_image(), "kind": "f"}]},
+            run_dir,
+        )[1]
+
+    def test_relative_path_resolves_against_the_run_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            entry = self.materialized(run_dir)["docvqa-1"]
+            resolved = adapter.resolve_image(run_dir, entry["image"])
+            self.assertTrue(resolved.is_file())
+            self.assertEqual(resolved.parent, adapter.image_dir(run_dir))
+
+    def test_stale_absolute_path_falls_back_to_this_run(self) -> None:
+        # What broke the third-party evals: a key file copied from another run
+        # carried absolute paths into a directory that did not exist here.
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            self.materialized(run_dir)
+            stale = "/scratch/somewhere/else/materialized/multimodal-images/docvqa-1.png"
+            resolved = adapter.resolve_image(run_dir, stale)
+            self.assertEqual(resolved, adapter.image_dir(run_dir) / "docvqa-1.png")
+            self.assertTrue(resolved.is_file())
+
+    def test_absolute_path_is_kept_when_this_run_has_no_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            stale = "/scratch/somewhere/else/docvqa-1.png"
+            self.assertEqual(adapter.resolve_image(Path(tmp), stale), Path(stale))
+
+    def test_mismatched_image_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            entry = self.materialized(run_dir)["docvqa-1"]
+            path = adapter.resolve_image(run_dir, entry["image"])
+            self.assertTrue(adapter.image_data_url(path, entry["image_sha256"]))
+            # Substituting this run's copy is only safe because the bytes are
+            # checked; a different image under the same name must not go out.
+            with self.assertRaises(adapter.AdapterError):
+                adapter.image_data_url(path, "0" * 64)
 
 
 class ScoringTests(unittest.TestCase):
