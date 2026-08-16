@@ -121,6 +121,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run.add_argument("--max-tokens", type=int, default=131072)
     run.add_argument("--temperature", type=float, default=1.0)
     run.add_argument("--seed", type=int, default=38027)
+    # The scoring half of a deferred suite. The generating pass writes
+    # predictions and leaves the reviews deferred; this reuses those predictions
+    # without a model and scores them wherever it is safe to execute.
+    run.add_argument("--use-cache", type=Path, help="a previous run directory to resume from")
+    run.add_argument("--rerun-review", action="store_true",
+                     help="with --use-cache, discard the cached reviews and score again")
+    run.add_argument("--execute", choices=("true", "false"),
+                     help="override the suite's execute param; false defers scoring")
     run.add_argument("--print-only", action="store_true")
 
     rows = sub.add_parser("rows", help="convert EvalScope reviews into result rows")
@@ -419,6 +427,10 @@ def command_run(args: argparse.Namespace) -> int:
     # mmmu_pro otherwise falls back to the 4-option set with a warning.
     dataset_args = dict(entry.get("dataset_args") or {})
     dataset_args["dataset_id"] = str(local)
+    if args.execute is not None:
+        extra = dict(dataset_args.get("extra_params") or {})
+        extra["execute"] = args.execute == "true"
+        dataset_args["extra_params"] = extra
 
     task = {
         "model": args.model,
@@ -449,6 +461,11 @@ def command_run(args: argparse.Namespace) -> int:
     }
     if args.limit is not None:
         task["limit"] = args.limit
+    if args.use_cache:
+        # Note this rewrites the reviews inside the cache directory it is given,
+        # so point it at a copy rather than the run that produced them.
+        task["use_cache"] = str(args.use_cache)
+        task["rerun_review"] = bool(args.rerun_review)
 
     print(json.dumps({"suite": args.suite, "pin": pin, "dataset": str(local),
                       "task": task}, indent=2))

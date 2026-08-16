@@ -467,6 +467,43 @@ class ConcurrencyTests(unittest.TestCase):
     def test_concurrency_is_passed_through(self) -> None:
         self.assertEqual(self.plan(["--concurrency", "128"])["eval_batch_size"], 128)
 
+class DeferredTwoPassTests(unittest.TestCase):
+    """Generate where it is not safe to execute; score where it is."""
+
+    def plan(self, extra_args=()):
+        import io, contextlib
+        args = bridge.parse_args([
+            "run", "--suite", "livecodebench_v6", "--model", "m",
+            "--api-url", "http://x/v1", "--work-dir", "/tmp/es",
+            "--variant", "baseline", "--print-only", *extra_args,
+        ])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            bridge.command_run(args)
+        return json.loads(out.getvalue())["task"]
+
+    def params(self, task):
+        return task["dataset_args"]["live_code_bench"].get("extra_params") or {}
+
+    def test_the_generating_pass_does_not_execute(self) -> None:
+        # The suites file pins execute=False for this one.
+        self.assertFalse(self.params(self.plan())["execute"])
+
+    def test_the_scoring_pass_reuses_predictions_and_executes(self) -> None:
+        task = self.plan(["--use-cache", "/prev/run", "--rerun-review",
+                          "--execute", "true"])
+        self.assertEqual(task["use_cache"], "/prev/run")
+        self.assertTrue(task["rerun_review"])
+        self.assertTrue(self.params(task)["execute"])
+
+    def test_the_plugin_is_named_so_the_run_loads_it(self) -> None:
+        entry = bridge.load_suite(ROOT / "eval" / "evalscope-suites.json", "livecodebench_v6")
+        self.assertTrue((ROOT / entry["plugin"]).is_file())
+
+    def test_a_suite_without_a_plugin_is_unaffected(self) -> None:
+        entry = bridge.load_suite(ROOT / "eval" / "evalscope-suites.json", "mmlu_pro")
+        self.assertIsNone(entry.get("plugin"))
+
 
 if __name__ == "__main__":
     unittest.main()
