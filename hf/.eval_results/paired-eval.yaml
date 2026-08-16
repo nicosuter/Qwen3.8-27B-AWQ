@@ -16,14 +16,14 @@
 # the HLE example in the Hub docs and the community-evals workflow.
 - dataset:
     id: Idavidrein/gpqa
-    task_id: gpqa_diamond
+    task_id: diamond
   value: 89.77
   date: "2026-08-16"
   source:
     url: https://github.com/nicosuter/Qwen3.8-27B-AWQ/blob/a98c04ed502c42b2c25b7960d4b773635f42b52e/results/2026-08-16-paired-2/README.md
     name: Paired evaluation against Qwen3.8-27B-FP8, full result set and protocol
     user: nicosuter
-  notes: "full 198-item Diamond set, mean of 4 replicates, thinking enabled at reasoning_effort=xhigh, exact-choice scoring, no tools. The same harness scored the FP8 baseline at 88.89 (95% CI 87.99-89.79) against Qwen's published 89.2."
+  notes: "full 198-item Diamond set, config gpqa_diamond, split train, choices shuffled per item, mean of 4 replicates (matching the benchmark's epochs=4 / pass_at_1). Thinking enabled at reasoning_effort=xhigh with our own answer extraction rather than the inspect-ai multiple_choice solver. No tools. The same harness scored the FP8 baseline at 88.89 (95% CI 87.99-89.79) against Qwen's published 89.2."
 
 - dataset:
     id: MathArena/aime_2026
