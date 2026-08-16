@@ -366,6 +366,43 @@ class RegistryAgreementTests(unittest.TestCase):
             with self.subTest(suite=entry["suite"]):
                 self.assertIn(metric, names, f"{entry['benchmark']} declares {sorted(names)}")
 
+class PinAgreementTests(unittest.TestCase):
+    """Two arms on different dataset revisions is not a paired comparison."""
+
+    def write(self, tmp, name, rows):
+        path = Path(tmp) / name
+        path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+        return path
+
+    def compare(self, base_pin, cand_pin):
+        comparator = load_module("compare_eval3", "scripts/compare_eval_results.py")
+        a = bridge.convert([review(0, text="q", acc=1.0)], suite="s", dataset_pin=base_pin)
+        b = bridge.convert([review(0, text="q", acc=1.0)], suite="s", dataset_pin=cand_pin)
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = comparator.load_rows(self.write(tmp, "b.jsonl", a))
+            candidate = comparator.load_rows(self.write(tmp, "c.jsonl", b))
+            return comparator, baseline, candidate
+
+    def test_matching_pins_compare(self) -> None:
+        comparator, baseline, candidate = self.compare(PIN, PIN)
+        result = comparator.summarize(baseline, candidate, samples=8, seed=1)
+        self.assertIn("suites", result)
+
+    def test_differing_pins_are_refused(self) -> None:
+        other = "cais/hle@" + "b" * 40
+        comparator, baseline, candidate = self.compare(PIN, other)
+        with self.assertRaises(ValueError) as caught:
+            comparator.summarize(baseline, candidate, samples=8, seed=1)
+        self.assertIn("different dataset revisions", str(caught.exception))
+
+    def test_rows_without_a_pin_still_compare(self) -> None:
+        # Our own adapters do not record one; absence must not break them.
+        comparator = load_module("compare_eval4", "scripts/compare_eval_results.py")
+        rows = [{"suite": "s", "id": "i", "replicate": 0, "score": 1.0}]
+        with tempfile.TemporaryDirectory() as tmp:
+            loaded = comparator.load_rows(self.write(tmp, "x.jsonl", rows))
+        self.assertIsNone(next(iter(loaded.values()))["dataset_pin"])
+
 
 if __name__ == "__main__":
     unittest.main()

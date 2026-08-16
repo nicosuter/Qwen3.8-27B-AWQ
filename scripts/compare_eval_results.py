@@ -106,7 +106,15 @@ def load_rows(path: Path) -> dict[Key, dict[str, Any]]:
             must_pass = row.get("must_pass", False)
             if not isinstance(must_pass, bool):
                 raise ValueError(f"{path}:{line_number}: must_pass must be boolean")
-            rows[key] = {"score": score, "must_pass": must_pass, **failures}
+            rows[key] = {
+                "score": score,
+                "must_pass": must_pass,
+                # Optional: rows from our own adapters do not carry it. Where it
+                # is present it names the dataset revision the item came from,
+                # and the two arms are checked against each other below.
+                "dataset_pin": row.get("dataset_pin"),
+                **failures,
+            }
     if not rows:
         raise ValueError(f"{path}: no result rows")
     return rows
@@ -162,6 +170,23 @@ def summarize(
             "result keys differ: "
             f"missing from candidate={missing_candidate[:10]} "
             f"missing from baseline={missing_baseline[:10]}"
+        )
+
+    # Two arms scored against different dataset revisions would still join on
+    # every key and produce a plausible number. Where the rows say which
+    # revision they came from, the arms have to agree.
+    disagreeing = sorted(
+        {
+            f"{key[0]}: baseline {baseline_row['dataset_pin']} "
+            f"vs candidate {candidate[key]['dataset_pin']}"
+            for key, baseline_row in baseline.items()
+            if baseline_row["dataset_pin"] != candidate[key]["dataset_pin"]
+        }
+    )
+    if disagreeing:
+        raise ValueError(
+            "the two arms were scored against different dataset revisions, so "
+            "this is not a paired comparison: " + "; ".join(disagreeing[:5])
         )
 
     by_item: dict[tuple[str, str], list[tuple[float, float]]] = defaultdict(list)
