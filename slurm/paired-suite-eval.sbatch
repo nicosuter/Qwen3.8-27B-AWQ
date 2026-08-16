@@ -113,6 +113,13 @@ CONCURRENCY="${PAIRED_CONCURRENCY:-}"
 # request where a short prompt holds one.
 CONCURRENCY_SCALE="${PAIRED_CONCURRENCY_SCALE:-$(python3 -c "print($DP/8)")}"
 PYTHON="$PROJECT_DIR/.venv/bin/python"
+# Suite commands in the eval config name their deployment-specific paths as
+# ${EVAL_*} rather than spelling them out, so the config is a tracked, portable
+# artifact instead of a hand-edited file that exists only on one cluster. The
+# runner expands these fail-closed, so an unset one stops the run.
+export EVAL_PYTHON="$PYTHON"
+export EVAL_CORPUS="${PAIRED_CORPUS:-$RUN_BASE/eval/haystack.txt}"
+export EVAL_TOKENIZER="${PAIRED_TOKENIZER:-$OUTPUT_DIR}"
 PORT="$(( 8000 + (SLURM_JOB_ID % 1000) ))"
 SERVED_NAME=qwen38-eval
 BASE_URL="http://127.0.0.1:$PORT/v1"

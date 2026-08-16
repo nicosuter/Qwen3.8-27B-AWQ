@@ -69,7 +69,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def load_config(path: Path, suite: str) -> dict[str, Any]:
-    config = json.loads(path.read_text(encoding="utf-8"))
+    # The interpreter is the one deployment-specific part of a suite command:
+    # the venv sits outside the checkout so that per-commit checkouts can share
+    # it. Configs name it ${EVAL_PYTHON}, which resolves here under the runner's
+    # existing fail-closed rule -- an unset variable stops the run rather than
+    # exec'ing a file literally named "${EVAL_PYTHON}".
+    config = protocol.expand_environment(json.loads(path.read_text(encoding="utf-8")))
     missing = [key for key in REQUIRED_CONFIG_KEYS if key not in config]
     if missing:
         raise protocol.ProtocolError(f"{path}: missing {missing}")

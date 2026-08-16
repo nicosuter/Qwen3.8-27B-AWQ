@@ -1,0 +1,95 @@
+{
+  "order_seed": 38027,
+  "served_model_name": "qwen38-eval",
+  "generation": {
+    "enable_thinking": true,
+    "reasoning_effort": "xhigh",
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0
+  },
+  "suites": [
+    {
+      "name": "bfcl_v4",
+      "pins": {
+        "dataset": "61fc0608cfd831fcfbbaa676ebdfef0ed963eeda",
+        "harness": "builtin-bfcl-ast-v1",
+        "verifier": "bfcl-ast-match-v1",
+        "adapter": "sha256:43e03cf9368ad3e345e65939222254da8be0112d0362595e0863c8ce68e2c080"
+      },
+      "prepare": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/bfcl.py",
+        "prepare"
+      ],
+      "run": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/bfcl.py",
+        "run",
+        "--concurrency",
+        "384",
+        "--max-tokens",
+        "65536",
+        "--request-timeout",
+        "3600"
+      ]
+    },
+    {
+      "name": "multimodal",
+      "pins": {
+        "dataset": "lmms-lab/DocVQA@539088ef8a8ada01ac8e2e6d4e372586748a265e,lmms-lab/ChartQA@9e63b7df1592a1c2158e735cc1725454aef0d6d9,lmms-lab/textvqa@9c0699cd19768ac5ab97568f6b3cbac4c0062884",
+        "harness": "builtin-vqa-v1",
+        "verifier": "anls-relaxed-vqa-v1",
+        "adapter": "sha256:2a52fa156a668ce9c040f06a4993ca530576f642bcec62de1aefaa49fc5b39aa"
+      },
+      "prepare": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/multimodal.py",
+        "prepare",
+        "--items-per-set",
+        "200"
+      ],
+      "run": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/multimodal.py",
+        "run",
+        "--concurrency",
+        "256",
+        "--max-tokens",
+        "65536",
+        "--request-timeout",
+        "3600"
+      ]
+    },
+    {
+      "name": "gpqa_diamond",
+      "pins": {
+        "dataset": "633f5ee89ab8ad4522a9f850766b73f62147ffdd",
+        "harness": "builtin-gpqa-mcq-v1",
+        "verifier": "exact-choice-v1",
+        "adapter": "sha256:b864ae05c34d8f07579cff3ba2a81a61bcb91435600380b92a9a3442d6f9f206"
+      },
+      "prepare": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/gpqa_diamond.py",
+        "prepare",
+        "--split",
+        "gpqa_diamond"
+      ],
+      "run": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/gpqa_diamond.py",
+        "run",
+        "--concurrency",
+        "384",
+        "--max-tokens",
+        "131072",
+        "--request-timeout",
+        "4200"
+      ]
+    }
+  ]
+}

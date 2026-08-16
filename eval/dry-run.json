@@ -1,0 +1,70 @@
+{
+  "order_seed": 38027,
+  "served_model_name": "qwen38-awq-dry",
+  "generation": {
+    "enable_thinking": true,
+    "reasoning_effort": "xhigh",
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0
+  },
+  "suites": [
+    {
+      "name": "gpqa_diamond",
+      "pins": {
+        "dataset": "633f5ee89ab8ad4522a9f850766b73f62147ffdd",
+        "harness": "builtin-gpqa-mcq-v1",
+        "verifier": "exact-choice-v1",
+        "adapter": "sha256:cc780902d358b21cbe0e6df2144fa68cd35aca5d46472ab46bd016b33b95d924"
+      },
+      "prepare": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/gpqa_diamond.py",
+        "prepare",
+        "--split",
+        "gpqa_diamond"
+      ],
+      "run": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/gpqa_diamond.py",
+        "run",
+        "--concurrency",
+        "48"
+      ]
+    },
+    {
+      "name": "ruler",
+      "pins": {
+        "dataset": "sha256:632a63b0ccd60b992c263937e996f462bc43bc0e87c0b22d7edcea0d5aaa8540",
+        "harness": "builtin-ruler-synth-v1",
+        "verifier": "recall-string-match-v1",
+        "adapter": "sha256:ef6eb9af310cac17134f897de92fe484acc079b8d99b8d22600f82fdae16d9b5"
+      },
+      "prepare": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/ruler.py",
+        "prepare",
+        "--lengths",
+        "4096,32768,131072",
+        "--synthesis-seed",
+        "38027",
+        "--corpus",
+        "${EVAL_CORPUS}",
+        "--tokenizer",
+        "${EVAL_TOKENIZER}",
+        "--items-per-task",
+        "1"
+      ],
+      "run": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/ruler.py",
+        "run",
+        "--concurrency",
+        "12"
+      ]
+    }
+  ]
+}
