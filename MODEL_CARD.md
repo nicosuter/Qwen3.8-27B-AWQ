@@ -213,16 +213,13 @@ vllm serve nicosuter/Qwen3.8-27B-AWQ \
   --tool-call-parser qwen3_coder
 ```
 
-The weights are 21.5 GB, of which 0.85 GB is the MTP shard and 2.5 GB is the
-unquantized `lm_head`. That is before the KV cache, activations and CUDA graphs.
+The weights are 21.5 GB before any KV cache. It has been served on a single
+large card and split across two; 24 GB is untested and may not run at all.
 
-It has been served on a single large card and split across two. **24 GB is
-untested**, and the headroom there is thin enough that it may not run at all.
-If you try it, the levers are `--kv-cache-dtype fp8`, a shorter
-`--max-model-len`, and dropping what you do not need: the vision tower and the
-MTP head are both loaded by default and neither is required for text-only
-serving. Whether vLLM can be made to skip them is not something this repository
-has measured.
+The levers there are dropping what you are not using.
+`--limit-mm-per-prompt '{"image": 0}'` is meant to skip the vision tower, and
+the 0.85 GB MTP shard is only needed with speculation enabled. Neither has been
+measured here.
 
 Use the upstream generation policy: thinking enabled, `temperature=1.0`,
 `top_p=0.95`, `top_k=20`, `min_p=0`, no presence penalty, repetition penalty
