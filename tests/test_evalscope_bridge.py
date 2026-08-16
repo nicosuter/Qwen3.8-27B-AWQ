@@ -332,6 +332,40 @@ class GenerationSeedTests(unittest.TestCase):
         # Harmless and useful: it seeds the local RNG and any shuffling.
         self.assertIn("seed", self.plan())
 
+try:
+    from evalscope.api.registry import BENCHMARK_REGISTRY as _REGISTRY
+except Exception:  # noqa: BLE001 - evalscope is only installed where runs happen
+    _REGISTRY = None
+
+
+@unittest.skipUnless(_REGISTRY, "evalscope is not installed in this environment")
+class RegistryAgreementTests(unittest.TestCase):
+    """The port map has to agree with the EvalScope actually installed.
+
+    Confirmed against real reviews: a review's score.value keys are exactly the
+    benchmark's declared metric_list, so the registry is the authority and this
+    catches a version that renamed or moved one.
+    """
+
+    def spec(self):
+        path = ROOT / "eval" / "evalscope-suites.json"
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_every_named_benchmark_exists(self) -> None:
+        for entry in self.spec()["suites"]:
+            with self.subTest(suite=entry["suite"]):
+                self.assertIn(entry["benchmark"], _REGISTRY)
+
+    def test_every_metric_is_one_the_benchmark_declares(self) -> None:
+        for entry in self.spec()["suites"]:
+            metric = entry.get("metric")
+            if not metric:
+                continue
+            declared = _REGISTRY[entry["benchmark"]].metric_list
+            names = {m if isinstance(m, str) else next(iter(m)) for m in declared}
+            with self.subTest(suite=entry["suite"]):
+                self.assertIn(metric, names, f"{entry['benchmark']} declares {sorted(names)}")
+
 
 if __name__ == "__main__":
     unittest.main()
