@@ -23,7 +23,8 @@ check() { # check <desc> <expected> <actual>
 # Pull the two functions verbatim out of the sbatch.
 awk '/^suite_is_current\(\) \{/,/^\}/' "$SBATCH" > "$WORK/fns.sh"
 awk '/^count_alive\(\) \{/,/^\}/'     "$SBATCH" >> "$WORK/fns.sh"
-for fn in suite_failed record_failure usable_suites report_failures require_usable_suites; do
+for fn in suite_failed record_failure usable_suites report_failures require_usable_suites \
+          variant_requested concat_variant; do
     awk -v f="^${fn}\\\\(\\\\) \\\\{" '$0 ~ f, /^\}/' "$SBATCH" >> "$WORK/fns.sh"
 done
 awk '/^score_variant\(\) \{/,/^\}/'   "$SBATCH" >> "$WORK/fns.sh"
@@ -276,6 +277,34 @@ JSON
 out="$(score_variant baseline 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
 check "baseline reused on its own fingerprint" 1 "$(grep -c 'already scored' <<<"$out")"
+
+echo "== case 14: PAIRED_VARIANTS selects which arms a job scores =="
+VARIANTS="baseline"
+variant_requested baseline; check "baseline requested" 0 "$?"
+variant_requested candidate; check "candidate not requested" 1 "$?"
+VARIANTS="baseline candidate"
+variant_requested candidate; check "both requested" 0 "$?"
+
+echo "== case 15: scoring one arm does not blank the other arm's file =="
+setup
+mkdir -p "$RUN_DIR/raw/baseline"
+echo '{"id":"a"}' > "$RUN_DIR/raw/baseline/alpha-r0.jsonl"
+# Left by an earlier job that scored the candidate on another node.
+echo '{"id":"prior"}' > "$RUN_DIR/candidate-all.jsonl"
+concat_variant baseline > /dev/null 2>&1
+concat_variant candidate > /dev/null 2>&1
+check "baseline rebuilt" '{"id":"a"}' "$(cat "$RUN_DIR/baseline-all.jsonl")"
+check "candidate left intact" '{"id":"prior"}' "$(cat "$RUN_DIR/candidate-all.jsonl")"
+check "no temp files left behind" 0 "$(find "$RUN_DIR" -maxdepth 1 -name '.*-all.jsonl.*' | wc -l | tr -d ' ')"
+
+echo "== case 16: a failed suite is still excluded when concatenating =="
+setup
+mkdir -p "$RUN_DIR/raw/baseline"
+echo '{"id":"good"}' > "$RUN_DIR/raw/baseline/alpha-r0.jsonl"
+echo '{"id":"bad"}'  > "$RUN_DIR/raw/baseline/failsuite-r0.jsonl"
+record_failure baseline failsuite 0 3 /dev/null > /dev/null 2>&1
+concat_variant baseline > /dev/null 2>&1
+check "failed suite excluded" '{"id":"good"}' "$(cat "$RUN_DIR/baseline-all.jsonl")"
 
 echo
 echo "passed $PASS, failed $FAIL"

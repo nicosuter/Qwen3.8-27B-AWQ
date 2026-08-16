@@ -105,6 +105,23 @@ echo "gpu=${GPU_NAME:-unknown} timeout-scale=$TIMEOUT_SCALE"
 # Replicates fill it best -- the comparator already averages them per item, and
 # they are what the recovery interval actually needs.
 REPLICATES="${PAIRED_REPLICATES:-1}"
+# Both arms in one job serialises two server loads onto one allocation. Naming a
+# single variant lets them run on separate nodes against the same run directory,
+# which is safe because the two write disjoint paths: raw/$variant and
+# metadata/*-$variant-r*. Whichever finishes second produces the comparison.
+VARIANTS="${PAIRED_VARIANTS:-baseline candidate}"
+for want in $VARIANTS; do
+    case "$want" in
+        baseline|candidate) ;;
+        *) echo "PAIRED_VARIANTS must be 'baseline', 'candidate' or both; got $want" >&2
+           exit 1 ;;
+    esac
+done
+variant_requested() {
+    local want="$1" v
+    for v in $VARIANTS; do [[ "$v" == "$want" ]] && return 0; done
+    return 1
+}
 PARALLEL="${PAIRED_PARALLEL:-0}"   # 0 means "as many lanes as there are jobs"
 CONCURRENCY="${PAIRED_CONCURRENCY:-}"
 # Default to scaling each suite's configured concurrency by how much of the
@@ -515,7 +532,9 @@ score_variant() {
 # A cancelled run leaves one side already scored. Reusing it costs nothing in
 # validity as long as the flags and image are the same, and it keeps the node
 # for half as long.
-if [[ "${PAIRED_FORCE:-0}" != "1" ]] && variant_is_scored baseline; then
+if ! variant_requested baseline; then
+    echo "baseline not requested by PAIRED_VARIANTS=$VARIANTS; skipping"
+elif [[ "${PAIRED_FORCE:-0}" != "1" ]] && variant_is_scored baseline; then
     echo "baseline already scored in $RUN_DIR/raw/baseline; skipping"
 else
     start_server baseline "$BASELINE_REPO" "/mnt/model/snapshots/$BASELINE_REVISION"
@@ -524,7 +543,9 @@ else
     require_usable_suites
 fi
 
-if [[ "${PAIRED_FORCE:-0}" != "1" ]] && variant_is_scored candidate; then
+if ! variant_requested candidate; then
+    echo "candidate not requested by PAIRED_VARIANTS=$VARIANTS; skipping"
+elif [[ "${PAIRED_FORCE:-0}" != "1" ]] && variant_is_scored candidate; then
     echo "candidate already scored in $RUN_DIR/raw/candidate; skipping"
 else
     start_server candidate "$OUTPUT_DIR" "/mnt/model"
@@ -540,8 +561,13 @@ report_failures
 # Everything on disk is swept, not just this job's $SUITES: a chained job scores
 # one suite and reuses the rest, and narrowing to $SUITES here would silently
 # drop them from the macro. Failed suites are the one exclusion.
-for variant in baseline candidate; do
-    : > "$RUN_DIR/$variant-all.jsonl"
+concat_variant() {
+    local variant="$1" path suite found=0
+    # Built to a temp and moved into place. Truncating first blanked the other
+    # arm's file whenever a job scored only one variant, and left a reader
+    # holding a half-written file even when it scored both.
+    local scratch="$RUN_DIR/.$variant-all.jsonl.$$"
+    : > "$scratch"
     for path in "$RUN_DIR"/raw/"$variant"/*.jsonl; do
         [[ -e "$path" ]] || continue
         suite="$(basename "$path")"
@@ -550,8 +576,19 @@ for variant in baseline candidate; do
             echo "excluding $(basename "$path") from the comparison" >&2
             continue
         fi
-        cat "$path" >> "$RUN_DIR/$variant-all.jsonl"
+        cat "$path" >> "$scratch"
+        found=1
     done
+    if (( found )); then
+        mv -f "$scratch" "$RUN_DIR/$variant-all.jsonl"
+    else
+        rm -f "$scratch"
+        echo "no scored results for $variant; leaving $variant-all.jsonl as it was" >&2
+    fi
+}
+
+for variant in baseline candidate; do
+    concat_variant "$variant"
 done
 
 echo "=== paired comparison ==="
