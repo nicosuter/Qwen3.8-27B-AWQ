@@ -1,42 +1,33 @@
-# Results for the three suites that are registered Hub benchmarks and that we
-# run as the full published set. The other suites in this checkpoint's card are
-# deliberately absent: BFCL is registered only for v2/v3 and we run v4, and the
-# multimodal, LiveCodeBench, AA-LCR and AA-Omniscience sets are not benchmarks
-# here. Publishing a subset under a benchmark's name would invite exactly the
-# comparison it does not support.
+# Results for the benchmarks that are registered on the Hub and that we run as
+# the full published set.
 #
-# Self-reported. The GPQA figure is the one with independent corroboration: the
-# FP8 baseline measured 88.89 [87.99, 89.79] under the same harness against
-# Qwen's published 89.2.
+# Deliberately absent: BFCL is registered only for v2 and v3 while we run v4;
+# MathArena/apex-shortlist ships an eval.yaml but carries no benchmark:official
+# tag, so it is not a leaderboard; multimodal, LiveCodeBench, AA-LCR and
+# AA-Omniscience are not benchmark datasets here. Publishing our subset under a
+# benchmark's name would invite exactly the comparison it does not support.
+#
+# Self-reported: a verified badge requires the run to have happened in HF Jobs
+# under inspect-ai, which this harness is not. Values are percentages, matching
+# the HLE example in the Hub docs and the community-evals workflow.
 - dataset:
     id: Idavidrein/gpqa
     task_id: gpqa_diamond
-  value: 0.8977
+  value: 89.77
   date: "2026-08-16"
   source:
-    url: https://github.com/nicosuter/Qwen3.8-27B-AWQ/blob/master/results/2026-08-16-paired-2/README.md
-    name: Paired evaluation, full result set and protocol
+    url: https://github.com/nicosuter/Qwen3.8-27B-AWQ/blob/a98c04ed502c42b2c25b7960d4b773635f42b52e/results/2026-08-16-paired-2/README.md
+    name: Paired evaluation against Qwen3.8-27B-FP8, full result set and protocol
     user: nicosuter
-  notes: "full 198-item Diamond set, 4 replicates, thinking enabled at reasoning_effort=xhigh, exact-choice scoring, no tools"
+  notes: "full 198-item Diamond set, mean of 4 replicates, thinking enabled at reasoning_effort=xhigh, exact-choice scoring, no tools. The same harness scored the FP8 baseline at 88.89 (95% CI 87.99-89.79) against Qwen's published 89.2."
 
 - dataset:
     id: MathArena/aime_2026
     task_id: MathArena/aime_2026
-  value: 0.9833
+  value: 98.33
   date: "2026-08-16"
   source:
-    url: https://github.com/nicosuter/Qwen3.8-27B-AWQ/blob/master/results/2026-08-16-paired-2/README.md
-    name: Paired evaluation, full result set and protocol
+    url: https://github.com/nicosuter/Qwen3.8-27B-AWQ/blob/a98c04ed502c42b2c25b7960d4b773635f42b52e/results/2026-08-16-paired-2/README.md
+    name: Paired evaluation against Qwen3.8-27B-FP8, full result set and protocol
     user: nicosuter
-  notes: "all 30 problems, 4 replicates, exact integer answer, no tools"
-
-- dataset:
-    id: MathArena/apex-shortlist
-    task_id: MathArena/apex-shortlist
-  value: 0.6809
-  date: "2026-08-16"
-  source:
-    url: https://github.com/nicosuter/Qwen3.8-27B-AWQ/blob/master/results/2026-08-16-paired-2/README.md
-    name: Paired evaluation, full result set and protocol
-    user: nicosuter
-  notes: "all 47 problems, 4 replicates, exact integer answer, no tools"
+  notes: "all 30 problems, mean of 4 replicates, exact integer answer, thinking enabled at reasoning_effort=xhigh, no tools"
