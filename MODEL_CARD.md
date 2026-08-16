@@ -30,9 +30,6 @@ datasets:
 
 # Qwen3.8-27B-AWQ
 
-> Work in progress: preliminary paired evaluation below, on a suite set that is
-> still growing.
-
 A mixed-precision quantization of the language path in
 [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B): W4A16 asymmetric
 AWQ on the MLP and attention projections, FP8 block quantization on the Gated
@@ -143,29 +140,30 @@ redistribute this calibration set, attribute each subset separately.
 
 ## Evaluation
 
-**Preliminary.** The suite set is not final, so the macro average below covers
-only the four suites scored so far and will change as more are added.
+No quality difference from `Qwen/Qwen3.8-27B-FP8` is detectable on the four
+suites scored so far, at a resolution of roughly one point. The suite set is not
+final and will grow; nothing here covers executable coding or agentic use.
 
-These numbers come from a paired comparison against `Qwen/Qwen3.8-27B-FP8` on the
-same items in the same order. Recovery is candidate/baseline, averaged across
-suites with the geometric mean; intervals are an item-clustered bootstrap.
-Scored on 4x H200 NVL, four replicates per suite per checkpoint. The protocol is
-in [`EVAL.md`](https://github.com/nicosuter/Qwen3.8-27B-AWQ/blob/master/EVAL.md).
+These numbers come from a paired comparison against the FP8 release on the same
+items in the same order. Recovery is candidate/baseline, averaged across suites
+with the geometric mean; intervals are an item-clustered bootstrap. Scored on
+4x H200 NVL, four replicates per suite per checkpoint. The protocol is in
+[`EVAL.md`](https://github.com/nicosuter/Qwen3.8-27B-AWQ/blob/master/EVAL.md).
 
-| suite | items | reps | responses/ckpt | FP8 | AWQ | delta | 95% CI | recovery | recovery 95% CI |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | --- |
-| BFCL v4 | 1240 | 4 | 4960 | 87.42 | 87.74 | +0.32 | [-0.44, +1.11] | 100.37% | [99.50, 101.27] |
-| GPQA Diamond | 198 | 4 | 792 | 88.89 | 89.77 | +0.88 | [-1.01, +2.90] | 100.99% | [98.84, 103.30] |
-| MathArena 2026-06 | 77 | 4 | 308 | 80.52 | 79.87 | -0.65 | [-4.22, +3.25] | 99.19% | [94.74, 104.02] |
-| Multimodal | 600 | 4 | 2400 | 86.75 | 86.95 | +0.20 | [-0.70, +1.12] | 100.23% | [99.19, 101.30] |
-| **macro (4 suites)** | | | | **85.89** | **86.08** | **+0.19** | [-0.87, +1.28] | **100.20%** | [98.89, 101.53] |
+| suite | items x reps | FP8 | AWQ | delta | recovery (95% CI) |
+| --- | ---: | ---: | ---: | ---: | --- |
+| BFCL v4 | 1240 x 4 | 87.42 | 87.74 | +0.32 | 100.37% [99.50, 101.27] |
+| GPQA Diamond | 198 x 4 | 88.89 | 89.77 | +0.88 | 100.99% [98.84, 103.30] |
+| MathArena 2026-06 | 77 x 4 | 80.52 | 79.87 | -0.65 | 99.19% [94.74, 104.02] |
+| Multimodal | 600 x 4 | 86.75 | 86.95 | +0.20 | 100.23% [99.19, 101.30] |
+| **macro** | 4 suites | **85.89** | **86.08** | **+0.19** | **100.20%** [98.89, 101.53] |
 
 Multimodal is DocVQA, ChartQA and TextVQA at 200 items apiece, scored with their
 own published metrics. MathArena is AIME 2026 plus the Apex shortlist.
 
 The pre-registered rule was macro geometric-mean recovery of at least 99% on the
-point estimate. It measured 100.20%. The interval's lower bound is 98.89%, and no
-individual suite's interval excludes zero.
+point estimate. It measured 100.20%. No individual suite's interval excludes
+zero.
 
 Qwen publishes GPQA Diamond 89.2 for this model. The FP8 baseline measured 88.89,
 95% CI [87.99, 89.79] across its four replicates, and the AWQ checkpoint 89.77,
@@ -177,14 +175,13 @@ requires before any delta is interpreted.
 - No executable coding or agentic suite has run. LiveCodeBench v6 and
   Terminal-Bench 2.1 are both pending, and those are the workloads where 4-bit
   weights are most likely to cost something.
-- MathArena cannot resolve its own effect at 77 items. Its interval is +-3.7
+- MathArena cannot resolve its own effect at 77 items. Its interval is ±3.7
   points against a measured -0.65.
-- Around 83% of items score identically on both checkpoints, mostly at ceiling.
-  That is partly the result itself, but it means the effective sample is smaller
-  than the item counts suggest.
+- Around 83% of items score identically on both checkpoints, mostly at ceiling,
+  so the effective sample is smaller than the item counts suggest.
 - No suite here resolves to a tenth of a point. Two draws of BFCL v4 under
-  identical conditions differed by 0.7, inside the interval but worth knowing
-  before quoting a single figure.
+  identical conditions differed by 0.7, and the FP8 baseline's own four GPQA
+  replicates spanned 2.0 points without any quantization involved.
 
 Third-party quantizations of this model were scored under the same protocol.
 They are not reported here: one replicate each is too few to publish.
@@ -227,20 +224,18 @@ not claim either one yet.
 
 ## Limitations
 
-- Runtime compatibility and quality retention are unestablished until the
-  checks above are posted. If you need a validated 4-bit Qwen3.8, wait.
-- The recurrent path is quantized here, at 8 bits. FP8 weights on the DeltaNet
-  input projections need no calibration and carry per-block scales, but error
-  in a recurrent state accumulates along the sequence and only shows at long
-  context. RULER at 128K is that check, and its result is not posted.
+- Long context is unmeasured. The recurrent path is quantized, at 8 bits, and
+  error in a recurrent state accumulates along the sequence instead of being
+  bounded per token, so if it costs anything that is where it would show. RULER
+  could not resolve it: nearly every item scored the same on both checkpoints,
+  and the rest ran into the output cap.
 - An unquantized vision tower does not mean multimodal output is unaffected,
-  since image tokens still pass through a quantized decoder. That is what the
-  vision suites are there to measure.
+  since image tokens still pass through a quantized decoder. The multimodal
+  suite above is that check, on document, chart and scene text; it found no
+  difference.
 - Calibration is 256 samples at 4,096 tokens. The recipe was not tuned for
   behavior well past that length, or for languages and domains the blend does
   not cover.
-- Quantization inherits every limitation and bias of the upstream model and
-  fixes none of them.
 
 ## License
 
