@@ -104,6 +104,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     run.add_argument("--variant", required=True, choices=("baseline", "candidate"))
     run.add_argument("--repeats", type=int, default=1)
+    # EvalScope defaults eval_batch_size to 1, i.e. one request in flight. A
+    # 12k-item suite would take days, and the server sits idle between replies.
+    run.add_argument("--concurrency", type=int, default=64)
+    # Applied per subset, not per suite: mmlu_pro has 14 subsets, so --limit 20
+    # scores 280 items. Useful for smoke tests, misleading otherwise.
     run.add_argument("--limit", type=float, default=None)
     # A lane writes exactly where the sbatch's concatenation and reuse check
     # look, so swapping the runner changes nothing downstream of it.
@@ -436,6 +441,7 @@ def command_run(args: argparse.Namespace) -> int:
         # reproducibility, which is the half that the statistics need.
         "seed": args.seed,
         "repeats": args.repeats,
+        "eval_batch_size": args.concurrency,
         "generation_config": {
             "max_tokens": args.max_tokens,
             "temperature": args.temperature,

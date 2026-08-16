@@ -140,6 +140,9 @@ ORDER_SEED="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['o
 ES_DATASETS="${PAIRED_ES_DATASETS:-$RUN_BASE/eval-materialized/evalscope}"
 ES_MAX_TOKENS="${PAIRED_ES_MAX_TOKENS:-131072}"
 ES_REQUEST_TIMEOUT="${PAIRED_ES_REQUEST_TIMEOUT:-5400}"
+# EvalScope's eval_batch_size defaults to 1, one request in flight. Divided
+# across lanes below, exactly as the adapter path divides its own concurrency.
+ES_CONCURRENCY="${PAIRED_ES_CONCURRENCY:-256}"
 PARALLEL="${PAIRED_PARALLEL:-0}"   # 0 means "as many lanes as there are jobs"
 CONCURRENCY="${PAIRED_CONCURRENCY:-}"
 # Default to scaling each suite's configured concurrency by how much of the
@@ -495,6 +498,11 @@ score_variant() {
         lane_scale="$(python3 -c "print($CONCURRENCY_SCALE/$lanes)")"
     fi
 
+    # Same budget split as the adapter lanes: the win comes from item supply
+    # keeping the batch full, not from asking the server to carry more at once.
+    local es_lane_conc=$(( ${ES_CONCURRENCY:-256} / lanes ))
+    (( es_lane_conc > 0 )) || es_lane_conc=1
+
     local lane_dir="$RUN_DIR/logs/lanes-$variant"
     mkdir -p "$lane_dir"
     echo "scoring ${#pending[@]} job(s) for $variant across $lanes lane(s); live logs in $lane_dir"
@@ -522,6 +530,7 @@ score_variant() {
                     --results "$RUN_DIR/raw/$variant/$suite-r$rep.jsonl" \
                     --metadata "$RUN_DIR/metadata/$suite-$variant-r$rep.json" \
                     --max-tokens "${ES_MAX_TOKENS:-131072}" \
+                    --concurrency "$es_lane_conc" \
                     --request-timeout "$(python3 -c "print(${ES_REQUEST_TIMEOUT:-5400}*$TIMEOUT_SCALE)")" \
                     --seed "$(( ${ORDER_SEED:-0} + rep ))" \
                     > "$lane_dir/$label.log" 2>&1 && rc=0 || rc=$?

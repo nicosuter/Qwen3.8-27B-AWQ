@@ -443,6 +443,30 @@ class DatasetsRootTests(unittest.TestCase):
         # Built, not downloaded, so it does not live under the repo-named path.
         self.assertIn("/bfcl_v3/", json.loads(out.getvalue())["dataset"])
 
+class ConcurrencyTests(unittest.TestCase):
+    def plan(self, extra_args=()):
+        import io, contextlib
+        args = bridge.parse_args([
+            "run", "--suite", "mmlu_pro", "--model", "m", "--api-url", "http://x/v1",
+            "--work-dir", "/tmp/es", "--variant", "baseline", "--print-only",
+            *extra_args,
+        ])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            bridge.command_run(args)
+        return json.loads(out.getvalue())["task"]
+
+    def test_eval_batch_size_is_not_left_at_one(self) -> None:
+        """EvalScope defaults it to 1, one request in flight.
+
+        The smoke run showed a served suite crawling at a request per few
+        seconds with the server otherwise idle; 12k items would take days.
+        """
+        self.assertGreater(self.plan()["eval_batch_size"], 1)
+
+    def test_concurrency_is_passed_through(self) -> None:
+        self.assertEqual(self.plan(["--concurrency", "128"])["eval_batch_size"], 128)
+
 
 if __name__ == "__main__":
     unittest.main()
