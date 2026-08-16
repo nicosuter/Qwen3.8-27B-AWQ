@@ -118,6 +118,31 @@
         "--request-timeout",
         "3600"
       ]
+    },
+    {
+      "name": "aa_omniscience",
+      "pins": {
+        "dataset": "4a8ffc87c4650054825fb767fe0da4a4fc97ff32",
+        "harness": "builtin-omniscience-exact-v1",
+        "verifier": "exact-answer-with-abstention-v1",
+        "adapter": "sha256:bf6dbe95ee03c1b2aa50e8a73dd3db847899f4f614b52d96aa83908e2357aeb9"
+      },
+      "prepare": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/aa_omniscience.py",
+        "prepare"
+      ],
+      "run": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/aa_omniscience.py",
+        "run",
+        "--concurrency",
+        "384",
+        "--max-tokens",
+        "32768",
+        "--request-timeout",
+        "1800"
+      ]
     }
   ]
 }
