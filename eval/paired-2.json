@@ -169,6 +169,31 @@
         "--request-timeout",
         "3600"
       ]
+    },
+    {
+      "name": "mmlu_pro",
+      "pins": {
+        "dataset": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+        "harness": "builtin-mmlu-pro-mcq-v1",
+        "verifier": "exact-choice-v1",
+        "adapter": "sha256:0ac91aac2c7cbb2fc8be80af6278a2666e72fb562dd690232b572c018250fc23"
+      },
+      "prepare": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/mmlu_pro.py",
+        "prepare"
+      ],
+      "run": [
+        "${EVAL_PYTHON}",
+        "scripts/adapters/mmlu_pro.py",
+        "run",
+        "--concurrency",
+        "384",
+        "--max-tokens",
+        "32768",
+        "--request-timeout",
+        "1800"
+      ]
     }
   ]
 }
