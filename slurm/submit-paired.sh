@@ -37,12 +37,18 @@ USAGE
     exit 2
 }
 
+# Both --opt value and --opt=value are accepted. Matching only the first form
+# once sent a second --export through to sbatch, which honours the last one and
+# so silently dropped ALL and RUN_BASE, and the job died on its first line.
 while (( $# )); do
     case "$1" in
         --commit)   COMMIT="$2"; shift 2 ;;
+        --commit=*) COMMIT="${1#*=}"; shift ;;
         --export)   EXPORTS="$2"; shift 2 ;;
+        --export=*) EXPORTS="${1#*=}"; shift ;;
         --dry-run)  DRY=1; shift ;;
         -h|--help)  usage ;;
+        # An --export that reached sbatch would override the one built here.
         *)          SBATCH_ARGS+=("$1"); shift ;;
     esac
 done
