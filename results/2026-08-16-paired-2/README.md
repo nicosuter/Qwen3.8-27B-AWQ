@@ -21,6 +21,10 @@ mean and reported beside the absolute scores it derives from.
 | multimodal | 600 | 86.75 | 86.95 | +0.20 | [-0.70, +1.12] | 100.23% | [99.19, 101.30] |
 | **MACRO** | 4 | 85.89 | 86.08 | +0.19 | [-0.87, +1.28] | **100.20%** | [98.89, 101.53] |
 
+`bfcl_v4` is the suite identifier, not the dataset version. The data is BFCL's
+v3 static split, five categories of it; no v4 is published on the Hub. The name
+is kept because it keys the frozen order and every result file here.
+
 `near-lossless-claim=PASS` against a 99.00% bar, `automated-quality-gate=PASS`.
 
 The near-lossless rule was pre-registered on the **point estimate**. On this
