@@ -1,11 +1,15 @@
 # Results for the benchmarks that are registered on the Hub and that we run as
 # the full published set.
 #
-# Deliberately absent: BFCL is registered only for v2 and v3 while we run v4;
+# Deliberately absent: BFCL is registered only for v2 and v3 while we run v4,
+# and multimodal, LiveCodeBench, AA-LCR and AA-Omniscience are not benchmark
+# datasets on the Hub. Publishing our subset under a benchmark's name would
+# invite exactly the comparison it does not support.
+#
 # MathArena/apex-shortlist ships an eval.yaml but carries no benchmark:official
-# tag, so it is not a leaderboard; multimodal, LiveCodeBench, AA-LCR and
-# AA-Omniscience are not benchmark datasets here. Publishing our subset under a
-# benchmark's name would invite exactly the comparison it does not support.
+# tag, so it is not on the allow-list and this result may not aggregate into a
+# leaderboard. It is included anyway: it is the least saturated suite we run,
+# and it costs nothing if the Hub ignores it.
 #
 # Self-reported: a verified badge requires the run to have happened in HF Jobs
 # under inspect-ai, which this harness is not. Values are percentages, matching
@@ -31,3 +35,14 @@
     name: Paired evaluation against Qwen3.8-27B-FP8, full result set and protocol
     user: nicosuter
   notes: "all 30 problems, mean of 4 replicates, exact integer answer, thinking enabled at reasoning_effort=xhigh, no tools"
+
+- dataset:
+    id: MathArena/apex-shortlist
+    task_id: MathArena/apex-shortlist
+  value: 68.09
+  date: "2026-08-16"
+  source:
+    url: https://github.com/nicosuter/Qwen3.8-27B-AWQ/blob/3bb5ce38071a22174975b7835288b3d57c3f23c9/results/2026-08-16-paired-2/README.md
+    name: Paired evaluation against Qwen3.8-27B-FP8, full result set and protocol
+    user: nicosuter
+  notes: "all 47 problems, mean of 4 replicates, exact integer answer, thinking enabled at reasoning_effort=xhigh, no tools"
