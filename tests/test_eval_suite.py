@@ -204,5 +204,26 @@ class BatchPlanTests(unittest.TestCase):
     def test_the_long_context_batch_is_ruler_alone(self) -> None:
         self.assertEqual(eval_suite.batch("long-context")["suites"], ["ruler"])
 
+
+class BatchFieldTests(unittest.TestCase):
+    """A plan that records a limit the runner ignores is worse than no plan."""
+
+    def test_the_shakedown_carries_its_limit_and_arm(self) -> None:
+        entry = eval_suite.batch("shakedown")
+        self.assertEqual(entry["limit"], 50)
+        self.assertEqual(entry["variants"], ["baseline"])
+
+    def test_a_scoring_batch_limits_nothing(self) -> None:
+        for name in ("short-context", "long-context"):
+            with self.subTest(batch=name):
+                self.assertNotIn("limit", eval_suite.batch(name))
+
+    def test_the_field_command_prints_scalars_and_lists(self) -> None:
+        self.assertEqual(eval_suite.main(["--batch-field", "shakedown", "limit"]), 0)
+        self.assertEqual(eval_suite.main(["--batch-field", "shakedown", "variants"]), 0)
+
+    def test_an_absent_field_prints_nothing_rather_than_failing(self) -> None:
+        self.assertEqual(eval_suite.main(["--batch-field", "short-context", "limit"]), 0)
+
 if __name__ == "__main__":
     unittest.main()

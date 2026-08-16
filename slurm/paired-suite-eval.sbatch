@@ -68,7 +68,14 @@ if [[ -n "$BATCH" ]]; then
         exit 1
     fi
     SUITES="$(python3 scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" --batch "$BATCH")"
-    echo "batch=$BATCH"
+    # A batch carries more than a suite list. The shakedown is fifty items of one
+    # arm, and a plan that recorded that without the runner acting on it would
+    # have quietly scored all 1730.
+    BATCH_LIMIT="$(python3 scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" --batch-field "$BATCH" limit)"
+    BATCH_VARIANTS="$(python3 scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" --batch-field "$BATCH" variants)"
+    [[ -n "$BATCH_LIMIT" && -z "${PAIRED_LIMIT:-}" ]] && PAIRED_LIMIT="$BATCH_LIMIT"
+    [[ -n "$BATCH_VARIANTS" && -z "${PAIRED_VARIANTS:-}" ]] && PAIRED_VARIANTS="$BATCH_VARIANTS"
+    echo "batch=$BATCH limit=${PAIRED_LIMIT:-none} variants=${PAIRED_VARIANTS:-both}"
 fi
 if [[ -z "$SUITES" ]]; then
     SUITES="$(python3 scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" \
@@ -563,6 +570,7 @@ score_variant() {
                 --phase run --variant "$variant" --replicate "$rep" \
                 --base-url "$BASE_URL" \
                 --request-timeout-scale "$TIMEOUT_SCALE" \
+                ${PAIRED_LIMIT:+--limit "$PAIRED_LIMIT"} \
                 ${lane_conc:+--concurrency "$lane_conc"} \
                 ${lane_conc:-${lane_scale:+--concurrency-scale "$lane_scale"}} \
                 > "$lane_dir/$label.log" 2>&1 && rc=0 || rc=$?

@@ -170,11 +170,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", default=DEFAULT_VERSION)
     parser.add_argument("--select", nargs="+", help="resolve a suite list and print it")
     parser.add_argument("--batch", help="print the suites in a named batch")
+    parser.add_argument(
+        "--batch-field",
+        nargs=2,
+        metavar=("NAME", "FIELD"),
+        help="print one field of a batch, so a shell can act on it",
+    )
     parser.add_argument("--batches", action="store_true", help="list the batch plan")
     args = parser.parse_args(argv)
 
     if args.select:
         print(" ".join(select(args.select, args.version)))
+        return 0
+    if args.batch_field:
+        name, field = args.batch_field
+        value = batch(name, args.version).get(field, "")
+        print(" ".join(map(str, value)) if isinstance(value, list) else value)
         return 0
     if args.batch:
         print(" ".join(batch(args.batch, args.version)["suites"]))
