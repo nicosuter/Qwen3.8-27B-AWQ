@@ -311,3 +311,87 @@ class SuiteSetTests(unittest.TestCase):
         """Existing invocations keep working; the check is opt-in per run."""
         gate, _ = run_gate(*self.rows(["gpqa_diamond", "aa_lcr"]))
         self.assertIn("passed", gate)
+
+
+class GenerationTelemetryTests(unittest.TestCase):
+    """How much the candidate wrote is a result, not bookkeeping.
+
+    The AWQ arm reasons longer than the FP8 baseline on every suite measured.
+    By the paired median ratio this reports: 1.07x on mmmu_pro, 1.13x on
+    gpqa_diamond, 1.22x on matharena_2026_06, 1.14x overall. That costs serving
+    time, and it is also the mechanism behind MathArena's 87.5% recovery: the
+    longer arm met the output cap at 13.0% against the baseline's 7.8%, and a
+    truncated item scores as a wrong answer rather than as a budget that ran
+    out. Nothing in the score table would have said so.
+    """
+
+    def report(self, baseline_rows, candidate_rows, *extra):
+        tmp = tempfile.mkdtemp()
+        base = Path(tmp) / "base.jsonl"
+        cand = Path(tmp) / "cand.jsonl"
+        out = Path(tmp) / "report.json"
+        base.write_text("\n".join(json.dumps(r) for r in baseline_rows), encoding="utf-8")
+        cand.write_text("\n".join(json.dumps(r) for r in candidate_rows), encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "compare_eval_results.py"),
+             "--baseline", str(base), "--candidate", str(cand), "--output", str(out),
+             "--bootstrap-samples", "200", *extra],
+            capture_output=True, text=True,
+        )
+        return json.loads(out.read_text()), proc.stdout
+
+    def paired(self, n=20, base_tokens=1000, ratio=1.5, truncate_candidate=0):
+        baseline, candidate = [], []
+        for i in range(n):
+            baseline.append(row("alpha", f"i{i}", 0, 1.0,
+                                output_tokens=base_tokens, reasoning_tokens=base_tokens,
+                                finish_reason="stop"))
+            cut = i < truncate_candidate
+            candidate.append(row("alpha", f"i{i}", 0, 0.0 if cut else 1.0,
+                                 output_tokens=int(base_tokens * ratio),
+                                 reasoning_tokens=int(base_tokens * ratio),
+                                 finish_reason="length" if cut else "stop"))
+        return baseline, candidate
+
+    def test_the_ratio_is_reported_per_suite_and_overall(self) -> None:
+        report, stdout = self.report(*self.paired(ratio=1.5))
+        generation = report["suites"]["alpha"]["generation"]
+        self.assertAlmostEqual(generation["reasoning_ratio_median"], 1.5, places=6)
+        self.assertAlmostEqual(report["macro"]["reasoning_ratio_geomean"], 1.5, places=6)
+        self.assertIn("1.50x", stdout)
+
+    def test_the_ratio_is_paired_rather_than_a_ratio_of_medians(self) -> None:
+        """Ratio of medians moves with the item mix; the median ratio does not."""
+        baseline, candidate = self.paired(n=4, base_tokens=100, ratio=2.0)
+        # One enormously long item on both arms, in the same proportion.
+        baseline.append(row("alpha", "huge", 0, 1.0, output_tokens=100000,
+                            reasoning_tokens=100000, finish_reason="stop"))
+        candidate.append(row("alpha", "huge", 0, 1.0, output_tokens=200000,
+                             reasoning_tokens=200000, finish_reason="stop"))
+        generation = self.report(baseline, candidate)[0]["suites"]["alpha"]["generation"]
+        self.assertAlmostEqual(generation["reasoning_ratio_median"], 2.0, places=6)
+
+    def test_truncation_is_counted_per_arm(self) -> None:
+        report, stdout = self.report(*self.paired(n=20, truncate_candidate=3))
+        generation = report["suites"]["alpha"]["generation"]
+        self.assertEqual(generation["baseline"]["truncated"], 0)
+        self.assertEqual(generation["candidate"]["truncated"], 3)
+        self.assertAlmostEqual(generation["candidate"]["truncated_fraction"], 0.15)
+        self.assertEqual(report["macro"]["truncated"], {"baseline": 0, "candidate": 3})
+
+    def test_an_arm_cut_off_more_often_is_called_out(self) -> None:
+        """The asymmetry is the finding; a symmetric cap is far less alarming."""
+        _, stdout = self.report(*self.paired(n=20, truncate_candidate=3))
+        self.assertIn("cut off 3 times", stdout)
+        _, quiet = self.report(*self.paired(n=20, truncate_candidate=0))
+        self.assertNotIn("cut off", quiet)
+
+    def test_rows_without_token_counts_are_tolerated(self) -> None:
+        """Harbor-run suites own their generation loop and report no counts."""
+        baseline = [row("alpha", f"i{i}", 0, 1.0) for i in range(8)]
+        candidate = [row("alpha", f"i{i}", 0, 1.0) for i in range(8)]
+        report, stdout = self.report(baseline, candidate)
+        generation = report["suites"]["alpha"]["generation"]
+        self.assertIsNone(generation["reasoning_ratio_median"])
+        self.assertIsNone(generation["baseline"]["reasoning_tokens_median"])
+        self.assertNotIn("reasoning tokens", stdout)

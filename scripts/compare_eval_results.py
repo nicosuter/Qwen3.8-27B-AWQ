@@ -94,6 +94,52 @@ def parse_floors(raw: list[str]) -> dict[str, float]:
     return floors
 
 
+def _optional_int(value: Any) -> int | None:
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def generation_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """How long an arm wrote, and how often it was cut off doing it."""
+    output = [r["output_tokens"] for r in rows if r["output_tokens"] is not None]
+    reasoning = [r["reasoning_tokens"] for r in rows if r["reasoning_tokens"] is not None]
+    truncated = sum(1 for r in rows if r["finish_reason"] == "length")
+    return {
+        "rows": len(rows),
+        "output_tokens_median": statistics.median(output) if output else None,
+        "output_tokens_mean": statistics.fmean(output) if output else None,
+        "reasoning_tokens_median": statistics.median(reasoning) if reasoning else None,
+        "reasoning_tokens_mean": statistics.fmean(reasoning) if reasoning else None,
+        # The cap only shows up in the score as items the model never answered,
+        # which reads as a capability gap rather than as a budget that ran out.
+        "truncated": truncated,
+        "truncated_fraction": truncated / len(rows) if rows else None,
+    }
+
+
+def generation_comparison(
+    baseline: dict[Key, dict[str, Any]], candidate: dict[Key, dict[str, Any]], suite: str
+) -> dict[str, Any]:
+    """Per-suite generation length for both arms, and the paired ratio.
+
+    The ratio is the median of per-item ratios rather than a ratio of medians:
+    the two arms answered the same items, so the per-item ratio is a paired
+    quantity and does not move when the item mix does.
+    """
+    keys = [key for key in baseline if key[0] == suite]
+    ratios = []
+    for key in keys:
+        before = baseline[key]["reasoning_tokens"]
+        after = candidate[key]["reasoning_tokens"]
+        if before and after is not None:
+            ratios.append(after / before)
+    return {
+        "baseline": generation_stats([baseline[key] for key in keys]),
+        "candidate": generation_stats([candidate[key] for key in keys]),
+        "reasoning_ratio_median": statistics.median(ratios) if ratios else None,
+        "reasoning_ratio_items": len(ratios),
+    }
+
+
 def load_rows(path: Path) -> dict[Key, dict[str, Any]]:
     rows: dict[Key, dict[str, Any]] = {}
     with path.open(encoding="utf-8") as handle:
@@ -137,6 +183,15 @@ def load_rows(path: Path) -> dict[Key, dict[str, Any]]:
                 # is present it names the dataset revision the item came from,
                 # and the two arms are checked against each other below.
                 "dataset_pin": row.get("dataset_pin"),
+                # How much the model wrote to get there, which is a result in
+                # its own right and not bookkeeping: a quantized checkpoint that
+                # matches on accuracy while reasoning half again as long costs
+                # that much more to serve, and it runs into any output ceiling
+                # that much sooner. Absent on rows from harnesses that own their
+                # own generation loop, so every consumer treats it as optional.
+                "output_tokens": _optional_int(row.get("output_tokens")),
+                "reasoning_tokens": _optional_int(row.get("reasoning_tokens")),
+                "finish_reason": row.get("finish_reason"),
                 **failures,
             }
     if not rows:
@@ -276,6 +331,7 @@ def summarize(
             "improved_items": improvements,
             "regressed_items": regressions,
             "tied_items": len(items) - improvements - regressions,
+            "generation": generation_comparison(baseline, candidate, suite),
         }
 
     suite_names = sorted(suites)
@@ -308,6 +364,24 @@ def summarize(
                 percentile(macro_recovery_bootstrap, 0.025),
                 percentile(macro_recovery_bootstrap, 0.975),
             ],
+            # Geometric for the same reason recovery is: it is an average of
+            # ratios. Reported unconditionally, because a checkpoint that
+            # matches on score while writing half again as much has not come
+            # for free, and nothing else in this report would say so.
+            "reasoning_ratio_geomean": geometric_mean(
+                [
+                    suite_results[suite]["generation"]["reasoning_ratio_median"]
+                    for suite in suite_names
+                    if suite_results[suite]["generation"]["reasoning_ratio_median"]
+                ]
+            ),
+            "truncated": {
+                arm: sum(
+                    suite_results[suite]["generation"][arm]["truncated"]
+                    for suite in suite_names
+                )
+                for arm in ("baseline", "candidate")
+            },
         },
         "bootstrap": {"samples": samples, "seed": seed, "cluster": "item"},
     }
@@ -508,6 +582,44 @@ def main() -> int:
         f"  {100 * macro['recovery_geomean']:7.2f}%"
         f"  [{100 * macro['recovery_ci95'][0]:6.2f}, {100 * macro['recovery_ci95'][1]:6.2f}]"
     )
+    # Printed as its own table rather than folded into the scores, because it
+    # answers a different question: not whether the candidate is as good, but
+    # what it spent getting there. A checkpoint that matches on accuracy while
+    # writing half again as many tokens costs that much more to serve and meets
+    # any output ceiling that much sooner -- and truncation is the mechanism by
+    # which the second turns into the first, silently, as items the model never
+    # answered at all.
+    if any(s["generation"]["reasoning_ratio_median"] for s in report["suites"].values()):
+        print()
+        print("suite                        reasoning tokens (median)   ratio"
+              "   truncated base/cand")
+        for suite, result in report["suites"].items():
+            generation = result["generation"]
+            ratio = generation["reasoning_ratio_median"]
+            before = generation["baseline"]["reasoning_tokens_median"]
+            after = generation["candidate"]["reasoning_tokens_median"]
+            if ratio is None or before is None:
+                continue
+            print(
+                f"{suite[:28]:28} {before:9.0f} {after:9.0f}"
+                f"        {ratio:6.2f}x"
+                f"   {generation['baseline']['truncated']:5d}"
+                f" /{generation['candidate']['truncated']:5d}"
+            )
+        truncated = macro["truncated"]
+        print(
+            f"{'MACRO':28} {'':9} {'':9}"
+            f"        {macro['reasoning_ratio_geomean']:6.2f}x"
+            f"   {truncated['baseline']:5d} /{truncated['candidate']:5d}"
+        )
+        if truncated["candidate"] > truncated["baseline"]:
+            print(
+                f"note: the candidate was cut off {truncated['candidate']} times against the "
+                f"baseline's {truncated['baseline']}. A truncated item scores as a wrong "
+                "answer, so a cap the two arms meet at different rates moves the "
+                "comparison on its own."
+            )
+
     gate = report["gate"]
     # The interval, not the verdict, is the honest object here: the bar is a
     # convenience and the width is what says whether the number means anything.
