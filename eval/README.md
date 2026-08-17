@@ -112,6 +112,19 @@ in the environment; nothing about a cluster's hardware is written down here.
 `--only` names lanes to submit when the rest are already in flight, and
 `--dry-run` prepares the checkout and prints the sbatch without submitting.
 
+A lane's GPUs go into tensor-parallel pairs by default -- `--tp`/`--dp` override
+and naming one settles the other. Pairs because that is the tensor-parallel size
+production serves at, and reduction order is a function of that size, so it is
+the setting where the evaluation performs the same cross-GPU reduction the
+deployment does. It also shortens the tail the wall clock is made of, and stays
+NVLink-local on hardware whose GPUs are not uniformly connected.
+
+**Results across parallel layouts are treated as comparable.** The reduction
+order does differ between them, and that is a last-bit perturbation of the same
+kind as batch composition, which the reuse gate already declines to rescore for.
+This is a recorded decision rather than a measured equivalence; the runs that
+predate it were scored data-parallel and are not re-run.
+
 ## Build and run
 
 The repository defaults to the official Qwen3.8-specific vLLM image for

@@ -84,18 +84,34 @@ else
     SUITES="$("${EVAL_PYTHON:-python3}" eval/scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" --select $SUITES)"
 fi
 echo "eval-suite=$EVAL_SUITE_VERSION suites=$SUITES"
-# Tensor-parallel by default, not data-parallel, because the wall clock here is
-# a tail. 43% of a scoring run's wall clock passes with under sixteen requests in
-# flight, and decode is weight-read bound: four data-parallel replicas each read
-# their whole copy per step, so fifteen sequences spread across them move four
-# times the bytes that one sharded replica would. Tensor parallelism also pools
-# the KV cache instead of partitioning it into four, which matters more now that
-# RULER shares a server with the short suites.
+# Two tensor-parallel pairs, not four data-parallel replicas and not one
+# four-way replica. Three reasons, in the order they decided it.
 #
-# The all-reduce this costs scales with batch size, so it is largest in the burst
-# and negligible in the drain -- the opposite shape to where the wall clock is.
-TP="${PAIRED_TP:-4}"
-DP="${PAIRED_DP:-1}"
+# Production serves this checkpoint at tensor-parallel 2, because it does not fit
+# in one card there. Reduction order is a function of the tensor-parallel size,
+# so TP=2 is the only setting on this hardware that performs the same cross-GPU
+# reduction production performs. TP=1 never exercises that path and TP=4
+# exercises a different one.
+#
+# The wall clock is a tail: 43% of a scoring run passes with under sixteen
+# requests in flight, and decode is weight-read bound, so four data-parallel
+# replicas each read their whole copy per step where two sharded ones read half
+# each. It also halves KV fragmentation, which matters now that RULER shares a
+# server with the short suites.
+#
+# And it survives a bad allocation. This node has two NVLink topologies -- GPUs
+# 0-3 are two isolated pairs, GPUs 4-7 a fully connected quad -- and the
+# scheduler is not topology-aware, so which half a job draws is arbitrary. Pairs
+# are NVLink-local in either half; a four-way replica on the wrong half puts
+# PCIe in the critical path of every layer.
+#
+# Treated as numerically equivalent to the data-parallel runs before it. The
+# reduction order does differ, and that is a last-bit perturbation of the same
+# kind as batch composition, which suite_is_current already treats as
+# distribution-preserving rather than rescoring for. Recorded as a decision, not
+# as something measured.
+TP="${PAIRED_TP:-2}"
+DP="${PAIRED_DP:-2}"
 # A hand-submitted job's --gres and these are set independently, so they can
 # disagree. vLLM would then either idle GPUs or fail deep into startup, after
 # the image and weights are already loaded. Check what the cgroup granted.

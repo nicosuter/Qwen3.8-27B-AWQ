@@ -17,9 +17,9 @@
 # A lane's share of the allocation is declared, not assumed. `--gpus-per-lane`
 # sets both the GRES the job asks slurm for and how vLLM is started across them,
 # so the two cannot disagree; the sbatch checks them against the cgroup anyway
-# and refuses a job that got fewer. By default those GPUs go into one
-# tensor-parallel replica rather than that many data-parallel ones, because the
-# wall clock is a tail and tensor parallelism is what shortens a tail;
+# and refuses a job that got fewer. By default those GPUs go into
+# tensor-parallel pairs, matching the size production serves at and staying
+# NVLink-local on a node whose GPUs are not uniformly connected;
 # `--tp`/`--dp` override, and their product has to be the lane's GPU count.
 #
 # And the campaign holds no more of the cluster than it was told it may.
@@ -138,9 +138,20 @@ is_positive() { [[ "$1" =~ ^[1-9][0-9]*$ ]]; }
 [[ -n "$CAMPAIGN_ARCH" ]] || { echo "--arch is required" >&2; campaign_usage; }
 is_positive "${GPU_QUOTA:-}" || { echo "--gpu-quota must be a positive integer" >&2; campaign_usage; }
 is_positive "$GPUS_PER_LANE" || { echo "--gpus-per-lane must be a positive integer" >&2; campaign_usage; }
-# One tensor-parallel replica over the lane's GPUs unless told otherwise.
-LANE_TP="${LANE_TP:-$GPUS_PER_LANE}"
-LANE_DP="${LANE_DP:-1}"
+# Pairs unless told otherwise, and giving one of the two settles the other: a
+# campaign that names --tp should not have to restate the arithmetic, and a
+# derived value cannot disagree with --gpus-per-lane the way a second literal
+# can. A lane of one GPU cannot be paired, so it degrades to a single replica.
+if [[ -z "$LANE_TP" && -z "$LANE_DP" ]]; then
+    LANE_TP=$(( GPUS_PER_LANE < 2 ? GPUS_PER_LANE : 2 ))
+    LANE_DP=$(( GPUS_PER_LANE / LANE_TP ))
+elif [[ -z "$LANE_DP" ]]; then
+    is_positive "$LANE_TP" || { echo "--tp must be a positive integer" >&2; campaign_usage; }
+    LANE_DP=$(( GPUS_PER_LANE / LANE_TP ))
+elif [[ -z "$LANE_TP" ]]; then
+    is_positive "$LANE_DP" || { echo "--dp must be a positive integer" >&2; campaign_usage; }
+    LANE_TP=$(( GPUS_PER_LANE / LANE_DP ))
+fi
 is_positive "$LANE_TP" || { echo "--tp must be a positive integer" >&2; campaign_usage; }
 is_positive "$LANE_DP" || { echo "--dp must be a positive integer" >&2; campaign_usage; }
 # Refused here rather than after the job starts: a product that does not match

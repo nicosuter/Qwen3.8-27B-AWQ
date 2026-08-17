@@ -138,12 +138,20 @@ echo "== case 5d: the GPUs a lane asks slurm for are the ones vLLM is given =="
 # can disagree, which vLLM discovers after the image and the weights are loaded.
 campaign --gpus-per-lane 2
 check "gres requested" 3 "$(grep -c -- '--gres gpu:2' "$SUBMIT_LOG")"
-check "and the lane's GPUs go into one tensor-parallel replica" 3 \
+check "a two-GPU lane is one tensor-parallel pair" 3 \
     "$(grep -c -- 'PAIRED_TP=2,PAIRED_DP=1' "$SUBMIT_LOG")"
 
 echo "== case 5e: --tp and --dp must multiply to the lane's GPU count =="
-campaign --gpus-per-lane 4 --tp 2 --dp 2
-check "a matching split is accepted" 3 "$(grep -c -- 'PAIRED_TP=2,PAIRED_DP=2' "$SUBMIT_LOG")"
+# Four GPUs default to two tensor-parallel pairs: the size production serves at,
+# and NVLink-local on both halves of a node whose GPUs are not uniformly linked.
+campaign --gpus-per-lane 4
+check "four GPUs become two pairs" 3 "$(grep -c -- 'PAIRED_TP=2,PAIRED_DP=2' "$SUBMIT_LOG")"
+# Naming one settles the other, so a campaign cannot state arithmetic that
+# disagrees with --gpus-per-lane.
+campaign --gpus-per-lane 4 --tp 4
+check "--tp alone derives the replica count" 3 "$(grep -c -- 'PAIRED_TP=4,PAIRED_DP=1' "$SUBMIT_LOG")"
+campaign --gpus-per-lane 4 --dp 4
+check "--dp alone derives the shard count" 3 "$(grep -c -- 'PAIRED_TP=1,PAIRED_DP=4' "$SUBMIT_LOG")"
 campaign --gpus-per-lane 4 --tp 4 --dp 2
 check "a split that would idle or overrun the lane is refused" 2 "$rc"
 check "and says what it counted" 1 "$(grep -c -- '8 GPUs' <<<"$out")"
@@ -158,7 +166,7 @@ campaign --only alpha
 check "and are absent when unset" 0 "$(grep -c -- '--exclude' "$SUBMIT_LOG")"
 
 echo "== case 7: exports are one comma-joined list, as sbatch wants =="
-check "joined" 1 "$(grep -c -- '--export K=1,PAIRED_TP=4,PAIRED_DP=1' "$SUBMIT_LOG")"
+check "joined" 1 "$(grep -c -- '--export K=1,PAIRED_TP=2,PAIRED_DP=2' "$SUBMIT_LOG")"
 
 echo "== case 7b: a dependency already finished is dropped, not resolved =="
 # Slurm rejects afterok on a job it has purged, which is what a resumed campaign
