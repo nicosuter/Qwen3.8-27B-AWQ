@@ -26,17 +26,25 @@ more aggressive than our FP8 build on these modules and measures less verbose
 than it -- 1.04x median reasoning against our 1.13x -- so "quantizing the GDN
 path causes the extra reasoning" is not what the evidence says.
 
-`fp8-a16` quantizes the weights to FP8 and leaves activations in source
-precision. This is what the serving hardware actually executes: on sm_86
-`_is_fp8_w8a8` fails vLLM's capability gate and `CompressedTensorsW8A8Fp8` falls
-back to `CompressedTensorsW8A16Fp8`, so the dynamic activation quantization is
-dropped and only the weight-size saving remains. Building it explicitly makes
-the checkpoint state what the deployment runs, instead of describing a
-configuration that only exists on sm_89 and above.
+`int8` gives them eight bits with a group-128 scale. At eight bits this beats
+`fp8` on the numbers that matter for weight-only quantization: e4m3 spends three
+bits on the mantissa, so every weight carries about 6% relative error whatever
+its magnitude, while an int8 group resolves its range to one part in 254 and
+does it per 128 input channels rather than per 128x128 tile -- finer scales and
+finer steps for the weights that carry most of the mass. vLLM routes it through
+`CompressedTensorsWNA16`, whose minimum capability is 75, so the serving cards
+run it natively.
 
-`v2/model-fp8gdn` was built before this, with the activations quantized, and is
-the checkpoint the scored Class A result belongs to. No mode reproduces it, on
-purpose.
+`fp8` quantizes the weights with FP8_BLOCK. Since activations are not a choice,
+this is the same weights the deployment already serves: on sm_86
+`_is_fp8_w8a8` fails vLLM's capability gate and `CompressedTensorsW8A8Fp8` falls
+back to `CompressedTensorsW8A16Fp8`, which is what a build under this mode
+declares outright. Kept because it is what the existing scored checkpoint was
+built with, so it is the mode that reproduces its weights.
+
+`v2/model-fp8gdn` was built before activations were settled, with them
+quantized, and is the checkpoint the scored Class A result belongs to. No mode
+reproduces it and no mode writes to its directory, on purpose.
 """
 
 import argparse
@@ -56,14 +64,14 @@ GDN_IN_PROJ_TARGETS = (
     "re:.*linear_attn\\.in_proj_qkv$",
     "re:.*linear_attn\\.in_proj_z$",
 )
-GDN_IN_PROJ_PRECISIONS = ("source", "int4", "fp8-a16")
-# Retired rather than forgotten: the message a caller gets for it should say why
-# it is gone and what replaces it, which "must be one of ..." does not.
-RETIRED_PRECISIONS = {
-    "fp8": "activations are BF16 in every mode now, and on sm_86 they always "
-           "were; use fp8-a16 for the same served weights, honestly declared",
-}
-DEFAULT_GDN_IN_PROJ_PRECISION = "source"
+GDN_IN_PROJ_PRECISIONS = ("source", "int4", "int8", "fp8")
+# Eight bits with a group scale, because these projections feed a recurrent
+# state whose errors carry rather than being re-read each step, and because the
+# AWQ mappings do not cover this path -- four bits here would be bare
+# round-to-nearest where every other four-bit tensor gets activation-aware
+# rescaling. `source` remains the control the FP8 group is measured against and
+# is still reachable by name.
+DEFAULT_GDN_IN_PROJ_PRECISION = "int8"
 
 
 # Every module that reads a given norm's output, in the layer types that have
@@ -131,8 +139,6 @@ def gdn_in_proj_plan(precision: str) -> dict[str, Any]:
     ignore list, and `own_group` names a preset for a group of their own. The
     caller strips that preset's activations; no mode keeps them.
     """
-    if precision in RETIRED_PRECISIONS:
-        raise ValueError(f"{precision!r} is no longer built: {RETIRED_PRECISIONS[precision]}")
     if precision not in GDN_IN_PROJ_PRECISIONS:
         raise ValueError(
             f"GDN_IN_PROJ_PRECISION must be one of {', '.join(GDN_IN_PROJ_PRECISIONS)}; got {precision!r}"
@@ -149,9 +155,9 @@ def gdn_in_proj_plan(precision: str) -> dict[str, Any]:
         # everything else".
         plan["four_bit"] = GDN_IN_PROJ_TARGETS
     else:
-        # The preset carries dynamic FP8 activations; the recipe strips them,
-        # which is the whole of "a16".
-        plan["own_group"] = "FP8_BLOCK"
+        # W8A16 declares no activations at all; FP8_BLOCK carries dynamic ones
+        # and the caller strips them, because activations are not a choice here.
+        plan["own_group"] = {"int8": "W8A16", "fp8": "FP8_BLOCK"}[precision]
     return plan
 
 
@@ -165,8 +171,13 @@ def output_suffix(precision: str, algorithm: str = "awq") -> str:
     """
     if precision not in GDN_IN_PROJ_PRECISIONS:
         raise ValueError(f"unknown GDN in_proj precision {precision!r}")
-    # -fp8gdn is deliberately not reachable: it holds the retired build.
-    suffix = {"source": "", "int4": "-int4gdn", "fp8-a16": "-fp8gdn-a16"}[precision]
+    # Named for what varies, since the whole model is four-bit in every mode and
+    # "-int4" alone would read as a claim about all of it. -fp8gdn stays
+    # unreachable: it holds the build made before activations were settled.
+    suffix = {
+        "source": "", "int4": "-inproj-int4",
+        "int8": "-inproj-int8", "fp8": "-inproj-fp8",
+    }[precision]
     if algorithm == "awq+gptq":
         suffix += "-gptq"
     return suffix

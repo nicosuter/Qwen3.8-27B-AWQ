@@ -2,7 +2,7 @@
 # Submit a quantization run.
 #
 #   bash quant/scripts/submit_quantize.sh 8
-#   bash quant/scripts/submit_quantize.sh 8 --gdn-in-proj=int4
+#   bash quant/scripts/submit_quantize.sh 8 --gdn-in-proj=source
 #   bash quant/scripts/submit_quantize.sh 8 --gdn-in-proj=fp8 --algorithm=awq+gptq
 #
 # --algorithm chooses how weights are rounded once AWQ has scaled activations.
@@ -18,9 +18,11 @@
 # out_proj is four-bit in every mode, so this flag is about the input to the
 # state update and not about the block. It used to be a
 # --fp8-gdn boolean, which could only express the two ends of what turned out to
-# be a four-way choice: the useful modes are int4, which is what the third-party
-# releases that quantize this path at all use, and fp8-a16, which is what the
-# serving hardware executes when handed the fp8 build. See gdn_in_proj.py.
+# be a choice between four, eight and source precision. It defaults to int8:
+# the AWQ mappings do not reach this path, so four bits here would be bare
+# round-to-nearest where every other four-bit tensor gets activation-aware
+# rescaling. Activations are BF16 in every mode and are not a flag. See
+# gdn_in_proj.py.
 #
 # Every build writes to its own directory so they can all exist while they are
 # being compared, which is the only way to attribute a difference to one of

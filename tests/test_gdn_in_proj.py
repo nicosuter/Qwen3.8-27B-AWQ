@@ -59,12 +59,16 @@ class PlacementTests(unittest.TestCase):
             with self.subTest(precision=precision):
                 self.assertNotIn("quantize_activations", gdn_in_proj_plan(precision))
 
-    def test_the_retired_mode_says_why_it_is_gone(self) -> None:
-        """"must be one of ..." would not tell anyone what replaced it."""
-        with self.assertRaises(ValueError) as caught:
-            gdn_in_proj_plan("fp8")
-        self.assertIn("fp8-a16", str(caught.exception))
-        self.assertIn("sm_86", str(caught.exception))
+    def test_the_eight_bit_modes_get_their_own_group(self) -> None:
+        """There is no activation axis, so neither mode is qualified for one."""
+        self.assertEqual(gdn_in_proj_plan("int8")["own_group"], "W8A16")
+        self.assertEqual(gdn_in_proj_plan("fp8")["own_group"], "FP8_BLOCK")
+        self.assertNotIn("a16", " ".join(GDN_IN_PROJ_PRECISIONS))
+
+    def test_the_default_is_eight_bit(self) -> None:
+        """Four bits here would be bare round-to-nearest: the AWQ mappings do
+        not reach this path, so it gets none of the rescaling the rest does."""
+        self.assertEqual(DEFAULT_GDN_IN_PROJ_PRECISION, "int8")
 
     def test_out_proj_is_never_a_gdn_target(self) -> None:
         """It is the readout into the residual stream, not the state update.
@@ -100,14 +104,19 @@ class OutputDirectoryTests(unittest.TestCase):
         ]
         self.assertEqual(len(suffixes), len(set(suffixes)))
 
-    def test_the_retired_build_keeps_its_directory_to_itself(self) -> None:
-        """v2/model-fp8gdn holds the scored Class A result and no mode may
-        overwrite it, which is why -fp8gdn is unreachable and -fp8gdn-a16 is
-        the near neighbour rather than a rename."""
+    def test_the_earlier_build_keeps_its_directory_to_itself(self) -> None:
+        """v2/model-fp8gdn holds the scored Class A result, built before
+        activations were settled, so no mode may write over it."""
         self.assertEqual(output_suffix("source"), "")
-        self.assertEqual(output_suffix("fp8-a16"), "-fp8gdn-a16")
         suffixes = {output_suffix(p) for p in GDN_IN_PROJ_PRECISIONS}
         self.assertNotIn("-fp8gdn", suffixes)
+
+    def test_a_suffix_names_what_varies(self) -> None:
+        """The whole model is four-bit in every mode, so "-int4" alone would
+        read as a claim about all of it."""
+        self.assertEqual(output_suffix("int4"), "-inproj-int4")
+        self.assertEqual(output_suffix("int8"), "-inproj-int8")
+        self.assertEqual(output_suffix("fp8"), "-inproj-fp8")
 
     def test_an_unknown_mode_has_no_directory(self) -> None:
         with self.assertRaises(ValueError):
