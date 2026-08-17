@@ -288,17 +288,50 @@ if [[ -n "${PAIRED_INHERIT_BASELINE_FROM:-}" ]]; then
     INHERIT="$PAIRED_INHERIT_BASELINE_FROM"
     test -d "$INHERIT" || { echo "PAIRED_INHERIT_BASELINE_FROM=$INHERIT not found" >&2; exit 1; }
     mkdir -p "$RUN_DIR"/{orders,materialized,metadata,raw/baseline}
-    # -n so a rerun never clobbers results this job already produced.
-    cp -n "$INHERIT"/orders/*.json          "$RUN_DIR/orders/"        2>/dev/null || true
-    cp -n "$INHERIT"/materialized/*         "$RUN_DIR/materialized/"  2>/dev/null || true
-    cp -n "$INHERIT"/raw/baseline/*.jsonl   "$RUN_DIR/raw/baseline/"  2>/dev/null || true
-    cp -n "$INHERIT"/metadata/*-baseline-r*.json "$RUN_DIR/metadata/" 2>/dev/null || true
+    # -n so a rerun never clobbers results this job already produced, and -R
+    # because two suites materialize a directory rather than a file. Without it
+    # cp skipped mmmu_pro-images and multimodal-images, the error went to
+    # /dev/null, and the two image suites failed on the first missing PNG --
+    # after the job was holding the GPUs, and quietly enough that the run
+    # produced a macro over four suites instead of six.
+    cp -Rn "$INHERIT"/orders/*.json          "$RUN_DIR/orders/"        2>/dev/null || true
+    cp -Rn "$INHERIT"/materialized/*         "$RUN_DIR/materialized/"  2>/dev/null || true
+    cp -Rn "$INHERIT"/raw/baseline/*.jsonl   "$RUN_DIR/raw/baseline/"  2>/dev/null || true
+    cp -Rn "$INHERIT"/metadata/*-baseline-r*.json "$RUN_DIR/metadata/" 2>/dev/null || true
     echo "inherited baseline and frozen order from $INHERIT"
 fi
 
-for suite in $SUITES; do
-    test -s "$RUN_DIR/orders/$suite.json"
-done
+# What a copy produced is only checkable against what the suites will read, so
+# check it here rather than trusting the copy. An adapter that discovers a
+# missing dataset discovers it per item, inside a lane, on an allocated node,
+# and the run then reports a macro over the suites that happened to survive.
+require_materialized() { # require_materialized <suite>...
+    local suite want images have
+    for suite in "$@"; do
+        for want in "$RUN_DIR/materialized/$suite.jsonl" "$RUN_DIR/orders/$suite.json"; do
+            test -s "$want" || {
+                echo "$suite: $want is missing or empty; run the prepare batch for $RUN_DIR" >&2
+                return 1
+            }
+        done
+        # The image suites carry a directory beside their jsonl, and an absent
+        # one is what an unrecursive copy leaves behind. An empty one would read
+        # as present, so count rather than test -d.
+        case "$suite" in
+            mmmu_pro|multimodal) ;;
+            *) continue ;;
+        esac
+        images="$RUN_DIR/materialized/$suite-images"
+        have=0
+        test -d "$images" && have="$(find "$images" -type f | wc -l | tr -d ' ')"
+        (( have > 0 )) || {
+            echo "$suite: no image files under $images; run the prepare batch for $RUN_DIR" >&2
+            return 1
+        }
+        echo "$suite: $have image files materialized"
+    done
+}
+require_materialized $SUITES || exit 1
 
 SERVER_PID=""
 SAMPLER_PID=""

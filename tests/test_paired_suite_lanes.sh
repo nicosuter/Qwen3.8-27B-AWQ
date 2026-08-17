@@ -24,7 +24,8 @@ check() { # check <desc> <expected> <actual>
 awk '/^suite_is_current\(\) \{/,/^\}/' "$SBATCH" > "$WORK/fns.sh"
 awk '/^count_alive\(\) \{/,/^\}/'     "$SBATCH" >> "$WORK/fns.sh"
 for fn in suite_failed record_failure usable_suites report_failures require_usable_suites \
-          variant_requested candidate_bind stale_suites kv_class_of class_mates; do
+          variant_requested candidate_bind stale_suites kv_class_of class_mates \
+          require_materialized; do
     awk -v f="^${fn}\\\\(\\\\) \\\\{" '$0 ~ f, /^\}/' "$SBATCH" >> "$WORK/fns.sh"
 done
 awk '/^score_variant\(\) \{/,/^\}/'   "$SBATCH" >> "$WORK/fns.sh"
@@ -160,6 +161,37 @@ for suite in json.load(open(sys.argv[1]))["suites"]:
 PY
 )"
 }
+
+# An inherited baseline is copied into a fresh run directory, and the copy used
+# not to recurse, so the two image suites arrived without their images and failed
+# on the first missing PNG -- per item, inside a lane, with the GPUs already
+# allocated. The run then reported a macro over the four suites that survived.
+echo "== case 2d: a run directory missing its datasets is refused up front =="
+setup
+mkdir -p "$RUN_DIR/materialized" "$RUN_DIR/orders"
+for s in alpha mmmu_pro multimodal; do
+    echo '{"id": 1}' > "$RUN_DIR/materialized/$s.jsonl"
+    echo '[1]'       > "$RUN_DIR/orders/$s.json"
+done
+out="$(require_materialized alpha 2>&1)"; rc=$?
+check "a suite with no images is fine" 0 "$rc"
+out="$(require_materialized mmmu_pro 2>&1)"; rc=$?
+check "an image suite with no image directory is refused" 1 "$rc"
+check "and says how to fix it" 1 "$(grep -c 'run the prepare batch' <<<"$out")"
+mkdir -p "$RUN_DIR/materialized/mmmu_pro-images"
+out="$(require_materialized mmmu_pro 2>&1)"; rc=$?
+check "an empty image directory is still refused" 1 "$rc"
+: > "$RUN_DIR/materialized/mmmu_pro-images/a.png"
+out="$(require_materialized mmmu_pro multimodal 2>&1)"; rc=$?
+check "one image suite ready is not enough for the other" 1 "$rc"
+check "and the other one is named" 1 "$(grep -c 'multimodal' <<<"$out")"
+mkdir -p "$RUN_DIR/materialized/multimodal-images"
+: > "$RUN_DIR/materialized/multimodal-images/b.png"
+out="$(require_materialized alpha mmmu_pro multimodal 2>&1)"; rc=$?
+check "all three ready passes" 0 "$rc"
+rm -f "$RUN_DIR/materialized/alpha.jsonl"
+out="$(require_materialized alpha 2>&1)"; rc=$?
+check "a missing manifest is refused too" 1 "$rc"
 
 echo "== case 2b: a lane is divided by its own KV class, not by the job =="
 setup; mixed_classes
