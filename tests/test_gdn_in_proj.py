@@ -219,6 +219,75 @@ class ActivationTaintTests(unittest.TestCase):
         self.assertIsNone(self.taint(None))
         self.assertIsNotNone(self.taint(9.0))
 
+class AWQEqualizationTests(unittest.TestCase):
+    """AWQ smoothing is only function-preserving if every consumer gets the scale.
+
+    Equalization divides a norm's weight by a per-channel scale and multiplies it
+    into the layers that read the norm. Miss one and that layer sees the divided
+    input: the function has changed before anything has been quantized. Staying
+    in BF16 is not an exemption, because folding a scale into a BF16 weight is
+    just a multiply -- which is exactly the trap for in_proj_a and in_proj_b,
+    which share the GDN block's normalized input and are never quantized.
+    """
+
+    SHIPPED = [
+        (r"re:.*post_attention_layernorm$", [r"re:.*gate_proj$", r"re:.*up_proj$"]),
+        (r"re:.*up_proj$", [r"re:.*down_proj$"]),
+    ]
+
+    def test_the_shipped_mappings_are_balanced(self) -> None:
+        from quant.scripts.gdn_in_proj import unbalanced_norm_mappings
+
+        self.assertEqual(unbalanced_norm_mappings(self.SHIPPED), [])
+
+    def test_a_suffix_regex_counts_as_covering_its_module(self) -> None:
+        """re:.*gate_proj$ covers mlp.gate_proj without containing the string."""
+        from quant.scripts.gdn_in_proj import unbalanced_norm_mappings
+
+        self.assertEqual(
+            unbalanced_norm_mappings(
+                [(r"re:.*post_attention_layernorm$",
+                  [r"re:.*mlp\.(gate|up)_proj$"])]
+            ),
+            [],
+        )
+
+    def test_half_the_mlp_is_caught(self) -> None:
+        from quant.scripts.gdn_in_proj import unbalanced_norm_mappings
+
+        problems = unbalanced_norm_mappings(
+            [(r"re:.*post_attention_layernorm$", [r"re:.*gate_proj$"])]
+        )
+        self.assertEqual(len(problems), 1)
+        self.assertIn("mlp.up_proj", problems[0])
+
+    def test_smoothing_the_gdn_norm_must_reach_the_unquantized_consumers(self) -> None:
+        """The case worth having the check for: a mapping that scales the norm
+        and folds into the two projections a mode quantizes, leaving in_proj_a
+        and in_proj_b reading a rescaled input."""
+        from quant.scripts.gdn_in_proj import unbalanced_norm_mappings
+
+        problems = unbalanced_norm_mappings(
+            [(r"re:.*input_layernorm$",
+              [r"re:.*linear_attn\.in_proj_qkv$", r"re:.*linear_attn\.in_proj_z$"])]
+        )
+        self.assertEqual(len(problems), 1)
+        self.assertIn("linear_attn.in_proj_a", problems[0])
+        self.assertIn("linear_attn.in_proj_b", problems[0])
+
+    def test_a_complete_gdn_mapping_passes(self) -> None:
+        """What adding AWQ scaling to this path would have to look like."""
+        from quant.scripts.gdn_in_proj import unbalanced_norm_mappings
+
+        self.assertEqual(
+            unbalanced_norm_mappings(
+                [(r"re:.*input_layernorm$",
+                  [r"re:.*linear_attn\.in_proj_(qkv|z|a|b)$",
+                   r"re:.*self_attn\.(q|k|v)_proj$"])]
+            ),
+            [],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

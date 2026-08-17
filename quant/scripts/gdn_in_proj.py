@@ -40,6 +40,7 @@ purpose.
 """
 
 import argparse
+import re
 import sys
 from typing import Any
 
@@ -63,6 +64,64 @@ RETIRED_PRECISIONS = {
            "were; use fp8-a16 for the same served weights, honestly declared",
 }
 DEFAULT_GDN_IN_PROJ_PRECISION = "source"
+
+
+# Every module that reads a given norm's output, in the layer types that have
+# one. AWQ equalization divides the norm's weight by a per-channel scale and
+# multiplies the same scale into the consumers, which is only function-preserving
+# if *every* consumer gets it. Leaving a consumer in BF16 does not exempt it:
+# folding a scale into a BF16 weight is a multiply, not a quantization, and
+# skipping it changes the function before anything is quantized.
+#
+# This is why the GDN input projections are listed with in_proj_a and in_proj_b,
+# which no mode ever quantizes. They share one normalized input with
+# in_proj_qkv and in_proj_z, so an equalization that reached the first two and
+# not the last two would silently rescale the decay and write-strength inputs.
+NORM_CONSUMERS = {
+    "input_layernorm": (
+        "linear_attn.in_proj_qkv",
+        "linear_attn.in_proj_z",
+        "linear_attn.in_proj_a",
+        "linear_attn.in_proj_b",
+        "self_attn.q_proj",
+        "self_attn.k_proj",
+        "self_attn.v_proj",
+    ),
+    "post_attention_layernorm": ("mlp.gate_proj", "mlp.up_proj"),
+}
+
+
+def unbalanced_norm_mappings(mappings: list[tuple[str, list[str]]]) -> list[str]:
+    """AWQ mappings that smooth a norm without folding into all its consumers.
+
+    Takes (smooth_pattern, balance_patterns) pairs as plain strings so the check
+    needs no AWQ import. The patterns are evaluated against a canonical module
+    path rather than searched for as substrings, because the mappings are
+    written as suffix regexes -- `re:.*gate_proj$` covers `mlp.gate_proj`
+    without containing it.
+    """
+
+    def covers(pattern: str, consumer: str) -> bool:
+        name = f"model.language_model.layers.0.{consumer}"
+        if pattern.startswith("re:"):
+            return re.fullmatch(pattern[3:], name) is not None
+        return name.endswith(pattern)
+
+    problems = []
+    for smooth, balances in mappings:
+        for norm, consumers in NORM_CONSUMERS.items():
+            if not covers(smooth, norm):
+                continue
+            missing = [
+                c for c in consumers
+                if not any(covers(pattern, c) for pattern in balances)
+            ]
+            if missing:
+                problems.append(
+                    f"{smooth} is smoothed but {', '.join(missing)} would not"
+                    " receive the scale, which changes the function"
+                )
+    return problems
 
 
 def gdn_in_proj_plan(precision: str) -> dict[str, Any]:

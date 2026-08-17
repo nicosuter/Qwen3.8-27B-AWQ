@@ -30,6 +30,7 @@ from gdn_in_proj import (
     GDN_IN_PROJ_PRECISIONS,
     GDN_IN_PROJ_TARGETS,
     gdn_in_proj_plan,
+    unbalanced_norm_mappings,
 )
 from preserve_mtp import (
     QWEN38_MTP_KEYS,
@@ -412,13 +413,21 @@ def main() -> None:
         config_groups["group_1"] = preset_name_to_scheme(
             plan["own_group"], list(GDN_IN_PROJ_TARGETS)
         ).model_copy(update={"input_activations": None})
-    mappings = [
-        AWQMapping(
-            "re:.*post_attention_layernorm$",
-            ["re:.*gate_proj$", "re:.*up_proj$"],
-        ),
-        AWQMapping("re:.*up_proj$", ["re:.*down_proj$"]),
+    # AWQ equalization is only function-preserving when every consumer of a
+    # smoothed norm receives the scale. Neither mapping here smooths
+    # input_layernorm, so the Gated DeltaNet input projections get no AWQ
+    # rescaling at all and there is nothing to propagate -- which is also why
+    # quantizing them to four bits is a blunter operation than quantizing the
+    # MLP. Adding that mapping later means listing all four consumers,
+    # in_proj_a and in_proj_b included, even though no mode quantizes them.
+    mapping_spec = [
+        ("re:.*post_attention_layernorm$", ["re:.*gate_proj$", "re:.*up_proj$"]),
+        ("re:.*up_proj$", ["re:.*down_proj$"]),
     ]
+    problems = unbalanced_norm_mappings(mapping_spec)
+    if problems:
+        raise SystemExit("AWQ mappings would change the function:\n  " + "\n  ".join(problems))
+    mappings = [AWQMapping(smooth, balances) for smooth, balances in mapping_spec]
     # GPTQ subsumes QuantizationModifier rather than running beside it: it
     # applies the same config groups itself, and two modifiers writing schemes
     # onto the same modules would fight over them.
