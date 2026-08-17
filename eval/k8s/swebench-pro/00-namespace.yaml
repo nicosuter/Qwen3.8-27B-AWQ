@@ -1,0 +1,27 @@
+# SWE-bench Pro rollouts: a coding agent, driven by the model under test, with a
+# shell in a container built from a third-party image. Two things run here that
+# we did not write -- the task image and whatever the agent decides to execute --
+# so this gets its own namespace, outside ArgoCD, like the LiveCodeBench scorer.
+#
+# The one difference from qwen-lcb-score is the Pod Security Standard. That one
+# runs `restricted`, because our scorer is a stdlib python script that can drop
+# every capability and run as uid 65534. These task images cannot: they are
+# built to be worked in as root -- apt, file ownership, `git reset --hard` over a
+# tree owned by root -- and `restricted` requires runAsNonRoot, which they fail.
+#
+# So this namespace is `baseline`, and the containment that matters moves to the
+# NetworkPolicy next door: baseline still forbids host namespaces, hostPath and
+# privileged containers, and the pods here carry no service account token and
+# reach nothing. Root inside a container that owns nothing and can talk to
+# nobody is a much smaller thing than root anywhere else.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: qwen-swebp
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+    # Audited and warned against `restricted` on purpose: if a task image ever
+    # stops needing root, the warnings are how we find out we can tighten it.
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
