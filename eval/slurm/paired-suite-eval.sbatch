@@ -123,6 +123,26 @@ if (( TP * DP > VISIBLE_GPUS )); then
     exit 1
 fi
 echo "gpus=$VISIBLE_GPUS tensor-parallel=$TP data-parallel=$DP"
+# How many sequences the server will run at once. Left unset, vLLM defaults to
+# 1024 and the KV pool becomes the only limit -- which sounds adaptive and is,
+# up to the point where it admits a batch while its sequences are short and then
+# has to evict them as they grow. That is what preemption is, and a run of one
+# long-decode suite sustained 124 preemptions a minute against 12.5 completions,
+# every one of them recomputed work.
+#
+# Capping the running batch stops the overshoot where the scheduler can see it,
+# rather than by rationing the client, which cannot tell an image prompt from a
+# short question. Proportional to the cards because the pool is: 128 a card
+# leaves the eight-GPU case at vLLM's own default and tightens the small
+# allocations, where the same suite width is four times the pressure.
+#
+# This bounds the pathological end. It is not a tuned optimum -- the measured
+# fits differ by request shape, ~163 sequences of the image suites against ~790
+# of the short ones on the same two cards -- so the right value for a given
+# allocation comes from num_preemptions_total in the run telemetry, and this
+# knob is what to move once it has been read.
+MAX_NUM_SEQS="${PAIRED_MAX_NUM_SEQS:-$(( 128 * TP * DP ))}"
+echo "max-num-seqs=$MAX_NUM_SEQS"
 # Recorded because nothing else will say it. This cluster runs
 # TopologyPlugin=topology/default and declares no core affinity on its eight
 # GPUs, so which four a job receives is arbitrary, and H200 NVL has bridges
@@ -230,28 +250,22 @@ ES_REQUEST_TIMEOUT="${PAIRED_ES_REQUEST_TIMEOUT:-5400}"
 ES_CONCURRENCY="${PAIRED_ES_CONCURRENCY:-256}"
 PARALLEL="${PAIRED_PARALLEL:-0}"   # 0 means "as many lanes as there are jobs"
 CONCURRENCY="${PAIRED_CONCURRENCY:-}"
-# Each lane offers its suite's configured concurrency, undivided.
+# Each lane offers its suite's configured concurrency, undivided. How many of
+# those actually run at once is the server's decision, made with --max-num-seqs
+# and the KV pool, neither of which the client can see.
 #
-# Every earlier version of this divided that number -- by the GPU count, then by
-# the lanes in the job, then by the lanes of the same kv_class -- on the theory
-# that the client had to ration the server's KV cache. It does not. vLLM
-# schedules: it admits what its KV pool can hold and leaves the rest in
-# `waiting`. A client-side cap cannot protect a queue that is already managed,
-# it can only starve it, and it did. A six-lane run measured 32 requests running
-# against an empty queue at 21% cache -- two lanes pinned at their 1/16 share
-# while the server idled -- and the divisor could not recover, because it is
-# fixed when the lane launches and four of the six had already finished.
+# Dividing here was wrong twice. It divided by the OTHER LANES -- every lane in
+# the job, later the lanes of the same kv_class -- which is not a quantity that
+# says anything about what the server can carry, and the share was fixed when
+# the lane launched, so it could not recover as siblings finished. A six-lane
+# run measured 32 requests running against an EMPTY queue at 21% cache, two
+# lanes pinned at their 1/16 share while the server idled.
 #
-# So the number to send is "more than the server will run", and the margin is
-# what keeps the queue non-empty. The configured concurrencies sum to ~1.6k
-# against a pool that holds ~150 requests of this shape, which is margin enough
-# to survive any lane finishing early.
-#
-# What this costs is queueing delay, which lands on --request-timeout: a request
-# at the back of ~1.5k waits about twenty minutes at the observed throughput,
-# against a 5400s timeout. That headroom is the reason a timeout can still be
-# read as model behavior, and _common.request_with_retries retries once before
-# it scores one, because under a deep queue it no longer always is.
+# The replacement was briefly a scale on the GPU count, which is a true claim --
+# the KV pool is proportional to the cards -- but still the wrong place to make
+# it. A client-side number cannot tell a cheap request from an expensive one, so
+# any single value starves the short suites or thrashes the long ones. That
+# belongs to the scheduler, which knows both, and is now set there.
 CONCURRENCY_SCALE="${PAIRED_CONCURRENCY_SCALE:-}"
 PYTHON="${EVAL_VENV:-$PROJECT_DIR/.venv}/bin/python"
 # One stamp for the whole job, so everything it supersedes or emits sorts
@@ -496,6 +510,7 @@ start_server() {
         --port "$PORT" \
         --tensor-parallel-size "$TP" \
         --data-parallel-size "$DP" \
+        --max-num-seqs "$MAX_NUM_SEQS" \
         --max-model-len 262144 \
         --kv-cache-dtype auto \
         --reasoning-parser qwen3 \

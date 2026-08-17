@@ -59,13 +59,25 @@ would starve the short suites. The telemetry says the opposite: the short suites
 are item-starved rather than cache-starved -- 43% of their wall clock runs under
 sixteen requests in flight at 4% cache -- and RULER is the complement, cache-
 hungry and item-poor, prefill-heavy where they are decode-heavy. Its hour fits
-inside their drain. Each lane offers its suite's whole configured concurrency
-and vLLM decides how much of it to run, so colocating does not narrow anything.
-Dividing that number between lanes was a mistake twice over -- it starved a
-server that already schedules its own queue, and the divisor was fixed when the
-lane launched, so a long lane kept its share long after the lanes it was sharing
-with had finished. Offered width is scheduling, not measurement: results stay
-comparable across it, which is why the reuse check ignores it.
+inside their drain. A lane offers its suite's configured concurrency undivided,
+and colocating does not narrow it.
+
+How many of those run at once is set on the server, with `--max-num-seqs`. That
+division used to happen in the client, first across every lane in the job and
+later across the lanes of one `kv_class`, and it starved what it was meant to
+protect: a six-lane run held 32 requests against an empty queue at 21% cache,
+each lane pinned at a share fixed when it launched and unable to grow as its
+siblings finished. Removing the division without capping the server swapped that
+for the opposite failure, since vLLM then admits a batch while its sequences are
+short and evicts them as they grow -- 124 preemptions a minute against 12.5
+completions, all of it recomputed. The client cannot arbitrate this, because one
+number there is blind to whether a request is an image prompt or a short
+question; the scheduler knows both. `num_preemptions_total` and
+`num_requests_waiting` in the run telemetry say which side a run landed on, and
+`PAIRED_MAX_NUM_SEQS` is what to move.
+
+Offered width is scheduling, not measurement: results stay comparable across it,
+which is why the reuse check ignores it.
 
 ## Campaigns
 
