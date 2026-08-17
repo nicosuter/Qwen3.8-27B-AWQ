@@ -235,7 +235,7 @@ class InterpreterCompatibilityTests(unittest.TestCase):
     sbatch called bare `python3` while the rest of the job used the venv.
     """
 
-    SHELLED_OUT = ("scripts/eval_suite.py",)
+    SHELLED_OUT = ("scripts/eval_suite.py", "scripts/bake_harbor_sifs.py")
 
     def test_shelled_out_modules_defer_their_annotations(self) -> None:
         for name in self.SHELLED_OUT:

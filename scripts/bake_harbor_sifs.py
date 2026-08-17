@@ -29,6 +29,11 @@ images ship a fakeroot shim that Apptainer tries to use and cannot drive, which
 fails the build with a `kill` usage error that says nothing about the cause.
 """
 
+# Run by whatever python3 the host has, because it drives `apptainer build`
+# and apptainer is not inside any container. On the clusters that is 3.9,
+# where `Path | None` in a signature raises at import time.
+from __future__ import annotations
+
 import argparse
 import json
 import subprocess
