@@ -52,13 +52,25 @@ class ConcurrencyScaleTests(unittest.TestCase):
     def test_the_running_batch_is_capped_server_side(self) -> None:
         """--max-num-seqs is the lever; unset, vLLM admits then evicts."""
         self.assertIn('--max-num-seqs "$MAX_NUM_SEQS"', self.source)
-        self.assertIn("MAX_NUM_SEQS=\"${PAIRED_MAX_NUM_SEQS:-$(( 128 * TP * DP ))}\"", self.source)
+        self.assertIn('MAX_NUM_SEQS="${PAIRED_MAX_NUM_SEQS:-$MAX_NUM_SEQS_DEFAULT}"', self.source)
 
-    def test_the_cap_scales_with_the_cards(self) -> None:
-        """The pool is proportional to the GPUs, so the cap has to be too."""
-        for tp, dp, want in ((2, 1, 256), (2, 2, 512), (4, 2, 1024)):
-            with self.subTest(gpus=tp * dp):
-                self.assertEqual(128 * tp * dp, want)
+    def test_the_cap_is_sized_from_vram_not_from_the_card_count(self) -> None:
+        """A card is not a unit of cache.
+
+        The partitions this runs on differ by more than 4x per card, so a cap
+        keyed on how many GPUs were granted sets the same batch for an
+        allocation with four times the pool.
+        """
+        self.assertIn("memory.total", self.source)
+        self.assertNotIn("128 * TP * DP", self.source)
+        self.assertNotRegex(
+            self.source, r"MAX_NUM_SEQS_DEFAULT=\$\(\( *[0-9]+ *\* *TP",
+            "the cap is counting cards again",
+        )
+
+    def test_a_missing_gpu_query_does_not_invent_a_cap(self) -> None:
+        """Sizing against an allocation that cannot be read is guessing."""
+        self.assertIn("MAX_NUM_SEQS_DEFAULT=1024", self.source)
 
     def test_nothing_divides_by_the_lane_count_again(self) -> None:
         for gone in ("class_mates", "kv_class_of", "$CONCURRENCY_SCALE/$mates"):
@@ -67,7 +79,8 @@ class ConcurrencyScaleTests(unittest.TestCase):
 
     def test_the_cap_is_visible_in_the_job_log(self) -> None:
         """Which side of starve-or-thrash a run was on has to be recoverable."""
-        self.assertIn('echo "max-num-seqs=$MAX_NUM_SEQS"', self.source)
+        self.assertIn('echo "max-num-seqs=$MAX_NUM_SEQS', self.source)
+        self.assertIn("vram", self.source, "the log has to say what it sized against")
 
 
 if __name__ == "__main__":

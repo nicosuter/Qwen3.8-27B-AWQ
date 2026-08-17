@@ -132,17 +132,31 @@ echo "gpus=$VISIBLE_GPUS tensor-parallel=$TP data-parallel=$DP"
 #
 # Capping the running batch stops the overshoot where the scheduler can see it,
 # rather than by rationing the client, which cannot tell an image prompt from a
-# short question. Proportional to the cards because the pool is: 128 a card
-# leaves the eight-GPU case at vLLM's own default and tightens the small
-# allocations, where the same suite width is four times the pressure.
+# short question.
 #
-# This bounds the pathological end. It is not a tuned optimum -- the measured
-# fits differ by request shape, ~163 sequences of the image suites against ~790
-# of the short ones on the same two cards -- so the right value for a given
-# allocation comes from num_preemptions_total in the run telemetry, and this
-# knob is what to move once it has been read.
-MAX_NUM_SEQS="${PAIRED_MAX_NUM_SEQS:-$(( 128 * TP * DP ))}"
-echo "max-num-seqs=$MAX_NUM_SEQS"
+# Sized from VRAM rather than from the card count, because the pool is memory
+# and a card is not a unit of it. The partitions this runs on differ by more
+# than a factor of four per card, so counting cards would set the same cap for
+# an allocation with four times the cache. Summed over the granted GPUs, since
+# that is what the pool is built from whether they are tensor-parallel shards or
+# data-parallel replicas.
+#
+# One sequence per GiB is a bound, not a tuned optimum: it leaves a whole-node
+# allocation near vLLM's own default and tightens the small ones, which is where
+# the pressure actually differs. The measured fits vary by request shape -- ~163
+# sequences of the image suites against ~790 of the short ones on the same
+# cards -- so no single number is right for a mixed run. num_preemptions_total
+# in the run telemetry is what to tune it from.
+GPU_MEMORY_TOTAL_MIB="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null |
+    awk '{ total += $1 } END { print (total ? total : 0) }')"
+if (( GPU_MEMORY_TOTAL_MIB > 0 )); then
+    MAX_NUM_SEQS_DEFAULT=$(( GPU_MEMORY_TOTAL_MIB / 1024 ))
+else
+    # No nvidia-smi means no allocation to size against; leave vLLM's default.
+    MAX_NUM_SEQS_DEFAULT=1024
+fi
+MAX_NUM_SEQS="${PAIRED_MAX_NUM_SEQS:-$MAX_NUM_SEQS_DEFAULT}"
+echo "max-num-seqs=$MAX_NUM_SEQS (vram $(( GPU_MEMORY_TOTAL_MIB / 1024 ))GiB over $VISIBLE_GPUS gpus)"
 # Recorded because nothing else will say it. This cluster runs
 # TopologyPlugin=topology/default and declares no core affinity on its eight
 # GPUs, so which four a job receives is arbitrary, and H200 NVL has bridges
