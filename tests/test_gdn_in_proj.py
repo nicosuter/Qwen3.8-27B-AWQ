@@ -52,15 +52,19 @@ class PlacementTests(unittest.TestCase):
         self.assertEqual(tuple(plan["ignore"]), ())
         self.assertIsNone(plan["own_group"])
 
-    def test_only_fp8_quantizes_activations(self) -> None:
-        """The one mode that quantizes an activation anywhere in the model.
+    def test_no_mode_can_ask_for_quantized_activations(self) -> None:
+        """It is not a setting. sm_89 is needed to perform them and the serving
+        cards are sm_86, so declaring them describes numerics nothing runs."""
+        for precision in GDN_IN_PROJ_PRECISIONS:
+            with self.subTest(precision=precision):
+                self.assertNotIn("quantize_activations", gdn_in_proj_plan(precision))
 
-        On sm_86 it is also silently identical to fp8-a16 at run time, so the
-        two must stay distinguishable everywhere else.
-        """
-        self.assertTrue(gdn_in_proj_plan("fp8")["quantize_activations"])
-        self.assertFalse(gdn_in_proj_plan("fp8-a16")["quantize_activations"])
-        self.assertEqual(gdn_in_proj_plan("fp8")["own_group"], gdn_in_proj_plan("fp8-a16")["own_group"])
+    def test_the_retired_mode_says_why_it_is_gone(self) -> None:
+        """"must be one of ..." would not tell anyone what replaced it."""
+        with self.assertRaises(ValueError) as caught:
+            gdn_in_proj_plan("fp8")
+        self.assertIn("fp8-a16", str(caught.exception))
+        self.assertIn("sm_86", str(caught.exception))
 
     def test_out_proj_is_never_a_gdn_target(self) -> None:
         """It is the readout into the residual stream, not the state update.
@@ -96,10 +100,14 @@ class OutputDirectoryTests(unittest.TestCase):
         ]
         self.assertEqual(len(suffixes), len(set(suffixes)))
 
-    def test_the_scored_fp8_build_keeps_its_directory(self) -> None:
-        """v2/model-fp8gdn exists and has a complete paired result against it."""
-        self.assertEqual(output_suffix("fp8"), "-fp8gdn")
+    def test_the_retired_build_keeps_its_directory_to_itself(self) -> None:
+        """v2/model-fp8gdn holds the scored Class A result and no mode may
+        overwrite it, which is why -fp8gdn is unreachable and -fp8gdn-a16 is
+        the near neighbour rather than a rename."""
         self.assertEqual(output_suffix("source"), "")
+        self.assertEqual(output_suffix("fp8-a16"), "-fp8gdn-a16")
+        suffixes = {output_suffix(p) for p in GDN_IN_PROJ_PRECISIONS}
+        self.assertNotIn("-fp8gdn", suffixes)
 
     def test_an_unknown_mode_has_no_directory(self) -> None:
         with self.assertRaises(ValueError):

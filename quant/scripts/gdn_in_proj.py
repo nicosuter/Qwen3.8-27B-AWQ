@@ -9,7 +9,14 @@ query/key/value and gate inputs to the recurrent state update. `out_proj`, the
 readout back into the residual stream, is not one of them: it is the analogue of
 `self_attn.o_proj` and stays with the four-bit group in every mode.
 
-Four modes, and the differences between them are not academic:
+Activations are BF16 in every mode and there is no flag for it. FP8 activation
+quantization needs sm_89; the serving cards are sm_86, so vLLM's capability gate
+drops it and serves the weights alone. Declaring it therefore bought nothing at
+run time and cost two real things: the checkpoint described numerics no
+deployment of ours performs, and the H200 evaluation measured that description
+rather than the deployment. A mode nobody should pick is not a mode.
+
+Three modes, and the differences between them are not academic:
 
 `source` leaves them in BF16, which is what every third-party W4A16 release of
 this model does with at least part of this path.
@@ -27,11 +34,9 @@ dropped and only the weight-size saving remains. Building it explicitly makes
 the checkpoint state what the deployment runs, instead of describing a
 configuration that only exists on sm_89 and above.
 
-`fp8` is that with the activations quantized too, which is what Qwen's own FP8
-release applies here and what our first build used. It is the only mode in the
-set that quantizes an activation anywhere in the model, and it is measurably the
-most verbose. On sm_86 it is also silently the same as `fp8-a16` at run time,
-which is the strongest argument against choosing it by accident.
+`v2/model-fp8gdn` was built before this, with the activations quantized, and is
+the checkpoint the scored Class A result belongs to. No mode reproduces it, on
+purpose.
 """
 
 import argparse
@@ -50,7 +55,13 @@ GDN_IN_PROJ_TARGETS = (
     "re:.*linear_attn\\.in_proj_qkv$",
     "re:.*linear_attn\\.in_proj_z$",
 )
-GDN_IN_PROJ_PRECISIONS = ("source", "int4", "fp8-a16", "fp8")
+GDN_IN_PROJ_PRECISIONS = ("source", "int4", "fp8-a16")
+# Retired rather than forgotten: the message a caller gets for it should say why
+# it is gone and what replaces it, which "must be one of ..." does not.
+RETIRED_PRECISIONS = {
+    "fp8": "activations are BF16 in every mode now, and on sm_86 they always "
+           "were; use fp8-a16 for the same served weights, honestly declared",
+}
 DEFAULT_GDN_IN_PROJ_PRECISION = "source"
 
 
@@ -58,19 +69,16 @@ def gdn_in_proj_plan(precision: str) -> dict[str, Any]:
     """Resolve a precision to what the recipe has to do differently.
 
     `four_bit` is appended to the four-bit group's targets, `ignore` to the
-    ignore list, and `own_group` names a preset for a group of their own.
-    `quantize_activations` only means anything when there is one.
+    ignore list, and `own_group` names a preset for a group of their own. The
+    caller strips that preset's activations; no mode keeps them.
     """
+    if precision in RETIRED_PRECISIONS:
+        raise ValueError(f"{precision!r} is no longer built: {RETIRED_PRECISIONS[precision]}")
     if precision not in GDN_IN_PROJ_PRECISIONS:
         raise ValueError(
             f"GDN_IN_PROJ_PRECISION must be one of {', '.join(GDN_IN_PROJ_PRECISIONS)}; got {precision!r}"
         )
-    plan: dict[str, Any] = {
-        "four_bit": (),
-        "ignore": (),
-        "own_group": None,
-        "quantize_activations": False,
-    }
+    plan: dict[str, Any] = {"four_bit": (), "ignore": (), "own_group": None}
     if precision == "source":
         plan["ignore"] = GDN_IN_PROJ_TARGETS
     elif precision == "int4":
@@ -82,8 +90,9 @@ def gdn_in_proj_plan(precision: str) -> dict[str, Any]:
         # everything else".
         plan["four_bit"] = GDN_IN_PROJ_TARGETS
     else:
+        # The preset carries dynamic FP8 activations; the recipe strips them,
+        # which is the whole of "a16".
         plan["own_group"] = "FP8_BLOCK"
-        plan["quantize_activations"] = precision == "fp8"
     return plan
 
 
@@ -96,14 +105,9 @@ def output_suffix(precision: str, algorithm: str = "awq") -> str:
     identify later.
     """
     if precision not in GDN_IN_PROJ_PRECISIONS:
-        raise ValueError(f"unknown GDN precision {precision!r}")
-    suffix = {
-        "source": "",
-        "int4": "-int4gdn",
-        "fp8-a16": "-fp8gdn-a16",
-        # Unchanged: v2/model-fp8gdn already exists and has been scored.
-        "fp8": "-fp8gdn",
-    }[precision]
+        raise ValueError(f"unknown GDN in_proj precision {precision!r}")
+    # -fp8gdn is deliberately not reachable: it holds the retired build.
+    suffix = {"source": "", "int4": "-int4gdn", "fp8-a16": "-fp8gdn-a16"}[precision]
     if algorithm == "awq+gptq":
         suffix += "-gptq"
     return suffix

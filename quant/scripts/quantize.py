@@ -405,12 +405,13 @@ def main() -> None:
     }
     if plan["own_group"]:
         # FP8_BLOCK is what Qwen's own FP8 release applies to these projections:
-        # e4m3, 128x128 blocks, dynamic activations. Dropping the activations
-        # leaves W8A16-FP8, which is what the serving hardware runs either way.
-        scheme = preset_name_to_scheme(plan["own_group"], list(GDN_IN_PROJ_TARGETS))
-        if not plan["quantize_activations"]:
-            scheme = scheme.model_copy(update={"input_activations": None})
-        config_groups["group_1"] = scheme
+        # e4m3, 128x128 blocks, dynamic activations. The activations are dropped
+        # unconditionally -- sm_89 is needed to perform them and the serving
+        # cards are sm_86, so declaring them describes numerics no deployment of
+        # ours executes. There is no flag for this on purpose.
+        config_groups["group_1"] = preset_name_to_scheme(
+            plan["own_group"], list(GDN_IN_PROJ_TARGETS)
+        ).model_copy(update={"input_activations": None})
     mappings = [
         AWQMapping(
             "re:.*post_attention_layernorm$",
