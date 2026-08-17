@@ -24,7 +24,7 @@ check() { # check <desc> <expected> <actual>
 awk '/^suite_is_current\(\) \{/,/^\}/' "$SBATCH" > "$WORK/fns.sh"
 awk '/^count_alive\(\) \{/,/^\}/'     "$SBATCH" >> "$WORK/fns.sh"
 for fn in suite_failed record_failure usable_suites report_failures require_usable_suites \
-          variant_requested candidate_bind; do
+          variant_requested candidate_bind stale_suites; do
     awk -v f="^${fn}\\\\(\\\\) \\\\{" '$0 ~ f, /^\}/' "$SBATCH" >> "$WORK/fns.sh"
 done
 awk '/^score_variant\(\) \{/,/^\}/'   "$SBATCH" >> "$WORK/fns.sh"
@@ -356,6 +356,36 @@ check "and mounted at /mnt/model" "/mnt/model" "$CANDIDATE_MOUNT"
 candidate_bind /a/models--x--y/snapshots/deadbeef/
 check "a trailing slash does not change the root" "/a/models--x--y" "$CANDIDATE_BIND"
 check "nor the revision" "/mnt/model/snapshots/deadbeef/" "$CANDIDATE_MOUNT"
+
+echo "== case 19: a suite whose other arm is stale is dropped from the comparison =="
+# The hazard this closes: a job that scores only the candidate pairs its fresh
+# result against whatever the baseline left on disk. Keys match either way, so
+# the macro would mix two measurement conditions and say nothing.
+setup; SUITES="alpha"; REPLICATES=1
+mkdir -p "$RUN_DIR/raw/baseline" "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
+echo '{"id":"b"}' > "$RUN_DIR/raw/baseline/alpha-r0.jsonl"
+echo '{"id":"c"}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
+# alpha is configured at --max-tokens 1000. The candidate was scored there; the
+# baseline is left over from a run at 512.
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
+{"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:bbb"}}
+JSON
+cat > "$RUN_DIR/metadata/alpha-baseline-r0.json" <<'JSON'
+{"max_tokens":512,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:aaa"}}
+JSON
+out="$(stale_suites 2>&1)"
+check "the suite is named stale" "alpha" "$(stale_suites 2>/dev/null)"
+check "and says which arm" 1 "$(grep -c 'its baseline arm was not scored' <<<"$out")"
+
+echo "== case 19b: both arms current leaves the comparison alone =="
+cat > "$RUN_DIR/metadata/alpha-baseline-r0.json" <<'JSON'
+{"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:aaa"}}
+JSON
+check "nothing excluded" "" "$(stale_suites 2>/dev/null)"
+
+echo "== case 19c: a suite the eval suite does not define is dropped, not crashed on =="
+echo '{"id":"x"}' > "$RUN_DIR/raw/baseline/retired-r0.jsonl"
+check "named" "retired" "$(stale_suites 2>/dev/null)"
 
 echo
 echo "passed $PASS, failed $FAIL"

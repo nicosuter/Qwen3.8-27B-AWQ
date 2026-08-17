@@ -364,7 +364,13 @@ suite_is_current() {
 import json, sys
 
 config_path, suite, meta_path, timeout_scale, want_fingerprint = sys.argv[1:6]
-run = next(s["run"] for s in json.load(open(config_path))["suites"] if s["name"] == suite)
+run = next(
+    (s["run"] for s in json.load(open(config_path))["suites"] if s["name"] == suite),
+    None,
+)
+if run is None:
+    print(f"{suite}: not defined by this eval suite", file=sys.stderr)
+    sys.exit(1)
 recorded = json.load(open(meta_path))
 
 # Reuse across runs is the point of this check, and it is also how results from
@@ -667,6 +673,38 @@ fi
 
 report_failures
 
+# A comparison pairs the two arms item by item, so it only means something if
+# both were measured under the config this job is running. suite_is_current
+# already decides that, but it has only ever been asked about the arm being
+# scored -- so a job that scores just the candidate pairs its fresh result
+# against whatever the baseline left on disk, including a result taken under a
+# different cap. The keys still match, so nothing downstream notices, and the
+# macro silently mixes two measurement conditions.
+#
+# Walk both arms and drop any suite where either side is stale. Dropping rather
+# than refusing matches how a failed suite is handled: suites are independent
+# measurements, and the hours the others cost are worth keeping.
+stale_suites() {
+    local variant path base suite rep out=()
+    for variant in baseline candidate; do
+        for path in "$RUN_DIR"/raw/"$variant"/*.jsonl; do
+            [[ -e "$path" ]] || continue
+            base="$(basename "$path" .jsonl)"
+            suite="${base%-r*}"
+            rep="${base##*-r}"
+            suite_failed "$suite" && continue
+            case " ${out[*]-} " in *" $suite "*) continue ;; esac
+            if ! suite_is_current "$variant" "$suite" "$rep" > /dev/null 2>&1; then
+                echo "excluding $suite: its $variant arm was not scored under this" \
+                     "config, so pairing it would compare two different runs" >&2
+                out+=("$suite")
+            fi
+        done
+    done
+    echo "${out[@]-}"
+}
+STALE="$(stale_suites)"
+
 # The concatenation and the comparator call live in scripts/compare_run_dir.sh
 # so that a job with no GPU can also produce a comparison: LiveCodeBench defers
 # execution, and its verdict is produced later on a CPU node. Two copies of the
@@ -675,7 +713,7 @@ COMPARISON="$(
     RUN_DIR="$RUN_DIR" PYTHON="$PYTHON" \
     EVAL_SUITE_VERSION="$EVAL_SUITE_VERSION" RUN_STAMP="$RUN_STAMP" \
     COMPARISON_TAG="${SLURM_JOB_ID:-manual}" \
-    EXCLUDE_SUITES="${FAILED_SUITES[*]-}" \
+    EXCLUDE_SUITES="${FAILED_SUITES[*]-} $STALE" \
     ALLOW_PARTIAL="$( [[ -n "${PAIRED_SUITES:-}${PAIRED_BATCH:-}" ]] && echo 1 || echo 0 )" \
     ./scripts/compare_run_dir.sh | tee /dev/stderr | sed -n 's/^comparison=//p'
 )"
