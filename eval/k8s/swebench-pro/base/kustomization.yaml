@@ -1,0 +1,9 @@
+# The base names no addresses. Everything that depends on where this runs --
+# the model endpoint the harness dials, and how the control plane is reached --
+# lives in an overlay, because a deployment's topology is not a property of the
+# protocol and does not belong in a repository that gets pushed.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - 00-namespace.yaml
+  - 10-networkpolicy.yaml

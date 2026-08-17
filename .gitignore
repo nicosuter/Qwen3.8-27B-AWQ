@@ -7,3 +7,7 @@ logs/
 __pycache__/
 *.pyc
 .DS_Store
+
+# Deployment topology, not protocol. See eval/k8s/swebench-pro/overlay/README.md
+eval/k8s/*/overlay/harness-egress.yaml
+eval/k8s/*/overlay/kustomization.yaml

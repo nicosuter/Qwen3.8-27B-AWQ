@@ -1,0 +1,6 @@
+# Copy to kustomization.yaml alongside a filled-in harness-egress.yaml.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+  - harness-egress.yaml

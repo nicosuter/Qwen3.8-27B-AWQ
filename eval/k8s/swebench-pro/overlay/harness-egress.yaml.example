@@ -1,0 +1,39 @@
+# The harness is the only pod allowed to speak, and only to two places: the
+# control plane, because it drives every task container through
+# `connect_get_namespaced_pod_exec` rather than through anything listening
+# inside the container, and the model.
+#
+# Copy to harness-egress.yaml and fill in the endpoint. That file is ignored by
+# git: the address of a machine on somebody's network is a deployment detail,
+# and this repository is pushed.
+#
+# On a cluster running Cilium, `toEntities: [kube-apiserver]` names the control
+# plane without hardcoding master addresses that change when one is replaced.
+# On any other CNI, use a plain NetworkPolicy and an ipBlock instead.
+#
+# Terminus-2 is what makes the model a harness concern rather than a task
+# concern: its loop runs here and calls the model over litellm, sending the
+# container only shell commands. The `installed/*` agents -- codex, openhands,
+# qwen_code, swe_agent -- are uploaded into the task container and handed
+# OPENAI_BASE_URL, which would require opening egress on every task pod. Do not
+# swap the agent without revisiting this file.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: harness-egress
+  namespace: qwen-swebp
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/component: harness
+  egress:
+    - toEntities:
+        - kube-apiserver
+    # The model, reached over an ssh tunnel from the operator's machine. One
+    # host, one port, and the only route off the cluster.
+    - toCIDR:
+        - REPLACE_ME/32
+      toPorts:
+        - ports:
+            - port: "REPLACE_ME"
+              protocol: TCP

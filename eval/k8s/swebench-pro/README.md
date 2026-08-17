@@ -95,9 +95,23 @@ repeat-safe: it marks the repository and returns early on any later pass. Withou
 that, a retry firing after the agent had started would run `git clean -fd` over
 the agent's work and the run would grade a pristine tree.
 
+## Layout
+
+`base/` denies task pods everything and names no addresses. `overlay/` is where
+the deployment goes -- the model endpoint the harness may reach, and how the
+control plane is named on a given cluster. The filled-in overlay is gitignored;
+see `overlay/README.md`.
+
+    kubectl apply -k eval/k8s/swebench-pro/overlay
+
+Two properties of the target cluster decide the overlay, and both are worth
+checking rather than assuming. Whether it is dual-stack, because a policy
+written as CIDRs on one family leaves the other open -- which is why the base
+denies with an empty spec instead. And which CNI enforces policy, because
+naming the control plane by entity rather than by address only works on some.
+
 ## Still open
 
-- Image storage: 300 tasks at the 0.5-1.1 GB measured is roughly 150-350 GB
-  across node container storage.
-- The harness needs the model. That is a firewall allow to the tunnel host and a
-  `/32` in `harness-egress`, not a route to the internet.
+- The harness needs API credentials. Task pods run with no service account
+  token; the harness cannot, since it drives them through the exec API, so it
+  needs a service account with `pods/exec` in this namespace and nothing else.
