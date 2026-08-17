@@ -22,7 +22,6 @@ def valid_config() -> dict:
         "bfcl_v4": 1,
         "livecodebench_v6": 1,
         "gpqa_diamond": 1,
-        "matharena_2026_06": 1,
         "multimodal": 1,
         "mmmu_pro": 1,
         "ruler": 1,

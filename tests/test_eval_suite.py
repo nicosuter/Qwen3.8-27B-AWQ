@@ -46,9 +46,9 @@ class LoadingTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def test_the_shipped_definition_loads(self) -> None:
-        document = eval_suite.load("v1")
-        self.assertEqual(document["eval_suite"], "v1")
-        self.assertEqual(len(document["suites"]), 7)
+        document = eval_suite.load("v2")
+        self.assertEqual(document["eval_suite"], "v2")
+        self.assertEqual(len(document["suites"]), 6)
 
     def test_a_file_that_disagrees_with_its_name_is_refused(self) -> None:
         """The whole point is that a name and its contents cannot diverge."""
@@ -88,17 +88,17 @@ class LoadingTests(unittest.TestCase):
 
 class DerivationTests(unittest.TestCase):
     def test_the_runner_holds_no_suite_set_of_its_own(self) -> None:
-        self.assertEqual(protocol.REQUIRED_SUITES, eval_suite.names("v1"))
+        self.assertEqual(protocol.REQUIRED_SUITES, eval_suite.names("v2"))
 
     def test_every_suite_runs_once(self) -> None:
-        self.assertEqual(set(eval_suite.replicates("v1").values()), {1})
+        self.assertEqual(set(eval_suite.replicates("v2").values()), {1})
 
     def test_the_parked_suites_are_recorded_with_reasons(self) -> None:
         """A suite that was considered and left out is a decision, not an absence."""
-        parked = eval_suite.load("v1")["rationale"]["parked"]
-        for name in ("terminal_bench_2_1", "swebench_pro_1_0"):
+        parked = eval_suite.load("v2")["rationale"]["parked"]
+        for name in ("terminal_bench_2_1", "swebench_pro_1_0", "matharena_2026_06"):
             with self.subTest(name=name):
-                self.assertNotIn(name, eval_suite.names("v1"))
+                self.assertNotIn(name, eval_suite.names("v2"))
                 self.assertGreater(len(parked[name]), 40)
 
 
@@ -118,11 +118,11 @@ class SelectionTests(unittest.TestCase):
         self.assertIn("does not add to it", str(caught.exception))
 
     def test_selecting_everything_returns_the_whole_protocol(self) -> None:
-        everything = sorted(eval_suite.names("v1"))
+        everything = sorted(eval_suite.names("v2"))
         self.assertEqual(sorted(eval_suite.select(everything)), everything)
 
     def test_missing_reports_what_a_result_set_lacks(self) -> None:
-        present = eval_suite.names("v1") - {"ruler"}
+        present = eval_suite.names("v2") - {"ruler"}
         self.assertEqual(eval_suite.missing(present), ["ruler"])
 
 
@@ -152,12 +152,12 @@ class BatchPlanTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def test_the_shipped_plan_partitions_the_protocol(self) -> None:
-        scoring = [b for b in eval_suite.batches("v1") if b.get("scoring")]
+        scoring = [b for b in eval_suite.batches("v2") if b.get("scoring")]
         covered = [s for b in scoring for s in b["suites"]]
-        self.assertEqual(sorted(covered), sorted(eval_suite.names("v1")))
+        self.assertEqual(sorted(covered), sorted(eval_suite.names("v2")))
 
     def test_every_batch_records_why_it_exists(self) -> None:
-        for entry in eval_suite.batches("v1"):
+        for entry in eval_suite.batches("v2"):
             with self.subTest(batch=entry["name"]):
                 self.assertGreater(len(entry.get("why", "")), 60)
 

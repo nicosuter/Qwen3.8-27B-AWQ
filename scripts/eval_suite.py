@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_VERSION = "v1"
+DEFAULT_VERSION = "v2"
 
 
 class EvalSuiteError(RuntimeError):

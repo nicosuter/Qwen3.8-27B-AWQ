@@ -1,5 +1,5 @@
 {
-  "eval_suite": "v1",
+  "eval_suite": "v2",
   "note": "Batches are scheduling, not pre-registration. What the protocol measures lives in eval-suite-v1.json; this only says how it is divided across jobs. The scoring batches must together cover that set exactly, or running all of them would still not produce the protocol's macro.",
   "batches": [
     {
@@ -10,7 +10,6 @@
         "bfcl_v4",
         "gpqa_diamond",
         "livecodebench_v6",
-        "matharena_2026_06",
         "mmmu_pro",
         "multimodal",
         "ruler"
@@ -36,7 +35,6 @@
         "bfcl_v4",
         "gpqa_diamond",
         "livecodebench_v6",
-        "matharena_2026_06",
         "mmmu_pro",
         "multimodal"
       ],

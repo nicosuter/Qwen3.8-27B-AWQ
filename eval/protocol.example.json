@@ -117,26 +117,6 @@
       ]
     },
     {
-      "name": "matharena_2026_06",
-      "replicates": 1,
-      "pins": {
-        "dataset": "REPLACE_WITH_JUNE_2026_SNAPSHOT_HASHES",
-        "harness": "REPLACE_WITH_MATHARENA_COMMIT",
-        "verifier": "REPLACE_WITH_JUDGE_AND_PROMPT_REVISION",
-        "adapter": "REPLACE_WITH_ADAPTER_COMMIT"
-      },
-      "prepare": [
-        "REPLACE_WITH_PINNED_MATHARENA_ADAPTER",
-        "prepare",
-        "--snapshots",
-        "arxivmath-2026-06,brokenarxiv-2026-06"
-      ],
-      "run": [
-        "REPLACE_WITH_PINNED_MATHARENA_ADAPTER",
-        "run"
-      ]
-    },
-    {
       "name": "multimodal",
       "replicates": 1,
       "pins": {

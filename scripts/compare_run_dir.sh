@@ -90,7 +90,7 @@ COMPARISON="$RUN_DIR/comparisons/$RUN_STAMP-job$COMPARISON_TAG.json"
     --output "$COMPARISON" \
     --baseline-floor bfcl_v4="${BFCL_FLOOR:-0.830}" \
     --baseline-floor gpqa_diamond="${GPQA_FLOOR:-0.844}" \
-    --baseline-floor matharena_2026_06="${MATHARENA_FLOOR:-0.765}" \
+    --baseline-floor livecodebench_v6="${LCB_FLOOR:-0.830}" \
     --baseline-floor multimodal="${MULTIMODAL_FLOOR:-0.824}" \
     --baseline-floor ruler="${RULER_FLOOR:-0.760}" \
     --eval-suite "$EVAL_SUITE_VERSION" \

@@ -49,10 +49,6 @@ SUITES: dict[str, dict[str, Any]] = {
                 "k": 11.56, "run_items": 3486, "run_reps": 1},
     "gpqa_diamond": {"items": 198, "reps": 4, "baseline": 0.8889, "half": 0.01957,
                      "k": 15.41, "run_reps": 1},
-    "matharena_2026_06": {"items": 77, "reps": 4, "baseline": 0.8052, "half": 0.03734,
-                          # var_between measured as zero at 77 items, so k is a
-                          # lower bound standing in for "replicates are all of it".
-                          "k": 60.0, "run_reps": 1},
     "multimodal": {"items": 600, "reps": 4, "baseline": 0.8675, "half": 0.00912,
                    "k": 8.88, "run_reps": 1},
     "ruler": {"items": 105, "reps": 1, "baseline": 0.8000, "half": 0.02857,
@@ -61,14 +57,19 @@ SUITES: dict[str, dict[str, Any]] = {
     # baseline is a guess and the agreement is assumed lower than the
     # four-option suites.
     "mmmu_pro": {"items": 1730, "reps": 1, "baseline": 0.55, "rho": 0.75},
-    # No paired run yet. Baselines are estimates and are flagged as such.
-    "livecodebench_v6": {"items": 175, "reps": 4, "baseline": 0.65, "rho": 0.80},
+    # Baseline measured 2026-08-17 once the deferred execution was scored;
+    # it came in at 0.8743, well above the 0.65 that was assumed.
+    "livecodebench_v6": {"items": 175, "reps": 1, "baseline": 0.8743, "rho": 0.80},
 }
 # Parked, not deleted. Both agentic suites were costed and left out: SWE-bench
 # Pro because its containers will not start here, Terminal-Bench because 89 items
 # at a 0.35 baseline set the width of the whole macro. `--with-candidate` puts
 # them back, so the price of readmitting a low-baseline suite stays visible.
 CANDIDATE = {
+    "matharena_2026_06": {"items": 77, "reps": 4, "baseline": 0.8052, "half": 0.03734,
+                          # var_between measured as zero at 77 items, so k is a
+                          # lower bound standing in for "replicates are all of it".
+                          "k": 60.0, "run_reps": 1},
     "terminal_bench_2_1": {"items": 89, "reps": 3, "baseline": 0.35, "rho": 0.70},
     "swebench_pro_1_0": {"items": 300, "reps": 1, "baseline": 0.25, "rho": 0.65},
 }

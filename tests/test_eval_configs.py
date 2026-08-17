@@ -173,7 +173,7 @@ class ProtocolCoverageTests(unittest.TestCase):
     """The suite set is derived from one versioned file, so this checks it is."""
 
     def test_the_runner_derives_its_required_set(self) -> None:
-        self.assertEqual(protocol.REQUIRED_SUITES, eval_suite.names("v1"))
+        self.assertEqual(protocol.REQUIRED_SUITES, eval_suite.names("v2"))
 
     def test_the_example_protocol_declares_a_version(self) -> None:
         config = json.loads(
@@ -181,7 +181,7 @@ class ProtocolCoverageTests(unittest.TestCase):
         )
         self.assertEqual(config["eval_suite"], "v1")
         self.assertEqual(
-            {suite["name"] for suite in config["suites"]}, eval_suite.names("v1")
+            {suite["name"] for suite in config["suites"]}, eval_suite.names("v2")
         )
 
     def test_the_earlier_batches_are_history_not_the_protocol(self) -> None:
@@ -190,7 +190,7 @@ class ProtocolCoverageTests(unittest.TestCase):
             config = json.loads((ROOT / "eval" / f"{name}.json").read_text(encoding="utf-8"))
             names = {suite["name"] for suite in config["suites"]}
             with self.subTest(config=name):
-                self.assertNotEqual(names, eval_suite.names("v1"))
+                self.assertNotEqual(names, eval_suite.names("v2"))
 
     def test_every_required_suite_is_pinned(self) -> None:
         for suite in eval_suite.load("v1")["suites"]:
