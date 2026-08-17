@@ -18,7 +18,8 @@
 # out_proj is four-bit in every mode, so this flag is about the input to the
 # state update and not about the block. It used to be a
 # --fp8-gdn boolean, which could only express the two ends of what turned out to
-# be a choice between four, eight and source precision. It defaults to int8:
+# be a choice between four, eight and source precision, all weight-only. It
+# defaults to int8:
 # the AWQ mappings do not reach this path, so four bits here would be bare
 # round-to-nearest where every other four-bit tensor gets activation-aware
 # rescaling. Activations are BF16 in every mode and are not a flag. See

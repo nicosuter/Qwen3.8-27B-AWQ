@@ -405,11 +405,11 @@ def main() -> None:
         )
     }
     if plan["own_group"]:
-        # FP8_BLOCK is what Qwen's own FP8 release applies to these projections:
-        # e4m3, 128x128 blocks, dynamic activations. The activations are dropped
-        # unconditionally -- sm_89 is needed to perform them and the serving
-        # cards are sm_86, so declaring them describes numerics no deployment of
-        # ours executes. There is no flag for this on purpose.
+        # Activations are stripped unconditionally, whatever the preset carries.
+        # sm_89 is needed to perform FP8 ones and the serving cards are sm_86, so
+        # declaring any would describe numerics no deployment of ours executes.
+        # There is no flag for this on purpose, and doing it here rather than
+        # per-preset means a preset added later cannot bring them back.
         config_groups["group_1"] = preset_name_to_scheme(
             plan["own_group"], list(GDN_IN_PROJ_TARGETS)
         ).model_copy(update={"input_activations": None})

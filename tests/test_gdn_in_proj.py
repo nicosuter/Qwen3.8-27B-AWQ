@@ -59,11 +59,18 @@ class PlacementTests(unittest.TestCase):
             with self.subTest(precision=precision):
                 self.assertNotIn("quantize_activations", gdn_in_proj_plan(precision))
 
-    def test_the_eight_bit_modes_get_their_own_group(self) -> None:
-        """There is no activation axis, so neither mode is qualified for one."""
+    def test_eight_bit_gets_its_own_group_and_no_activations(self) -> None:
+        """There is no activation axis, so the mode is not qualified for one."""
         self.assertEqual(gdn_in_proj_plan("int8")["own_group"], "W8A16")
-        self.assertEqual(gdn_in_proj_plan("fp8")["own_group"], "FP8_BLOCK")
         self.assertNotIn("a16", " ".join(GDN_IN_PROJ_PRECISIONS))
+
+    def test_there_is_no_fp8_mode(self) -> None:
+        """At eight bits it is the worse format for weight-only, so its only
+        argument was that an earlier checkpoint used it. Reproducing that is a
+        job for the commit it was built from."""
+        self.assertNotIn("fp8", GDN_IN_PROJ_PRECISIONS)
+        with self.assertRaises(ValueError):
+            gdn_in_proj_plan("fp8")
 
     def test_the_default_is_eight_bit(self) -> None:
         """Four bits here would be bare round-to-nearest: the AWQ mappings do
@@ -116,7 +123,6 @@ class OutputDirectoryTests(unittest.TestCase):
         read as a claim about all of it."""
         self.assertEqual(output_suffix("int4"), "-inproj-int4")
         self.assertEqual(output_suffix("int8"), "-inproj-int8")
-        self.assertEqual(output_suffix("fp8"), "-inproj-fp8")
 
     def test_an_unknown_mode_has_no_directory(self) -> None:
         with self.assertRaises(ValueError):

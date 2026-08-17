@@ -26,25 +26,23 @@ more aggressive than our FP8 build on these modules and measures less verbose
 than it -- 1.04x median reasoning against our 1.13x -- so "quantizing the GDN
 path causes the extra reasoning" is not what the evidence says.
 
-`int8` gives them eight bits with a group-128 scale. At eight bits this beats
-`fp8` on the numbers that matter for weight-only quantization: e4m3 spends three
-bits on the mantissa, so every weight carries about 6% relative error whatever
-its magnitude, while an int8 group resolves its range to one part in 254 and
-does it per 128 input channels rather than per 128x128 tile -- finer scales and
-finer steps for the weights that carry most of the mass. vLLM routes it through
-`CompressedTensorsWNA16`, whose minimum capability is 75, so the serving cards
-run it natively.
+`int8` gives them eight bits with a group-128 scale, and is the default.
 
-`fp8` quantizes the weights with FP8_BLOCK. Since activations are not a choice,
-this is the same weights the deployment already serves: on sm_86
-`_is_fp8_w8a8` fails vLLM's capability gate and `CompressedTensorsW8A8Fp8` falls
-back to `CompressedTensorsW8A16Fp8`, which is what a build under this mode
-declares outright. Kept because it is what the existing scored checkpoint was
-built with, so it is the mode that reproduces its weights.
+There is deliberately no FP8 mode beside it. At eight bits FP8 is the worse
+format for weight-only quantization: e4m3 spends three bits on the mantissa, so
+every weight carries about 6% relative error whatever its magnitude, where an
+int8 group resolves its range to one part in 254 and does so per 128 input
+channels rather than per 128x128 tile -- finer scales and finer steps for the
+weights carrying most of the mass. vLLM routes int8 through
+`CompressedTensorsWNA16`, minimum capability 75, so the serving cards run it
+natively; that was checked in the container rather than assumed, since the FP8
+path is exactly where assuming went wrong. Offering FP8 anyway would have kept a
+mode whose only argument was that an earlier checkpoint used it, and rebuilding
+that checkpoint is a job for the commit it came from.
 
-`v2/model-fp8gdn` was built before activations were settled, with them
-quantized, and is the checkpoint the scored Class A result belongs to. No mode
-reproduces it and no mode writes to its directory, on purpose.
+`v2/model-fp8gdn` is that checkpoint: built before activations were settled,
+with them quantized, and the one the scored Class A result belongs to. No mode
+reproduces it and no mode writes to its directory.
 """
 
 import argparse
@@ -64,7 +62,7 @@ GDN_IN_PROJ_TARGETS = (
     "re:.*linear_attn\\.in_proj_qkv$",
     "re:.*linear_attn\\.in_proj_z$",
 )
-GDN_IN_PROJ_PRECISIONS = ("source", "int4", "int8", "fp8")
+GDN_IN_PROJ_PRECISIONS = ("source", "int4", "int8")
 # Eight bits with a group scale, because these projections feed a recurrent
 # state whose errors carry rather than being re-read each step, and because the
 # AWQ mappings do not cover this path -- four bits here would be bare
@@ -155,9 +153,9 @@ def gdn_in_proj_plan(precision: str) -> dict[str, Any]:
         # everything else".
         plan["four_bit"] = GDN_IN_PROJ_TARGETS
     else:
-        # W8A16 declares no activations at all; FP8_BLOCK carries dynamic ones
-        # and the caller strips them, because activations are not a choice here.
-        plan["own_group"] = {"int8": "W8A16", "fp8": "FP8_BLOCK"}[precision]
+        # W8A16 declares no activations at all. The caller strips them anyway,
+        # so a preset added here later cannot reintroduce them by accident.
+        plan["own_group"] = "W8A16"
     return plan
 
 
@@ -174,10 +172,7 @@ def output_suffix(precision: str, algorithm: str = "awq") -> str:
     # Named for what varies, since the whole model is four-bit in every mode and
     # "-int4" alone would read as a claim about all of it. -fp8gdn stays
     # unreachable: it holds the build made before activations were settled.
-    suffix = {
-        "source": "", "int4": "-inproj-int4",
-        "int8": "-inproj-int8", "fp8": "-inproj-fp8",
-    }[precision]
+    suffix = {"source": "", "int4": "-inproj-int4", "int8": "-inproj-int8"}[precision]
     if algorithm == "awq+gptq":
         suffix += "-gptq"
     return suffix
