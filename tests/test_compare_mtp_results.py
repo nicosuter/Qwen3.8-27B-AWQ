@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location(
-    "compare_mtp_results", ROOT / "scripts" / "compare_mtp_results.py"
+    "compare_mtp_results", ROOT / "eval" / "scripts" / "compare_mtp_results.py"
 )
 assert SPEC and SPEC.loader
 comparison = importlib.util.module_from_spec(SPEC)

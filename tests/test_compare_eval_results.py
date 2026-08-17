@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location(
-    "compare_eval_results", ROOT / "scripts" / "compare_eval_results.py"
+    "compare_eval_results", ROOT / "eval" / "scripts" / "compare_eval_results.py"
 )
 assert SPEC and SPEC.loader
 comparator = importlib.util.module_from_spec(SPEC)
@@ -47,7 +47,7 @@ def run_gate(baseline_rows, candidate_rows, *extra):
     base.write_text("\n".join(json.dumps(r) for r in baseline_rows), encoding="utf-8")
     cand.write_text("\n".join(json.dumps(r) for r in candidate_rows), encoding="utf-8")
     proc = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "compare_eval_results.py"),
+        [sys.executable, str(ROOT / "eval" / "scripts" / "compare_eval_results.py"),
          "--baseline", str(base), "--candidate", str(cand), "--output", str(out),
          "--bootstrap-samples", "800", *extra],
         capture_output=True, text=True,
@@ -210,7 +210,7 @@ class DeferredRowTests(unittest.TestCase):
         base.write_text("\n".join(json.dumps(r) for r in baseline_rows), encoding="utf-8")
         cand.write_text("\n".join(json.dumps(r) for r in candidate_rows), encoding="utf-8")
         return subprocess.run(
-            [sys.executable, str(ROOT / "scripts" / "compare_eval_results.py"),
+            [sys.executable, str(ROOT / "eval" / "scripts" / "compare_eval_results.py"),
              "--baseline", str(base), "--candidate", str(cand), "--output", str(out)],
             capture_output=True, text=True,
         )
@@ -270,7 +270,7 @@ def gate_stderr(baseline_rows, candidate_rows, *extra):
     base.write_text("\n".join(json.dumps(r) for r in baseline_rows), encoding="utf-8")
     cand.write_text("\n".join(json.dumps(r) for r in candidate_rows), encoding="utf-8")
     proc = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "compare_eval_results.py"),
+        [sys.executable, str(ROOT / "eval" / "scripts" / "compare_eval_results.py"),
          "--baseline", str(base), "--candidate", str(cand),
          "--bootstrap-samples", "200", *extra],
         capture_output=True, text=True,
@@ -333,7 +333,7 @@ class GenerationTelemetryTests(unittest.TestCase):
         base.write_text("\n".join(json.dumps(r) for r in baseline_rows), encoding="utf-8")
         cand.write_text("\n".join(json.dumps(r) for r in candidate_rows), encoding="utf-8")
         proc = subprocess.run(
-            [sys.executable, str(ROOT / "scripts" / "compare_eval_results.py"),
+            [sys.executable, str(ROOT / "eval" / "scripts" / "compare_eval_results.py"),
              "--baseline", str(base), "--candidate", str(cand), "--output", str(out),
              "--bootstrap-samples", "200", *extra],
             capture_output=True, text=True,

@@ -18,7 +18,7 @@ def load_module(name: str, relative: str):
     return module
 
 
-adapter = load_module("hle", "scripts/adapters/hle.py")
+adapter = load_module("hle", "eval/scripts/adapters/hle.py")
 
 TINY_PNG = "data:image/png;base64," + base64.b64encode(b"not-really-a-png").decode()
 

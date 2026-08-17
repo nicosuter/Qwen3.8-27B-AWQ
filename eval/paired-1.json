@@ -18,18 +18,18 @@
         "dataset": "633f5ee89ab8ad4522a9f850766b73f62147ffdd",
         "harness": "builtin-gpqa-mcq-v1",
         "verifier": "exact-choice-v1",
-        "adapter": "sha256:8a4282e7003a2669dc152a54247b3a816d1b180506724bf6b10fe4c1faa80c5d"
+        "adapter": "sha256:04a861b77225eab454fef0a7fa2b45b6dc1bf766be101644760635e5f72171a1"
       },
       "prepare": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/gpqa_diamond.py",
+        "eval/scripts/adapters/gpqa_diamond.py",
         "prepare",
         "--split",
         "gpqa_diamond"
       ],
       "run": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/gpqa_diamond.py",
+        "eval/scripts/adapters/gpqa_diamond.py",
         "run",
         "--concurrency",
         "384",
@@ -45,11 +45,11 @@
         "dataset": "sha256:632a63b0ccd60b992c263937e996f462bc43bc0e87c0b22d7edcea0d5aaa8540",
         "harness": "builtin-ruler-synth-v1",
         "verifier": "recall-string-match-v1",
-        "adapter": "sha256:f317c6e41c241080131ba51ce875b560ea611116773a45d11826ce57d960b6ec"
+        "adapter": "sha256:0d10e29769f914f677f92563b6f77e1002980b5704a9219c26304433a5aabe0f"
       },
       "prepare": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/ruler.py",
+        "eval/scripts/adapters/ruler.py",
         "prepare",
         "--lengths",
         "4096,32768,131072",
@@ -64,7 +64,7 @@
       ],
       "run": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/ruler.py",
+        "eval/scripts/adapters/ruler.py",
         "run",
         "--concurrency",
         "96",
@@ -78,16 +78,16 @@
         "dataset": "MathArena/aime_2026@d2de22f3c656b4f56cf8981212186377d1e23bc3,MathArena/apex-shortlist@f3efdf224ef665f129ddaae37699f6098c65781b",
         "harness": "builtin-matharena-exact-v1",
         "verifier": "exact-integer-answer-v1",
-        "adapter": "sha256:b46cbd1c20d5f97846995d727be20848805a5b13739740e3ac7e0bca5b3ec5d4"
+        "adapter": "sha256:688271833f69b7e7295f70844fafbe7b14f2272c9543ef4a7f5772263d87aca5"
       },
       "prepare": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/matharena.py",
+        "eval/scripts/adapters/matharena.py",
         "prepare"
       ],
       "run": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/matharena.py",
+        "eval/scripts/adapters/matharena.py",
         "run",
         "--concurrency",
         "64",

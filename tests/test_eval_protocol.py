@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location(
-    "run_eval_protocol", ROOT / "scripts" / "run_eval_protocol.py"
+    "run_eval_protocol", ROOT / "eval" / "scripts" / "run_eval_protocol.py"
 )
 assert SPEC and SPEC.loader
 protocol = importlib.util.module_from_spec(SPEC)

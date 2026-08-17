@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location(
-    "publish_checkpoint", ROOT / "scripts" / "publish_checkpoint.py"
+    "publish_checkpoint", ROOT / "quant" / "scripts" / "publish_checkpoint.py"
 )
 assert SPEC and SPEC.loader
 publisher = importlib.util.module_from_spec(SPEC)

@@ -17,9 +17,9 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "eval" / "scripts"))
 SPEC = importlib.util.spec_from_file_location(
-    "run_adapter_suite", ROOT / "scripts" / "run_adapter_suite.py"
+    "run_adapter_suite", ROOT / "eval" / "scripts" / "run_adapter_suite.py"
 )
 assert SPEC and SPEC.loader
 runner = importlib.util.module_from_spec(SPEC)
@@ -160,10 +160,10 @@ if __name__ == "__main__":
     unittest.main()
 
 
-import eval_suite  # noqa: E402  (scripts/ is on sys.path above)
+import eval_suite  # noqa: E402  (eval/scripts is on sys.path above)
 
 _PROTOCOL_SPEC = importlib.util.spec_from_file_location(
-    "run_eval_protocol", ROOT / "scripts" / "run_eval_protocol.py"
+    "run_eval_protocol", ROOT / "eval" / "scripts" / "run_eval_protocol.py"
 )
 protocol = importlib.util.module_from_spec(_PROTOCOL_SPEC)
 _PROTOCOL_SPEC.loader.exec_module(protocol)
@@ -262,7 +262,7 @@ class EnvironmentContractTests(unittest.TestCase):
     def source_env(self, **overrides):
         environment = {**os.environ, "RUN_BASE": "/scratch/example", **overrides}
         result = subprocess.run(
-            ["bash", "-c", "source scripts/load_env.sh && echo \"$HF_HOME\""],
+            ["bash", "-c", "source common/scripts/load_env.sh && echo \"$HF_HOME\""],
             capture_output=True, text=True, cwd=ROOT, env=environment,
         )
         return result.stdout.strip()

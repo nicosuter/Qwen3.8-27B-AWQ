@@ -16,7 +16,7 @@ def load_module(name: str, relative: str):
     return module
 
 
-adapter = load_module("aa_omniscience", "scripts/adapters/aa_omniscience.py")
+adapter = load_module("aa_omniscience", "eval/scripts/adapters/aa_omniscience.py")
 
 ROWS = [
     {"domain": "Finance", "topic": "Accounting", "question_id": "1",

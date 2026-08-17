@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "scripts" / "adapters"))
-sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "eval" / "scripts" / "adapters"))
+sys.path.insert(0, str(ROOT / "common" / "scripts"))
 
 
 def load_module(name: str, relative: str):
@@ -22,8 +22,8 @@ def load_module(name: str, relative: str):
     return module
 
 
-adapter = load_module("mtp_adapter", "scripts/adapters/mtp.py")
-comparator = load_module("compare_mtp_results", "scripts/compare_mtp_results.py")
+adapter = load_module("mtp_adapter", "eval/scripts/adapters/mtp.py")
+comparator = load_module("compare_mtp_results", "eval/scripts/compare_mtp_results.py")
 
 GENERATION = {"enable_thinking": False, "temperature": 1.0, "top_p": 0.95, "top_k": 20,
               "min_p": 0.0, "presence_penalty": 0.0, "repetition_penalty": 1.0}

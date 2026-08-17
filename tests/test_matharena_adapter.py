@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "scripts" / "adapters"))
+sys.path.insert(0, str(ROOT / "eval" / "scripts" / "adapters"))
 
 
 def load_module(name: str, relative: str):
@@ -17,8 +17,8 @@ def load_module(name: str, relative: str):
     return module
 
 
-adapter = load_module("matharena", "scripts/adapters/matharena.py")
-protocol = load_module("run_eval_protocol", "scripts/run_eval_protocol.py")
+adapter = load_module("matharena", "eval/scripts/adapters/matharena.py")
+protocol = load_module("run_eval_protocol", "eval/scripts/run_eval_protocol.py")
 
 SNAPSHOTS = {
     "MathArena/aime_2026": [

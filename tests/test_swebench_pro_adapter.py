@@ -17,7 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "scripts" / "adapters"))
+sys.path.insert(0, str(ROOT / "eval" / "scripts" / "adapters"))
 
 
 def load_module(name: str, relative: str):
@@ -28,9 +28,9 @@ def load_module(name: str, relative: str):
     return module
 
 
-adapter = load_module("swebench_pro", "scripts/adapters/swebench_pro.py")
-protocol = load_module("run_eval_protocol", "scripts/run_eval_protocol.py")
-selector = load_module("swebenchpro_subset", "scripts/swebenchpro_subset.py")
+adapter = load_module("swebench_pro", "eval/scripts/adapters/swebench_pro.py")
+protocol = load_module("run_eval_protocol", "eval/scripts/run_eval_protocol.py")
+selector = load_module("swebenchpro_subset", "eval/scripts/swebenchpro_subset.py")
 
 
 def pin_of(names) -> str:
@@ -138,7 +138,7 @@ class PinTests(unittest.TestCase):
 
     def test_editing_the_shared_driver_invalidates_the_pin(self) -> None:
         """Harbor's translation lives in _harbor.py, so it has to be pinned too."""
-        driver = ROOT / "scripts" / "adapters" / "_harbor.py"
+        driver = ROOT / "eval" / "scripts" / "adapters" / "_harbor.py"
         original = driver.read_bytes()
         before = adapter.self_pin()
         try:

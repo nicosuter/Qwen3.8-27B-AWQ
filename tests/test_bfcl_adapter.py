@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "scripts" / "adapters"))
+sys.path.insert(0, str(ROOT / "eval" / "scripts" / "adapters"))
 
 
 def load_module(name: str, relative: str):
@@ -19,8 +19,8 @@ def load_module(name: str, relative: str):
     return module
 
 
-adapter = load_module("bfcl", "scripts/adapters/bfcl.py")
-protocol = load_module("run_eval_protocol", "scripts/run_eval_protocol.py")
+adapter = load_module("bfcl", "eval/scripts/adapters/bfcl.py")
+protocol = load_module("run_eval_protocol", "eval/scripts/run_eval_protocol.py")
 
 SIMPLE_ROW = {
     "id": "simple_0",

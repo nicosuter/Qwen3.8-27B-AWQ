@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-WRAPPER = ROOT / "slurm" / "with-hf-token.sh"
+WRAPPER = ROOT / "eval" / "scripts" / "with-hf-token.sh"
 
 
 def run(args, env=None, **kwargs):

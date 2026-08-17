@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location(
-    "build_ruler_corpus", ROOT / "scripts" / "build_ruler_corpus.py"
+    "build_ruler_corpus", ROOT / "eval" / "scripts" / "build_ruler_corpus.py"
 )
 assert SPEC and SPEC.loader
 builder = importlib.util.module_from_spec(SPEC)

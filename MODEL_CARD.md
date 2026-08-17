@@ -55,7 +55,7 @@ encoder and a quantized decoder.
 | Quantized with | [`llm-compressor`](https://github.com/vllm-project/llm-compressor) @ `623c8ce`, `compressed-tensors` 0.18.1a20260806, Transformers @ `a597f97`, PyTorch 2.10.0 |
 | Calibration | 256 pinned public text, long-context, and vision samples, up to 4,096 tokens |
 | Hardware | 4x NVIDIA H200, one BF16 replica per GPU, disjoint 64-row calibration partitions with AWQ statistics reduced across ranks |
-| Recipe source | [`nicosuter/Qwen3.8-27B-AWQ`](https://github.com/nicosuter/Qwen3.8-27B-AWQ), the `scripts/` and `slurm/` directories |
+| Recipe source | [`nicosuter/Qwen3.8-27B-AWQ`](https://github.com/nicosuter/Qwen3.8-27B-AWQ), the `quant/`, `eval/` and `common/` directories |
 
 `run-metadata.json`, `pip-freeze.txt`, the exact calibration `manifest.jsonl`
 and its SHA256 ship alongside the weights here. Anything you want to reproduce

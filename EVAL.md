@@ -71,7 +71,7 @@ serves both checkpoints with `--max-model-len 262144`, and a prompt that fills
 the window leaves no output budget for a thinking model, so a 256K point would
 score truncation rather than long-range recall. Raising the served context for
 one suite would break the identical-server rule that makes the pairing valid.
-`scripts/adapters/ruler.py` rejects any requested length that does not leave
+`eval/scripts/adapters/ruler.py` rejects any requested length that does not leave
 room for `--output-reserve`.
 A per-length cliff that survives that averaging is exactly the kind of regression
 cluster gate 6 exists to catch. Budget the 128K bucket against KV memory rather
@@ -132,7 +132,7 @@ forty or more.
   problems. Terminal-Bench under Hermes plus LiveCodeBench gives cleaner
   information for this deployment. SWE-bench Pro cannot run on this cluster;
   see the note under the primary suite.
-- Smoke prompts from `scripts/validate_generate.py` are gates for a broken
+- Smoke prompts from `quant/scripts/validate_generate.py` are gates for a broken
   artifact, not capability evidence.
 
 ## Contamination control
@@ -140,7 +140,7 @@ forty or more.
 There are two different contamination questions and both must be reported:
 
 1. **AWQ-calibration overlap.** Materialize every eval's agent-visible prompt
-   as JSONL with `id` and `text`, then run `scripts/audit_eval_overlap.py`
+   as JSONL with `id` and `text`, then run `eval/scripts/audit_eval_overlap.py`
    against the exact `manifest.jsonl` saved with the checkpoint. The audit
    looks for exact containment and high token-shingle containment. Any flagged
    item is manually reviewed. Publish both the full benchmark score and a
@@ -154,7 +154,7 @@ There are two different contamination questions and both must be reported:
 Example audit after prompt export:
 
 ```bash
-python scripts/audit_eval_overlap.py \
+python eval/scripts/audit_eval_overlap.py \
   --calibration "${RUN_BASE}/v2/calibration/manifest.jsonl" \
   --eval eval-materialized/bfcl.jsonl \
   --eval eval-materialized/livecodebench-v6.jsonl \
@@ -246,7 +246,7 @@ Before the full run, require:
 
 ## MTP gate
 
-`scripts/validate_generate.py` first asserts that MTP tensors exist and remain
+`quant/scripts/validate_generate.py` first asserts that MTP tensors exist and remain
 BF16/FP16. Then serve the AWQ checkpoint once without speculation and once with
 the sole additional flag:
 
@@ -259,7 +259,7 @@ Export identical request IDs to two JSONL files with `score`, `failed`,
 `accepted_draft_tokens` and `draft_tokens`. Compare them with:
 
 ```bash
-python scripts/compare_mtp_results.py \
+python eval/scripts/compare_mtp_results.py \
   --disabled artifacts/eval/awq-mtp-disabled.jsonl \
   --enabled artifacts/eval/awq-mtp-enabled.jsonl \
   --output artifacts/eval/mtp-comparison.json
@@ -286,7 +286,7 @@ Never compare only aggregate dashboard numbers. Export one JSONL row per
 ```
 
 `score` is in `[0, 1]`; use the verifier reward for agent tasks. The two files
-must contain exactly the same keys. `scripts/compare_eval_results.py` averages
+must contain exactly the same keys. `eval/scripts/compare_eval_results.py` averages
 replicates within an item, computes paired item deltas, and bootstraps over
 items rather than pretending repeated generations are independent questions.
 Use one fixed suite label for each primary row in the table above; do not split
@@ -294,7 +294,7 @@ a weak category into many labels to change its macro weight. Keep category and
 failure-mode fields in the raw result for drill-down.
 
 ```bash
-python scripts/compare_eval_results.py \
+python eval/scripts/compare_eval_results.py \
   --baseline artifacts/eval/fp8.jsonl \
   --candidate artifacts/eval/awq.jsonl \
   --output artifacts/eval/comparison.json
@@ -325,7 +325,7 @@ The default automated release gate is intentionally practical for a W4A16 27B mo
 
 Gates 1 and 2 replace an earlier rule that failed the run whenever any suite's
 point estimate fell 3 points. Eight suites is eight chances, and the smaller ones
-carry intervals twice the width of that margin. `scripts/simulate_gates.py`
+carry intervals twice the width of that margin. `eval/scripts/simulate_gates.py`
 re-derives this from the per-suite intervals the paired runs actually produced,
 rescaled to the full@1 configuration, 200,000 draws under the null:
 

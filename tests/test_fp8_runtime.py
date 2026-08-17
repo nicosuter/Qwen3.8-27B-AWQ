@@ -1,6 +1,6 @@
 import unittest
 
-from scripts.fp8_runtime import configure_triton_fp8_baseline
+from eval.scripts.fp8_runtime import configure_triton_fp8_baseline
 
 
 class Fp8Module:

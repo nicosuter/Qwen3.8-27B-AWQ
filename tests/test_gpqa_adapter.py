@@ -21,8 +21,8 @@ def load_module(name: str, relative: str):
     return module
 
 
-adapter = load_module("gpqa_diamond", "scripts/adapters/gpqa_diamond.py")
-protocol = load_module("run_eval_protocol", "scripts/run_eval_protocol.py")
+adapter = load_module("gpqa_diamond", "eval/scripts/adapters/gpqa_diamond.py")
+protocol = load_module("run_eval_protocol", "eval/scripts/run_eval_protocol.py")
 
 DATASET_REVISION = "a" * 40
 

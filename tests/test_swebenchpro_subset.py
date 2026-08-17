@@ -14,7 +14,7 @@ from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location(
-    "swebenchpro_subset", ROOT / "scripts" / "swebenchpro_subset.py"
+    "swebenchpro_subset", ROOT / "eval" / "scripts" / "swebenchpro_subset.py"
 )
 subset = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(subset)

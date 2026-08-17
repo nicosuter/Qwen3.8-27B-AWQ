@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "scripts" / "adapters"))
+sys.path.insert(0, str(ROOT / "eval" / "scripts" / "adapters"))
 
 
 def load_module(name: str, relative: str):
@@ -25,8 +25,8 @@ def load_module(name: str, relative: str):
     return module
 
 
-adapter = load_module("ruler", "scripts/adapters/ruler.py")
-protocol = load_module("run_eval_protocol", "scripts/run_eval_protocol.py")
+adapter = load_module("ruler", "eval/scripts/adapters/ruler.py")
+protocol = load_module("run_eval_protocol", "eval/scripts/run_eval_protocol.py")
 
 
 class WordTokenizer:
@@ -285,7 +285,7 @@ class PinTests(unittest.TestCase):
             adapter.validate_pins(pins)
 
     def test_pin_covers_the_shared_module(self) -> None:
-        common = ROOT / "scripts" / "adapters" / "_common.py"
+        common = ROOT / "eval" / "scripts" / "adapters" / "_common.py"
         original = common.read_bytes()
         before = adapter.self_pin()
         try:

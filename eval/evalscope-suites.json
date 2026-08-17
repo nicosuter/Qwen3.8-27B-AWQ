@@ -27,7 +27,7 @@
         }
       },
       "judge_required": true,
-      "plugin": "scripts/evalscope_plugins/deferred_scoring.py",
+      "plugin": "eval/scripts/evalscope_plugins/deferred_scoring.py",
       "args_note": "judge=False for the generating pass, so the cluster never calls a judge and the choice of one stays open; the scoring pass overrides it to True with --judge-model/--judge-api-url.",
       "defer_flag": "judge"
     },
@@ -97,7 +97,7 @@
           "execute": false
         }
       },
-      "plugin": "scripts/evalscope_plugins/deferred_scoring.py",
+      "plugin": "eval/scripts/evalscope_plugins/deferred_scoring.py",
       "args_note": "execute=False for the generating pass; the scoring pass overrides it to True. The bridge marks deferred reviews and the comparator refuses any file containing one.",
       "judge_required": false,
       "defer_flag": "execute"

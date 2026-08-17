@@ -1,6 +1,6 @@
 import unittest
 
-from scripts.distributed_lifecycle import run_rank0_after_group_teardown
+from quant.scripts.distributed_lifecycle import run_rank0_after_group_teardown
 
 
 class FakeDistributed:

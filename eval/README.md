@@ -1,6 +1,6 @@
 # Apptainer evaluation runner
 
-`scripts/run_eval_protocol.py` implements the experiment controls in
+`eval/scripts/run_eval_protocol.py` implements the experiment controls in
 `EVAL.md`. It runs vLLM inside one immutable Apptainer image and invokes pinned,
 benchmark-specific adapters on the host. Keeping adapters outside the server
 image is intentional: Harbor needs access to its task-container runtime, GPQA
@@ -27,8 +27,8 @@ the campaign could not have been launched as specified; meanwhile `aa_lcr` and
 loud failures.
 
 ```bash
-python3 scripts/eval_suite.py                      # what v1 measures, and what is parked
-python3 scripts/eval_suite.py --select ruler bfcl_v4   # resolve a batch
+python3 eval/scripts/eval_suite.py                      # what v1 measures, and what is parked
+python3 eval/scripts/eval_suite.py --select ruler bfcl_v4   # resolve a batch
 ```
 
 Changing what is measured means writing `eval-suite-v2.json` and pointing
@@ -50,8 +50,8 @@ directory. Both are refused.
 | `long-context` | ruler | one 128k sequence holds roughly 8.5 GB of KV, so it wants about a dozen per replica where the others take forty |
 
 ```bash
-python3 scripts/eval_suite.py --batches
-PAIRED_BATCH=short-context sbatch slurm/paired-suite-eval.sbatch
+python3 eval/scripts/eval_suite.py --batches
+PAIRED_BATCH=short-context sbatch eval/slurm/paired-suite-eval.sbatch
 ```
 
 RULER is separated because sharing a server with forty-way lanes means one
@@ -68,7 +68,7 @@ linux/amd64/CUDA 13.0, pinned to its platform manifest digest. Build the SIF on
 a node with Apptainer:
 
 ```bash
-sbatch slurm/build-eval-apptainer.sbatch
+sbatch common/slurm/build-eval-apptainer.sbatch
 ```
 
 The default output is `$RUN_BASE/containers/qwen38-eval-vllm.sif`. OCI layers
@@ -79,7 +79,7 @@ SIF before atomically installing it and writes a sibling `.sha256` file.
 Once the AWQ checkpoint exists, the short end-to-end serving gate is:
 
 ```bash
-sbatch slurm/serve-smoke.sbatch
+sbatch quant/slurm/serve-smoke.sbatch
 ```
 
 It rejects an unpacked checkpoint before starting vLLM, then serves one H200
@@ -96,13 +96,13 @@ inside those containers.
 export RUN_BASE="/scratch/$USER/qwen38-27b-awq"
 export EVAL_CONFIG="$RUN_BASE/eval/protocol.json"
 export EVAL_BASE_URL='http://<inference-host-address>:8000/v1'
-sbatch --export=ALL slurm/eval.sbatch
+sbatch --export=ALL eval/slurm/protocol.sbatch
 ```
 
 To freeze and audit prompts without allocating GPUs, run only preparation:
 
 ```bash
-python3 scripts/run_eval_protocol.py \
+python3 eval/scripts/run_eval_protocol.py \
   --config "$EVAL_CONFIG" \
   --run-dir "$RUN_BASE/v2/eval/release-1" \
   --phase prepare
@@ -132,7 +132,7 @@ removed symmetrically from FP8 and AWQ only for the primary
 Resume the same locked run without changing its protocol JSON:
 
 ```bash
-python3 scripts/run_eval_protocol.py \
+python3 eval/scripts/run_eval_protocol.py \
   --config "$EVAL_CONFIG" \
   --image "$EVAL_APPTAINER_IMAGE" \
   --run-dir "$RUN_BASE/v2/eval/release-1" \
@@ -146,7 +146,7 @@ JSON after its run directory is created is intentionally rejected.
 
 ## Reference adapter: GPQA Diamond
 
-`scripts/adapters/gpqa_diamond.py` implements the contract below and is the
+`eval/scripts/adapters/gpqa_diamond.py` implements the contract below and is the
 worked example for the remaining suites. `prepare` materializes one row per
 question with a per-item deterministic option order, keeps the shared
 answer-format instruction out of the prompt text so the overlap audit sees only
@@ -163,7 +163,7 @@ the adapter's own source hash, so editing the file without repinning stops the
 run. Print the current value with:
 
 ```bash
-python3 scripts/adapters/gpqa_diamond.py pin
+python3 eval/scripts/adapters/gpqa_diamond.py pin
 ```
 
 Then replace the `gpqa_diamond` suite in your protocol JSON with:
@@ -178,8 +178,8 @@ Then replace the `gpqa_diamond` suite in your protocol JSON with:
     "verifier": "exact-choice-v1",
     "adapter": "<output of the pin command>"
   },
-  "prepare": ["python3", "scripts/adapters/gpqa_diamond.py", "prepare", "--split", "gpqa_diamond"],
-  "run": ["python3", "scripts/adapters/gpqa_diamond.py", "run", "--concurrency", "384"]
+  "prepare": ["python3", "eval/scripts/adapters/gpqa_diamond.py", "prepare", "--split", "gpqa_diamond"],
+  "run": ["python3", "eval/scripts/adapters/gpqa_diamond.py", "run", "--concurrency", "384"]
 }
 ```
 
@@ -192,7 +192,7 @@ anyway:
 
 ```json
 "prepare": ["/scratch/$USER/qwen38-27b-awq/repo/.venv/bin/python",
-            "scripts/adapters/gpqa_diamond.py", "prepare", "--split", "gpqa_diamond"]
+            "eval/scripts/adapters/gpqa_diamond.py", "prepare", "--split", "gpqa_diamond"]
 ```
 
 GPQA is a gated dataset; the account running `prepare` needs accepted terms and
@@ -216,7 +216,7 @@ build is most likely to reject or ignore, and either failure would otherwise
 surface as an aborted run or as silently non-thinking output:
 
 ```bash
-python3 scripts/adapters/gpqa_diamond.py probe \
+python3 eval/scripts/adapters/gpqa_diamond.py probe \
   --base-url "$EVAL_BASE_URL" --model openai/qwen38-eval
 ```
 
@@ -226,7 +226,7 @@ answer line.
 
 ## MMMU-Pro
 
-`scripts/adapters/mmmu_pro.py` covers the multimodal reasoning the DocVQA and
+`eval/scripts/adapters/mmmu_pro.py` covers the multimodal reasoning the DocVQA and
 ChartQA suite does not. Those are perception, scored near ceiling, and 86.5% of
 their items came back identical on both checkpoints in the last paired run: they
 measure the vision tower, which this recipe leaves in source precision. MMMU-Pro
@@ -240,12 +240,12 @@ which the unquantized tower would answer, and is a different question from the
 one this protocol asks.
 
 ```bash
-python3 scripts/adapters/mmmu_pro.py pin --resolve
+python3 eval/scripts/adapters/mmmu_pro.py pin --resolve
 ```
 
 ## Reference adapter: RULER
 
-`scripts/adapters/ruler.py` synthesizes every haystack locally. It is not an
+`eval/scripts/adapters/ruler.py` synthesizes every haystack locally. It is not an
 upstream RULER reproduction and its scores are not comparable to published RULER
 numbers; it exists to measure FP8 against AWQ on byte-identical items, which is
 what `EVAL.md` asks of this suite. Seven synthetic tasks are generated per
@@ -276,7 +276,7 @@ or a directory of `.txt` files on persistent scratch and produce all four pins
 with:
 
 ```bash
-python3 scripts/adapters/ruler.py pin --corpus "$RUN_BASE/eval/haystack"
+python3 eval/scripts/adapters/ruler.py pin --corpus "$RUN_BASE/eval/haystack"
 ```
 
 `prepare` re-hashes the corpus and refuses to run if it no longer matches
@@ -288,10 +288,10 @@ use:
   "name": "ruler",
   "replicates": 1,
   "pins": { "...": "output of the pin command" },
-  "prepare": ["python3", "scripts/adapters/ruler.py", "prepare",
+  "prepare": ["python3", "eval/scripts/adapters/ruler.py", "prepare",
               "--lengths", "4096,32768,131072", "--synthesis-seed", "38027",
               "--corpus", "/scratch/.../haystack", "--tokenizer", "/scratch/.../v2/model"],
-  "run": ["python3", "scripts/adapters/ruler.py", "run", "--concurrency", "96"]
+  "run": ["python3", "eval/scripts/adapters/ruler.py", "run", "--concurrency", "96"]
 }
 ```
 
@@ -331,18 +331,18 @@ where their scoring rules live, though neither is in the protocol right now. Thr
 | `multimodal` | `multimodal.py` | DocVQA, ChartQA, TextVQA; the private UI pack does **not exist** here | ANLS / relaxed / VQA |
 
 ```bash
-python3 scripts/adapters/bfcl.py           pin --resolve-dataset
-python3 scripts/adapters/livecodebench.py  pin --resolve-dataset
-python3 scripts/adapters/matharena.py      pin --resolve
-python3 scripts/adapters/multimodal.py     pin --resolve
-python3 scripts/adapters/terminal_bench.py pin --dataset-version <v> --harbor-version <v> --task-checksums <set>
+python3 eval/scripts/adapters/bfcl.py           pin --resolve-dataset
+python3 eval/scripts/adapters/livecodebench.py  pin --resolve-dataset
+python3 eval/scripts/adapters/matharena.py      pin --resolve
+python3 eval/scripts/adapters/multimodal.py     pin --resolve
+python3 eval/scripts/adapters/terminal_bench.py pin --dataset-version <v> --harbor-version <v> --task-checksums <set>
 ```
 
 SWE-bench Pro is not in the protocol. Harbor's Singularity backend hardcodes
 `--fakeroot`, this account has no `/etc/subuid` mapping, and the bundled
 `faked` needs a newer glibc than the task images carry, so the containers
-never start. `scripts/adapters/swebench_pro.py`,
-`scripts/swebenchpro_subset.py` and `scripts/bake_harbor_sifs.py` are kept
+never start. `eval/scripts/adapters/swebench_pro.py`,
+`eval/scripts/swebenchpro_subset.py` and `eval/scripts/bake_harbor_sifs.py` are kept
 against that being fixed; the runner does not reference them.
 
 Three things worth knowing before running them.
@@ -410,7 +410,7 @@ must receive byte-identical materialized items.
 
 The MTP adapter runs four times: disabled/enabled at concurrency 1 and 8. It
 receives `EVAL_MTP_MODE` and `EVAL_CONCURRENCY`, and writes the schema consumed
-by `scripts/compare_mtp_results.py`: `id`, `score`, `failed`,
+by `eval/scripts/compare_mtp_results.py`: `id`, `score`, `failed`,
 `elapsed_seconds`, `output_tokens`, plus `accepted_draft_tokens` and
 `draft_tokens` when enabled.
 
@@ -438,7 +438,7 @@ reviewed and the FP8 anchors are judged plausible.
 
 EvalScope implements the task definitions for eight of our suites and grades
 BFCL with Gorilla's own `bfcl-eval`. What it does not have is an immutable
-dataset pin or the paired statistics, so `scripts/evalscope_bridge.py` supplies
+dataset pin or the paired statistics, so `eval/scripts/evalscope_bridge.py` supplies
 both ends and the comparator is unchanged.
 
 Set `PAIRED_RUNNER=evalscope` and a lane runs EvalScope instead of an adapter.
@@ -461,19 +461,19 @@ loader without passing the `version` that `DataLoader` accepts and forwards to
 `load_dataset(revision=...)`. A benchmark run from the Hub therefore tracks
 whatever `main` is that day. Instead:
 
-    python scripts/evalscope_bridge.py materialize \
+    python eval/scripts/evalscope_bridge.py materialize \
         --repo TIGER-Lab/MMLU-Pro --revision <40-hex> \
         --into eval-materialized/evalscope
 
 `cais/hle` and `Idavidrein/gpqa` are gated. Materialize those through
-`slurm/with-hf-token.sh`, which keeps the credential in one process and refuses
+`eval/scripts/with-hf-token.sh`, which keeps the credential in one process and refuses
 to hand it to `sbatch`, because Slurm persists a job's environment to its spool
 directories.
 
 BFCL needs building rather than downloading: EvalScope reads one record carrying
 prompt and key together, while upstream ships them as two files.
 
-    python scripts/evalscope_bridge.py bfcl-dataset --into eval-materialized/evalscope
+    python eval/scripts/evalscope_bridge.py bfcl-dataset --into eval-materialized/evalscope
 
 ### Two things worth knowing before trusting a number
 
@@ -495,7 +495,7 @@ It would report an interval narrower than the truth.
 
 Scoring runs code the model wrote, and EvalScope executes it in the local
 environment by default with no generate-only mode. Load
-`scripts/evalscope_plugins/lcb_deferred.py` and the generating pass returns a
+`eval/scripts/evalscope_plugins/lcb_deferred.py` and the generating pass returns a
 deferred marker without reaching the executor; the isolated pass then runs
 `--use-cache <dir> --rerun-review` with `execute: True`. Deferred rows are
 marked, and the comparator refuses any file containing one, so a pass that

@@ -17,12 +17,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "eval" / "scripts"))
 
 import eval_suite  # noqa: E402
 
 _SPEC = importlib.util.spec_from_file_location(
-    "run_eval_protocol", ROOT / "scripts" / "run_eval_protocol.py"
+    "run_eval_protocol", ROOT / "eval" / "scripts" / "run_eval_protocol.py"
 )
 protocol = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(protocol)
@@ -235,7 +235,7 @@ class InterpreterCompatibilityTests(unittest.TestCase):
     sbatch called bare `python3` while the rest of the job used the venv.
     """
 
-    SHELLED_OUT = ("scripts/eval_suite.py", "scripts/bake_harbor_sifs.py")
+    SHELLED_OUT = ("eval/scripts/eval_suite.py", "eval/scripts/bake_harbor_sifs.py")
 
     def test_shelled_out_modules_defer_their_annotations(self) -> None:
         for name in self.SHELLED_OUT:
@@ -244,9 +244,9 @@ class InterpreterCompatibilityTests(unittest.TestCase):
                 self.assertIn("from __future__ import annotations", source)
 
     def test_the_sbatch_prefers_the_configured_interpreter(self) -> None:
-        text = (ROOT / "slurm" / "paired-suite-eval.sbatch").read_text(encoding="utf-8")
-        self.assertNotIn("$(python3 scripts/eval_suite.py", text)
-        self.assertIn('"${EVAL_PYTHON:-python3}" scripts/eval_suite.py', text)
+        text = (ROOT / "eval" / "slurm" / "paired-suite-eval.sbatch").read_text(encoding="utf-8")
+        self.assertNotIn("$(python3 eval/scripts/eval_suite.py", text)
+        self.assertIn('"${EVAL_PYTHON:-python3}" eval/scripts/eval_suite.py', text)
 
 if __name__ == "__main__":
     unittest.main()
@@ -263,10 +263,10 @@ class DefaultVersionTests(unittest.TestCase):
     """
 
     SHELL = (
-        "slurm/paired-suite-eval.sbatch",
-        "slurm/prepare-eval.sbatch",
-        "slurm/score-deferred.sbatch",
-        "scripts/compare_run_dir.sh",
+        "eval/slurm/paired-suite-eval.sbatch",
+        "eval/slurm/prepare-eval.sbatch",
+        "eval/slurm/score-deferred.sbatch",
+        "eval/scripts/compare_run_dir.sh",
     )
 
     def test_the_shell_defaults_match_the_python_default(self) -> None:

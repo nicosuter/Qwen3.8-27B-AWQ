@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location(
-    "simulate_gates", ROOT / "scripts" / "simulate_gates.py"
+    "simulate_gates", ROOT / "eval" / "scripts" / "simulate_gates.py"
 )
 assert SPEC and SPEC.loader
 sim = importlib.util.module_from_spec(SPEC)
@@ -72,7 +72,7 @@ class ParameterTests(unittest.TestCase):
 
     def test_every_suite_in_the_protocol_has_parameters(self) -> None:
         protocol = importlib.util.spec_from_file_location(
-            "run_eval_protocol", ROOT / "scripts" / "run_eval_protocol.py"
+            "run_eval_protocol", ROOT / "eval" / "scripts" / "run_eval_protocol.py"
         )
         module = importlib.util.module_from_spec(protocol)
         protocol.loader.exec_module(module)

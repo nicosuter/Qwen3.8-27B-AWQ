@@ -17,7 +17,7 @@ def load_module(name: str, relative: str):
     return module
 
 
-adapter = load_module("mmmu_pro", "scripts/adapters/mmmu_pro.py")
+adapter = load_module("mmmu_pro", "eval/scripts/adapters/mmmu_pro.py")
 
 try:
     from PIL import Image

@@ -16,7 +16,7 @@ def load_module(name: str, relative: str):
     return module
 
 
-adapter = load_module("aa_lcr", "scripts/adapters/aa_lcr.py")
+adapter = load_module("aa_lcr", "eval/scripts/adapters/aa_lcr.py")
 
 ROWS = [
     {"document_category": "Legal", "document_set_id": "eu_ai", "question_id": "1",

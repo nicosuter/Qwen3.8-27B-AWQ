@@ -13,7 +13,7 @@ def load_module(name: str, relative: str):
     return module
 
 
-adapter = load_module("mmlu_pro", "scripts/adapters/mmlu_pro.py")
+adapter = load_module("mmlu_pro", "eval/scripts/adapters/mmlu_pro.py")
 
 ROW = {
     "question_id": 70,

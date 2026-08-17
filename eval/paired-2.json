@@ -18,16 +18,16 @@
         "dataset": "61fc0608cfd831fcfbbaa676ebdfef0ed963eeda",
         "harness": "builtin-bfcl-ast-v1",
         "verifier": "bfcl-ast-match-v1",
-        "adapter": "sha256:8721e2a8dab454ea41c35ff32abb91bb2deccf0121ab96a337bd026654891fa7"
+        "adapter": "sha256:dfd5c941ff6426484d066d46b8c6ace3f93d70b6112b6b98bfe9ebd3bdeb0d7d"
       },
       "prepare": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/bfcl.py",
+        "eval/scripts/adapters/bfcl.py",
         "prepare"
       ],
       "run": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/bfcl.py",
+        "eval/scripts/adapters/bfcl.py",
         "run",
         "--concurrency",
         "384",
@@ -43,18 +43,18 @@
         "dataset": "lmms-lab/DocVQA@539088ef8a8ada01ac8e2e6d4e372586748a265e,lmms-lab/ChartQA@9e63b7df1592a1c2158e735cc1725454aef0d6d9,lmms-lab/textvqa@9c0699cd19768ac5ab97568f6b3cbac4c0062884",
         "harness": "builtin-vqa-v1",
         "verifier": "anls-relaxed-vqa-v1",
-        "adapter": "sha256:2bec3b4b2dbbe7f5478c80842de51f022939e7b0ffef90b72ee1b966ba1cf229"
+        "adapter": "sha256:0555967089d583acc1f9b0e2af6ccc88d1889a278dd4c2ed934c7f2f7e1cbe5e"
       },
       "prepare": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/multimodal.py",
+        "eval/scripts/adapters/multimodal.py",
         "prepare",
         "--items-per-set",
         "200"
       ],
       "run": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/multimodal.py",
+        "eval/scripts/adapters/multimodal.py",
         "run",
         "--concurrency",
         "256",
@@ -70,18 +70,18 @@
         "dataset": "633f5ee89ab8ad4522a9f850766b73f62147ffdd",
         "harness": "builtin-gpqa-mcq-v1",
         "verifier": "exact-choice-v1",
-        "adapter": "sha256:8a4282e7003a2669dc152a54247b3a816d1b180506724bf6b10fe4c1faa80c5d"
+        "adapter": "sha256:04a861b77225eab454fef0a7fa2b45b6dc1bf766be101644760635e5f72171a1"
       },
       "prepare": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/gpqa_diamond.py",
+        "eval/scripts/adapters/gpqa_diamond.py",
         "prepare",
         "--split",
         "gpqa_diamond"
       ],
       "run": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/gpqa_diamond.py",
+        "eval/scripts/adapters/gpqa_diamond.py",
         "run",
         "--concurrency",
         "384",
@@ -97,18 +97,18 @@
         "dataset": "0fe84c3912ea0c4d4a78037083943e8f0c4dd505",
         "harness": "builtin-lcb-exec-v1",
         "verifier": "stdin-and-functional-exec-v1",
-        "adapter": "sha256:71d84ddee36048836e7493fb6e41f2f3835704c9e0f2fe6fa088cfde9b8c89e4"
+        "adapter": "sha256:4fdf879e26f5988df7d94c6477281dba870d8f6359687fb26f68225929d2dd47"
       },
       "prepare": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/livecodebench.py",
+        "eval/scripts/adapters/livecodebench.py",
         "prepare",
         "--release",
         "v6"
       ],
       "run": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/livecodebench.py",
+        "eval/scripts/adapters/livecodebench.py",
         "run",
         "--defer-execution",
         "--concurrency",
@@ -125,16 +125,16 @@
         "dataset": "MathArena/aime_2026@d2de22f3c656b4f56cf8981212186377d1e23bc3,MathArena/apex-shortlist@f3efdf224ef665f129ddaae37699f6098c65781b",
         "harness": "builtin-matharena-exact-v1",
         "verifier": "exact-integer-answer-v1",
-        "adapter": "sha256:b46cbd1c20d5f97846995d727be20848805a5b13739740e3ac7e0bca5b3ec5d4"
+        "adapter": "sha256:688271833f69b7e7295f70844fafbe7b14f2272c9543ef4a7f5772263d87aca5"
       },
       "prepare": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/matharena.py",
+        "eval/scripts/adapters/matharena.py",
         "prepare"
       ],
       "run": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/matharena.py",
+        "eval/scripts/adapters/matharena.py",
         "run",
         "--concurrency",
         "64",
@@ -150,16 +150,16 @@
         "dataset": "4a8ffc87c4650054825fb767fe0da4a4fc97ff32",
         "harness": "builtin-omniscience-exact-v1",
         "verifier": "exact-answer-with-abstention-v1",
-        "adapter": "sha256:663170b60501eebcef73e19b7eb48d065c05c5e00b84eee6d83f9cf661b7c22e"
+        "adapter": "sha256:3ca7afaf77b9eb752be78b3d1ca28dc7dc4541bc519f0c040a29a0fe1daaddc9"
       },
       "prepare": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/aa_omniscience.py",
+        "eval/scripts/adapters/aa_omniscience.py",
         "prepare"
       ],
       "run": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/aa_omniscience.py",
+        "eval/scripts/adapters/aa_omniscience.py",
         "run",
         "--concurrency",
         "384",
@@ -175,17 +175,17 @@
         "dataset": "bdae010bbce259820c0e34c1d7cce210d966fb75",
         "harness": "builtin-lcr-exact-v1",
         "verifier": "exact-answer-v1",
-        "adapter": "sha256:c6fc592a7f5171242db3b90f410d7532b86a37c12e6ba6af6c0f99075aeadb5b"
+        "adapter": "sha256:5a0f03c3f97813187e38572948a09121e0e08ceb601dc97d4ebf0868a68d6796"
       },
       "prepare": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/aa_lcr.py",
+        "eval/scripts/adapters/aa_lcr.py",
         "prepare",
         "--skip-incomplete"
       ],
       "run": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/aa_lcr.py",
+        "eval/scripts/adapters/aa_lcr.py",
         "run",
         "--concurrency",
         "32",
@@ -201,16 +201,16 @@
         "dataset": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
         "harness": "builtin-mmlu-pro-mcq-v1",
         "verifier": "exact-choice-v1",
-        "adapter": "sha256:55b9321f7d1b8e0682bd05b054270b49e19e23b09d0ecf7ab6c96ea0b606a3e7"
+        "adapter": "sha256:21b26d3bba161f5592a26c92ed5deb20887ad864e8b5d16f1be5ec43e3a6bed8"
       },
       "prepare": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/mmlu_pro.py",
+        "eval/scripts/adapters/mmlu_pro.py",
         "prepare"
       ],
       "run": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/mmlu_pro.py",
+        "eval/scripts/adapters/mmlu_pro.py",
         "run",
         "--concurrency",
         "384",
@@ -226,16 +226,16 @@
         "dataset": "563f3e84bb3b90893083a1f039cfa13077f2302b",
         "harness": "builtin-mmmu-pro-mcq-v1",
         "verifier": "exact-choice-v1",
-        "adapter": "sha256:7bd58b89439190bb2b0cbdbe191557cbb126340bf8524f23bdd84c8dce1addbd"
+        "adapter": "sha256:b3ab9a20dd85a30ddae6e2a093ba297ca4449750a9840659b78beb93c33e0809"
       },
       "prepare": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/mmmu_pro.py",
+        "eval/scripts/adapters/mmmu_pro.py",
         "prepare"
       ],
       "run": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/mmmu_pro.py",
+        "eval/scripts/adapters/mmmu_pro.py",
         "run",
         "--concurrency",
         "256",
@@ -251,16 +251,16 @@
         "dataset": "5a81a4c7271a2a2a312b9a690f0c2fde837e4c29",
         "harness": "builtin-hle-judged-v1",
         "verifier": "judged-equivalence-v1",
-        "adapter": "sha256:f6f957e75bce9cdc16f20f7e82388f16efe884805c621232bec29e9e17bf0985"
+        "adapter": "sha256:2521bf788091181e234954b18138d8fcfc00d42b651c4bff0a0e71643bb21846"
       },
       "prepare": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/hle.py",
+        "eval/scripts/adapters/hle.py",
         "prepare"
       ],
       "run": [
         "${EVAL_PYTHON}",
-        "scripts/adapters/hle.py",
+        "eval/scripts/adapters/hle.py",
         "run",
         "--defer-judging",
         "--concurrency",

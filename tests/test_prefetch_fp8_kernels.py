@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.prefetch_fp8_kernels import KERNELS, prefetch
+from eval.scripts.prefetch_fp8_kernels import KERNELS, prefetch
 
 
 class PrefetchFp8KernelsTests(unittest.TestCase):

@@ -1,0 +1,32 @@
+Bootstrap: docker
+From: python:3.12-slim
+
+# Harbor needs python 3.10+ and git, and no environment on the cluster has both.
+# The host carries git 2.43 and python 3.9; the eval container carries python
+# 3.12 and no git, which is why `harbor download` failed with a FileNotFoundError
+# naming 'git' while `git --version` worked from the same shell -- the wrapper at
+# venv/bin/python runs inside that container, so it was looking at a different
+# /usr/bin.
+#
+# This is a build-and-download tool, not part of any measurement. It never sees
+# a checkpoint and nothing it produces is scored: it fetches task packs and
+# drives eval/scripts/bake_harbor_sifs.py, whose output is the pinned .sif a task
+# actually runs in.
+
+%post
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    # git-lfs matters: task packs keep large fixtures in LFS, and a clone
+    # without it yields pointer files that fail much later, during the run.
+    apt-get install -y --no-install-recommends git git-lfs ca-certificates
+    git lfs install --system
+    rm -rf /var/lib/apt/lists/*
+    pip install --no-cache-dir harbor
+
+%environment
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+
+%runscript
+    exec "$@"

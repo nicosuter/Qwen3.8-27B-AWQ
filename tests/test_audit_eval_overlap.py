@@ -31,7 +31,7 @@ class AuditOverlapTests(unittest.TestCase):
             result = subprocess.run(
                 [
                     sys.executable,
-                    str(ROOT / "scripts" / "audit_eval_overlap.py"),
+                    str(ROOT / "eval" / "scripts" / "audit_eval_overlap.py"),
                     "--calibration",
                     str(calibration),
                     "--eval",

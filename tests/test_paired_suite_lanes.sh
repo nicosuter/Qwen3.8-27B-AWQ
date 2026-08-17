@@ -30,9 +30,9 @@ done
 awk '/^score_variant\(\) \{/,/^\}/'   "$SBATCH" >> "$WORK/fns.sh"
 # concat_variant and its exclusion test live in the shared comparison script now,
 # so that a CPU-only job can rebuild a comparison too.
-ROOT="$(cd "$(dirname "$SBATCH")/.." && pwd)"
+ROOT="$(cd "$(dirname "$SBATCH")/../.." && pwd)"
 for fn in excluded concat_variant; do
-    awk -v f="^${fn}\\\\(\\\\) \\\\{" '$0 ~ f, /^\}/' "$ROOT/scripts/compare_run_dir.sh" >> "$WORK/fns.sh"
+    awk -v f="^${fn}\\\\(\\\\) \\\\{" '$0 ~ f, /^\}/' "$ROOT/eval/scripts/compare_run_dir.sh" >> "$WORK/fns.sh"
 done
 # Checked per source file: an awk pattern that silently matched nothing let the
 # concat tests pass against an empty extraction.

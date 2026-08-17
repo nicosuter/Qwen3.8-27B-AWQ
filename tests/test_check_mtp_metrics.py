@@ -5,7 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location(
-    "check_mtp_metrics", ROOT / "scripts" / "check_mtp_metrics.py"
+    "check_mtp_metrics", ROOT / "common" / "scripts" / "check_mtp_metrics.py"
 )
 assert SPEC and SPEC.loader
 metrics = importlib.util.module_from_spec(SPEC)

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.preserve_mtp import (
+from quant.scripts.preserve_mtp import (
     MTP_SHARD,
     QWEN38_MTP_KEYS,
     QWEN38_MTP_LINEAR_MODULES,

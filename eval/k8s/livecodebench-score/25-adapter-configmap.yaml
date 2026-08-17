@@ -1,0 +1,1229 @@
+apiVersion: v1
+data:
+  _common.py: |
+    #!/usr/bin/env python3
+    """Shared machinery for the benchmark adapters driven by run_eval_protocol.py.
+
+    Every adapter reads its paths and policy from the environment, verifies its own
+    pins before issuing a request, and emits the paired result schema from EVAL.md.
+    The parts that must behave identically across suites live here.
+    """
+
+    import sys
+
+    if sys.version_info < (3, 10):
+        # Checked before the first PEP 604 annotation below, which would otherwise
+        # fail with an unreadable TypeError on the cluster's system Python 3.9.
+        raise SystemExit(
+            "the adapters need Python 3.10 or newer; run them with the project venv "
+            f"(this is {sys.version.split()[0]} at {sys.executable})"
+        )
+
+    import concurrent.futures
+    import hashlib
+    import json
+    import os
+    import re
+    import socket
+    import time
+    import urllib.error
+    import urllib.request
+    from pathlib import Path
+    from typing import Any, Callable, Iterable, Sequence
+
+
+    RESULT_BOOL_FIELDS = (
+        "must_pass",
+        "timeout",
+        "empty_answer",
+        "repetition_loop",
+        "malformed_tool_call",
+        "premature_final_answer",
+        "context_failure",
+    )
+
+    REQUIRED_GENERATION_KEYS = (
+        "enable_thinking",
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "presence_penalty",
+        "repetition_penalty",
+    )
+
+    UNSAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+    class AdapterError(RuntimeError):
+        pass
+
+
+    def env_str(name: str) -> str:
+        value = os.environ.get(name, "").strip()
+        if not value:
+            raise AdapterError(f"{name} is required but unset")
+        return value
+
+
+    def env_path(name: str) -> Path:
+        return Path(env_str(name))
+
+
+    def check_action(expected: str, suite: str) -> None:
+        action = os.environ.get("EVAL_ACTION")
+        if action is not None and action != expected:
+            raise AdapterError(f"EVAL_ACTION is {action!r} but this command is {expected!r}")
+        actual_suite = os.environ.get("EVAL_SUITE")
+        if actual_suite is not None and actual_suite != suite:
+            raise AdapterError(f"EVAL_SUITE is {actual_suite!r}; this adapter only serves {suite}")
+
+
+    def module_pin(paths: Sequence[Path]) -> str:
+        """Hash every source file whose contents can change scoring behavior."""
+        digest = hashlib.sha256()
+        for path in sorted(Path(path).resolve() for path in paths):
+            digest.update(path.name.encode())
+            digest.update(path.read_bytes())
+        return "sha256:" + digest.hexdigest()
+
+
+    def load_pins() -> dict[str, str]:
+        try:
+            pins = json.loads(env_str("EVAL_PINS_JSON"))
+        except json.JSONDecodeError as error:
+            raise AdapterError(f"EVAL_PINS_JSON is not valid JSON: {error}") from error
+        if not isinstance(pins, dict):
+            raise AdapterError("EVAL_PINS_JSON must be an object")
+        return {str(key): str(value) for key, value in pins.items()}
+
+
+    def require_pin(pins: dict[str, str], field: str, expected: str) -> None:
+        if pins.get(field) != expected:
+            raise AdapterError(f"pins.{field} must be {expected!r}; got {pins.get(field)!r}")
+
+
+    def read_jsonl(path: Path) -> list[dict[str, Any]]:
+        rows = []
+        with path.open(encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, 1):
+                if not line.strip():
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError as error:
+                    raise AdapterError(f"{path}:{line_number}: {error}") from error
+        if not rows:
+            raise AdapterError(f"{path}: no rows")
+        return rows
+
+
+    def write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+    def write_json(path: Path, data: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+    def build_payload(
+        text: str,
+        generation: dict[str, Any],
+        *,
+        model: str,
+        seed: int,
+        max_tokens: int,
+        instruction: str,
+    ) -> dict[str, Any]:
+        missing = [key for key in REQUIRED_GENERATION_KEYS if key not in generation]
+        if missing:
+            raise AdapterError(f"EVAL_GENERATION_JSON is missing {missing}")
+        # Qwen3.8's chat template reads reasoning_effort as a template variable and
+        # defaults it to xhigh. Sent as a top-level field it is accepted by the
+        # server and silently ignored, so a protocol asking for medium would run at
+        # xhigh and record itself as compliant.
+        template_kwargs: dict[str, Any] = {"enable_thinking": bool(generation["enable_thinking"])}
+        effort = generation.get("reasoning_effort")
+        if effort:
+            template_kwargs["reasoning_effort"] = effort
+        # One seed for every request makes each item draw the same uniform stream,
+        # applied to different logits: their sampling noise is then correlated, and
+        # the comparator's item-clustered bootstrap assumes items are independent.
+        # Derive the seed from the prompt so a run stays reproducible while items
+        # stay independent of one another.
+        digest = hashlib.sha256(f"{seed}:{text}".encode("utf-8")).digest()
+        return {
+            "model": model,
+            "messages": [{"role": "user", "content": f"{text}\n\n{instruction}"}],
+            "max_tokens": max_tokens,
+            "seed": int.from_bytes(digest[:4], "big"),
+            "temperature": generation["temperature"],
+            "top_p": generation["top_p"],
+            "top_k": generation["top_k"],
+            "min_p": generation["min_p"],
+            "presence_penalty": generation["presence_penalty"],
+            "repetition_penalty": generation["repetition_penalty"],
+            "chat_template_kwargs": template_kwargs,
+        }
+
+
+    def post_chat(
+        base_url: str, api_key: str, payload: dict[str, Any], timeout: float
+    ) -> dict[str, Any]:
+        request = urllib.request.Request(
+            base_url.rstrip("/") + "/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.load(response)
+
+
+    def is_timeout(error: BaseException) -> bool:
+        if isinstance(error, (socket.timeout, TimeoutError)):
+            return True
+        if isinstance(error, urllib.error.URLError):
+            return is_timeout(error.reason) if isinstance(error.reason, BaseException) else False
+        return False
+
+
+    def is_permanent_rejection(error: BaseException) -> bool:
+        """A 4xx other than 429 will not change on retry; a rejected policy field is one."""
+        return (
+            isinstance(error, urllib.error.HTTPError)
+            and 400 <= error.code < 500
+            and error.code != 429
+        )
+
+
+    def describe_http_error(error: urllib.error.HTTPError) -> str:
+        try:
+            body = error.read().decode(errors="replace").strip()
+        except Exception:  # noqa: BLE001 - the status alone is still worth reporting
+            body = ""
+        return f"HTTP {error.code}: {body[:500]}" if body else f"HTTP {error.code}"
+
+
+    def request_with_retries(
+        item_id: str,
+        payload: dict[str, Any],
+        *,
+        base_url: str,
+        api_key: str,
+        timeout: float,
+        retries: int,
+        client: Callable[..., dict[str, Any]],
+    ) -> tuple[dict[str, Any] | None, int]:
+        """Return (response, attempts), or (None, attempts) when the request timed out.
+
+        Timeouts are model behavior and become scored failures. A 4xx other than 429
+        aborts at once, and other transport faults abort after `retries`, so
+        infrastructure noise never enters the score as a zero.
+        """
+        attempt = 0
+        while True:
+            try:
+                return client(base_url, api_key, payload, timeout), attempt + 1
+            except Exception as error:  # noqa: BLE001 - classified immediately below
+                if is_timeout(error):
+                    return None, attempt + 1
+                if is_permanent_rejection(error):
+                    raise AdapterError(
+                        f"{item_id}: server rejected the request, "
+                        f"{describe_http_error(error)}"
+                    ) from error
+                if attempt >= retries:
+                    raise AdapterError(f"{item_id}: request failed: {error}") from error
+                attempt += 1
+                time.sleep(min(2**attempt, 30))
+
+
+    def execute_order(
+        order: Sequence[str], worker: Callable[[str], dict[str, Any]], concurrency: int
+    ) -> list[dict[str, Any]]:
+        """Run the frozen task order, returning rows in that order."""
+        if concurrency < 1:
+            raise AdapterError("--concurrency must be at least 1")
+        if concurrency == 1:
+            return [worker(item_id) for item_id in order]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
+            futures = {item_id: pool.submit(worker, item_id) for item_id in order}
+            return [futures[item_id].result() for item_id in order]
+
+
+    def timing(started_wall: float, started_mono: float) -> dict[str, float]:
+        """When a request ran, not just how long it took.
+
+        Duration alone cannot say how many requests were in flight at once, so
+        occupancy has to be reconstructed by replaying the thread pool and assuming
+        how it scheduled. Absolute stamps make that a measurement instead. The
+        monotonic clock still supplies the duration, since the wall clock can step.
+        """
+        elapsed = time.monotonic() - started_mono
+        return {
+            "started_at": round(started_wall, 3),
+            "finished_at": round(started_wall + elapsed, 3),
+            "elapsed_seconds": round(elapsed, 3),
+        }
+
+
+    def base_row(suite: str, item_id: str, replicate: int) -> dict[str, Any]:
+        row: dict[str, Any] = {"suite": suite, "id": item_id, "replicate": replicate, "score": 0.0}
+        row.update({field: False for field in RESULT_BOOL_FIELDS})
+        return row
+
+
+    def timeout_row(suite: str, item_id: str, replicate: int) -> dict[str, Any]:
+        row = base_row(suite, item_id, replicate)
+        row.update({"timeout": True, "empty_answer": True, "finish_reason": "timeout"})
+        return row
+
+
+    def raw_response_path(
+        run_dir: Path, suite: str, variant: str, replicate: int, item_id: str
+    ) -> Path:
+        safe = UNSAFE_NAME_RE.sub("_", item_id)
+        return run_dir / "raw-responses" / suite / f"{variant}-r{replicate}" / f"{safe}.json"
+
+
+    def message_text(message: dict[str, Any], field: str) -> str:
+        value = message.get(field)
+        return value if isinstance(value, str) else ""
+
+
+    CHARS_PER_TOKEN = 4
+
+
+    def reasoning_tokens(usage: dict[str, Any], reasoning: str, content: str = "") -> int:
+        """Reasoning tokens, inferred when the server strips them without reporting.
+
+        The pinned vLLM build removes the think block from `content` and returns
+        nothing in `reasoning_content`, so the only evidence that thinking happened
+        is the gap between tokens generated and tokens visible.
+        """
+        details = usage.get("completion_tokens_details")
+        if isinstance(details, dict) and isinstance(details.get("reasoning_tokens"), int):
+            return int(details["reasoning_tokens"])
+        if reasoning:
+            return len(reasoning.split())
+        completion = usage.get("completion_tokens")
+        if isinstance(completion, int) and not isinstance(completion, bool):
+            return max(0, completion - len(content) // CHARS_PER_TOKEN)
+        return 0
+
+
+    def unpack_choice(item_id: str, response: dict[str, Any]) -> tuple[str, str, str, dict[str, Any]]:
+        """Return (content, reasoning, finish_reason, usage) or fail loudly."""
+        try:
+            choice = response["choices"][0]
+            message = choice["message"]
+        except (KeyError, IndexError, TypeError) as error:
+            raise AdapterError(f"{item_id}: malformed chat completion: {error}") from error
+        return (
+            message_text(message, "content"),
+            message_text(message, "reasoning_content"),
+            str(choice.get("finish_reason") or ""),
+            response.get("usage") or {},
+        )
+
+
+    THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+
+
+    def split_reasoning(content: str, reasoning: str) -> tuple[str, str]:
+        """Return (reasoning, answer) even when the server did not separate them.
+
+        Qwen3.8's template opens `<think>` in the prompt itself, so a server whose
+        reasoning parser is not splitting hands back one blob whose only marker is
+        the closing tag. Scoring that blob as the answer would credit values the
+        model merely considered while thinking.
+        """
+        if reasoning:
+            return reasoning, content
+        match = THINK_BLOCK_RE.search(content)
+        if match:
+            return match.group(1), THINK_BLOCK_RE.sub("", content)
+        if "</think>" in content:
+            head, _, tail = content.partition("</think>")
+            return head, tail
+        return "", content
+
+
+    def has_repetition_loop(
+        content: str, *, repeats: int = 4, min_unit: int = 20, window: int = 2000
+    ) -> bool:
+        """True when the reply ends in `repeats` consecutive copies of one segment."""
+        tail = " ".join(content.split())[-window:]
+        for unit in range(min_unit, len(tail) // repeats + 1):
+            segment = tail[-unit * repeats :]
+            first = segment[:unit]
+            if all(segment[index * unit : (index + 1) * unit] == first for index in range(1, repeats)):
+                return True
+        return False
+  livecodebench.py: |
+    #!/usr/bin/env python3
+    """LiveCodeBench v6 adapter for eval/scripts/run_eval_protocol.py.
+
+    `prepare` reads the pinned release file directly rather than through the
+    dataset's loading script, which recent `datasets` releases refuse to execute,
+    and stores the decoded tests as the answer key. `run` extracts the model's
+    solution, executes it against every public and private test in a resource-capped
+    subprocess, and scores pass@1: an item counts only if every test passes.
+
+    The tests are model-independent, so executing generated code is the verifier.
+    That code is untrusted: each run gets a fresh temporary directory, a CPU-time
+    limit, an address-space limit, and a wall-clock timeout. It is not a security
+    sandbox and must not be pointed at a shared filesystem it can damage.
+    """
+
+    import argparse
+    import base64
+    import io
+    import json
+    import os
+    import pickle
+    import re
+    import resource
+    import shutil
+    import subprocess
+    import sys
+    import tempfile
+    import time
+    import zlib
+    from pathlib import Path
+    from typing import Any, Callable
+
+    try:
+        from _common import (
+            AdapterError,
+            base_row,
+            build_payload,
+            check_action,
+            env_path,
+            env_str,
+            execute_order,
+            has_repetition_loop,
+            load_pins,
+            module_pin,
+            post_chat,
+            raw_response_path as _raw_response_path,
+            read_jsonl,
+            reasoning_tokens,
+            request_with_retries,
+            require_pin,
+            split_reasoning,
+            timeout_row as _timeout_row,
+            timing,
+            unpack_choice,
+            write_json,
+            write_jsonl,
+        )
+    except ModuleNotFoundError:  # loading by file spec puts the repo root on sys.path
+        from scripts.adapters._common import (  # type: ignore[no-redef]
+            AdapterError,
+            base_row,
+            build_payload,
+            check_action,
+            env_path,
+            env_str,
+            execute_order,
+            has_repetition_loop,
+            load_pins,
+            module_pin,
+            post_chat,
+            raw_response_path as _raw_response_path,
+            read_jsonl,
+            reasoning_tokens,
+            request_with_retries,
+            require_pin,
+            split_reasoning,
+            timeout_row as _timeout_row,
+            timing,
+            unpack_choice,
+            write_json,
+            write_jsonl,
+        )
+
+
+    SUITE = "livecodebench_v6"
+    HARNESS_ID = "builtin-lcb-exec-v1"
+    VERIFIER_ID = "stdin-and-functional-exec-v1"
+    DATASET_REPO = "livecodebench/code_generation_lite"
+    RELEASE_FILES = {"v6": "test6.jsonl", "v5": "test5.jsonl", "v4": "test4.jsonl"}
+
+    DEFAULT_MAX_TOKENS = 65536
+    DEFAULT_EXEC_TIMEOUT = 10.0
+    DEFAULT_EXEC_MEMORY_MB = 2048
+    DEFAULT_ITEM_BUDGET = 120.0
+
+    ANSWER_INSTRUCTION = (
+        "Write a complete solution. Put the final program in a single Python code "
+        "block:\n\n```python\n# your solution\n```\n\n"
+        "For problems with a starter class, keep the given class and method names "
+        "and do not read from standard input. Otherwise read from standard input "
+        "and write to standard output."
+    )
+
+    CODE_BLOCK_RE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+    METHOD_RE = re.compile(r"def\s+([A-Za-z_]\w*)\s*\(\s*self", re.MULTILINE)
+
+    FUNCTIONAL_DRIVER = '''
+    import json, sys
+    _payload = json.loads(sys.stdin.read())
+    _solution = Solution()
+    _result = getattr(_solution, {method!r})(*_payload)
+    print(json.dumps(_result, default=list))
+    '''
+
+
+    class RestrictedUnpickler(pickle.Unpickler):
+        """Refuses every class lookup.
+
+        LiveCodeBench stores its private tests as base64(zlib(pickle(str))). The
+        payload is a plain string, so nothing legitimate needs find_class, and
+        blocking it keeps a dataset revision from executing code at prepare time.
+        """
+
+        def find_class(self, module: str, name: str) -> Any:
+            raise pickle.UnpicklingError(f"refusing to load {module}.{name} from dataset")
+
+
+    def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+        parser = argparse.ArgumentParser(description=__doc__)
+        sub = parser.add_subparsers(dest="action", required=True)
+
+        prepare = sub.add_parser("prepare", help="materialize problems and decoded tests")
+        prepare.add_argument("--release", choices=sorted(RELEASE_FILES), default="v6")
+        prepare.add_argument(
+            "--lite", action="store_true", help="accepted for protocol compatibility"
+        )
+
+        run = sub.add_parser("run", help="score the frozen task order against the server")
+        run.add_argument("--concurrency", type=int, default=1)
+        run.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
+        run.add_argument("--request-timeout", type=float, default=1800.0)
+        run.add_argument("--retries", type=int, default=2)
+        run.add_argument("--exec-timeout", type=float, default=DEFAULT_EXEC_TIMEOUT)
+        run.add_argument("--exec-memory-mb", type=int, default=DEFAULT_EXEC_MEMORY_MB)
+        run.add_argument(
+            "--item-budget",
+            type=float,
+            default=DEFAULT_ITEM_BUDGET,
+            help="wall-clock seconds for all tests of one item before it is failed",
+        )
+        run.add_argument(
+            "--python",
+            default=sys.executable,
+            help="interpreter used to execute generated solutions",
+        )
+        run.add_argument(
+            "--defer-execution",
+            action="store_true",
+            help="generate only: write generations for `score` to execute elsewhere",
+        )
+
+        # Scoring is a separate command because executing model-written code is the
+        # verifier, and that does not belong on the machine serving the model. It
+        # takes explicit paths rather than the EVAL_* environment so it can run
+        # somewhere with no network and no access to anything else.
+        score = sub.add_parser("score", help="execute deferred generations and score them")
+        score.add_argument("--generations", required=True, type=Path)
+        score.add_argument("--key", required=True, type=Path)
+        score.add_argument("--results", required=True, type=Path)
+        score.add_argument("--metadata", type=Path)
+        score.add_argument("--concurrency", type=int, default=1)
+        score.add_argument("--exec-timeout", type=float, default=DEFAULT_EXEC_TIMEOUT)
+        score.add_argument("--exec-memory-mb", type=int, default=DEFAULT_EXEC_MEMORY_MB)
+        score.add_argument("--item-budget", type=float, default=DEFAULT_ITEM_BUDGET)
+        score.add_argument("--python", default=sys.executable)
+
+        pin = sub.add_parser("pin", help="print the pins object to paste into protocol.json")
+        pin.add_argument("--dataset", help="the 40-character LiveCodeBench dataset commit")
+        pin.add_argument("--resolve-dataset", action="store_true")
+        return parser.parse_args(argv)
+
+
+    def self_pin() -> str:
+        return module_pin([Path(__file__), Path(__file__).resolve().parent / "_common.py"])
+
+
+    def raw_response_path(run_dir: Path, variant: str, replicate: int, item_id: str) -> Path:
+        return _raw_response_path(run_dir, SUITE, variant, replicate, item_id)
+
+
+    def validate_pins(pins: dict[str, str]) -> None:
+        dataset = pins.get("dataset", "")
+        if not re.fullmatch(r"[0-9a-f]{40}", dataset):
+            raise AdapterError(
+                "pins.dataset must be the 40-character LiveCodeBench dataset commit; "
+                f"got {dataset!r}. A branch or tag is not an immutable pin."
+            )
+        require_pin(pins, "harness", HARNESS_ID)
+        require_pin(pins, "verifier", VERIFIER_ID)
+        require_pin(pins, "adapter", self_pin())
+
+
+    def decode_tests(raw: str) -> list[dict[str, Any]]:
+        """Public tests are plain JSON; private tests are base64(zlib(pickle(str)))."""
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = RestrictedUnpickler(
+                io.BytesIO(zlib.decompress(base64.b64decode(raw.encode())))
+            ).load()
+            if not isinstance(payload, str):
+                raise AdapterError("private tests decoded to an unexpected type")
+            parsed = json.loads(payload)
+        if not isinstance(parsed, list):
+            raise AdapterError("test cases must decode to a list")
+        return parsed
+
+
+    def download_release(release: str, revision: str) -> list[dict[str, Any]]:
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError as error:  # pragma: no cover - environment guard
+            raise AdapterError("huggingface_hub is required for prepare") from error
+        path = hf_hub_download(
+            DATASET_REPO, RELEASE_FILES[release], repo_type="dataset", revision=revision
+        )
+        with open(path, encoding="utf-8") as handle:
+            return [json.loads(line) for line in handle if line.strip()]
+
+
+    def build_prompt_text(row: dict[str, Any]) -> str:
+        text = str(row["question_content"]).strip()
+        starter = str(row.get("starter_code") or "").strip()
+        if starter:
+            text += "\n\nComplete this class:\n\n" + starter
+        return text
+
+
+    def materialize(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        prompts, key = [], {}
+        for row in rows:
+            item_id = str(row["question_id"])
+            tests = decode_tests(row.get("public_test_cases", "")) + decode_tests(
+                row.get("private_test_cases", "")
+            )
+            if not tests:
+                raise AdapterError(f"{item_id}: no test cases")
+            starter = str(row.get("starter_code") or "").strip()
+            method = None
+            if starter:
+                found = METHOD_RE.search(starter)
+                if not found:
+                    raise AdapterError(f"{item_id}: starter code has no method to call")
+                method = found.group(1)
+            prompts.append(
+                {
+                    "id": item_id,
+                    "suite": SUITE,
+                    "text": build_prompt_text(row),
+                    "category": f"{row.get('platform', 'unknown')}/{row.get('difficulty', 'unknown')}",
+                    "platform": row.get("platform"),
+                    "difficulty": row.get("difficulty"),
+                }
+            )
+            key[item_id] = {
+                "tests": tests,
+                "starter_code": starter,
+                "method": method,
+                "platform": row.get("platform"),
+                "difficulty": row.get("difficulty"),
+                "contest_date": row.get("contest_date"),
+            }
+        ids = [prompt["id"] for prompt in prompts]
+        if len(ids) != len(set(ids)):
+            raise AdapterError("duplicate question_id in the release file")
+        return prompts, key
+
+
+    def generations_path(run_dir: Path, variant: str, replicate: int) -> Path:
+        return run_dir / "generations" / f"{SUITE}-{variant}-r{replicate}.jsonl"
+
+
+    def generations_meta_path(run_dir: Path, variant: str, replicate: int) -> Path:
+        return run_dir / "generations" / f"{SUITE}-{variant}-r{replicate}.meta.json"
+
+
+    DEFERRED_VERDICT = {
+        "passed": False,
+        "status": "deferred",
+        "tests_passed": 0,
+        "tests_total": None,
+        "failed_test": None,
+    }
+
+
+    def key_path(run_dir: Path) -> Path:
+        return run_dir / "materialized" / f"{SUITE}.key.json"
+
+
+    def command_prepare(args: argparse.Namespace) -> int:
+        check_action("prepare", SUITE)
+        pins = load_pins()
+        validate_pins(pins)
+        run_dir = env_path("EVAL_RUN_DIR")
+        prompts_path = env_path("EVAL_PROMPTS_JSONL")
+
+        rows = download_release(args.release, pins["dataset"])
+        prompts, key = materialize(rows)
+        write_jsonl(prompts_path, prompts)
+        write_json(
+            key_path(run_dir),
+            {
+                "suite": SUITE,
+                "release": args.release,
+                "dataset_revision": pins["dataset"],
+                "verifier": VERIFIER_ID,
+                "adapter": self_pin(),
+                "items": key,
+            },
+        )
+        tests = sum(len(entry["tests"]) for entry in key.values())
+        print(
+            f"materialized {len(prompts)} {SUITE} problems with {tests} tests to {prompts_path}",
+            flush=True,
+        )
+        return 0
+
+
+    def extract_code(text: str) -> str | None:
+        blocks = CODE_BLOCK_RE.findall(text)
+        if blocks:
+            return blocks[-1].strip()
+        return None
+
+
+    def limit_resources(memory_mb: int, cpu_seconds: int) -> None:  # pragma: no cover - child only
+        limits = [
+            (resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds)),
+            (resource.RLIMIT_NOFILE, (256, 256)),
+            (resource.RLIMIT_CORE, (0, 0)),
+        ]
+        if sys.platform.startswith("linux"):
+            # An address-space cap is the useful memory limit on Linux; on macOS it
+            # applies to reserved rather than resident pages and stops the
+            # interpreter from starting at all.
+            limits.insert(0, (resource.RLIMIT_AS, (memory_mb * 1024 * 1024,) * 2))
+        for which, values in limits:
+            try:
+                resource.setrlimit(which, values)
+            except (OSError, ValueError):
+                continue
+
+
+    def normalize_stdout(text: str) -> str:
+        return "\n".join(line.rstrip() for line in text.strip().splitlines())
+
+
+    def compare_functional(expected: str, produced: str) -> bool:
+        try:
+            return json.loads(produced) == json.loads(expected)
+        except (json.JSONDecodeError, TypeError):
+            return normalize_stdout(produced) == normalize_stdout(expected)
+
+
+    def run_one_test(
+        code: str,
+        test: dict[str, Any],
+        entry: dict[str, Any],
+        *,
+        python: str,
+        exec_timeout: float,
+        memory_mb: int,
+        workdir: Path,
+    ) -> tuple[bool, str]:
+        functional = bool(entry.get("method")) and test.get("testtype") == "functional"
+        source = code
+        if functional:
+            source = code + "\n" + FUNCTIONAL_DRIVER.format(method=entry["method"])
+            # Functional inputs are newline-separated JSON literals, one per
+            # parameter. A single list argument is one line, so splitting on lines
+            # is what keeps [1,2,3] one argument rather than three.
+            lines = [part for part in str(test.get("input", "")).strip().splitlines() if part.strip()]
+            try:
+                stdin_data = json.dumps([json.loads(part) for part in lines])
+            except json.JSONDecodeError:
+                return False, "unparsable_test_input"
+        else:
+            stdin_data = str(test.get("input", ""))
+
+        script = workdir / "solution.py"
+        script.write_text(source, encoding="utf-8")
+        try:
+            completed = subprocess.run(
+                [python, str(script)],
+                input=stdin_data,
+                capture_output=True,
+                text=True,
+                timeout=exec_timeout,
+                cwd=workdir,
+                env={"PATH": os.environ.get("PATH", ""), "PYTHONHASHSEED": "0"},
+                preexec_fn=lambda: limit_resources(memory_mb, int(exec_timeout) + 1),
+            )
+        except subprocess.TimeoutExpired:
+            return False, "timeout"
+        except OSError as error:
+            return False, f"spawn_failed:{error}"
+
+        if completed.returncode != 0:
+            detail = (completed.stderr or "").strip().splitlines()
+            return False, "error:" + (detail[-1][:120] if detail else f"exit{completed.returncode}")
+
+        expected = str(test.get("output", ""))
+        if functional:
+            return compare_functional(expected, completed.stdout), "wrong_answer"
+        return normalize_stdout(completed.stdout) == normalize_stdout(expected), "wrong_answer"
+
+
+    def evaluate(
+        code: str,
+        entry: dict[str, Any],
+        *,
+        python: str,
+        exec_timeout: float,
+        memory_mb: int,
+        item_budget: float,
+    ) -> dict[str, Any]:
+        workdir = Path(tempfile.mkdtemp(prefix="lcb-"))
+        started = time.monotonic()
+        passed = 0
+        try:
+            for index, test in enumerate(entry["tests"]):
+                if time.monotonic() - started > item_budget:
+                    return {
+                        "passed": False,
+                        "status": "item_budget_exceeded",
+                        "tests_passed": passed,
+                        "tests_total": len(entry["tests"]),
+                        "failed_test": index,
+                    }
+                ok, status = run_one_test(
+                    code, test, entry,
+                    python=python, exec_timeout=exec_timeout,
+                    memory_mb=memory_mb, workdir=workdir,
+                )
+                if not ok:
+                    return {
+                        "passed": False,
+                        "status": status,
+                        "tests_passed": passed,
+                        "tests_total": len(entry["tests"]),
+                        "failed_test": index,
+                    }
+                passed += 1
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+        return {
+            "passed": True,
+            "status": "passed",
+            "tests_passed": passed,
+            "tests_total": len(entry["tests"]),
+            "failed_test": None,
+        }
+
+
+    def score_response(
+        item_id: str,
+        response: dict[str, Any],
+        *,
+        entry: dict[str, Any],
+        replicate: int,
+        thinking: bool,
+        args: argparse.Namespace,
+        execute: bool = True,
+    ) -> dict[str, Any]:
+        content, raw_reasoning, finish_reason, usage = unpack_choice(item_id, response)
+        reasoning, answer = split_reasoning(content, raw_reasoning)
+        code = extract_code(answer)
+        thought = reasoning_tokens(usage, reasoning, answer)
+
+        if not execute:
+            verdict = dict(DEFERRED_VERDICT, tests_total=len(entry["tests"]))
+        elif code is None:
+            verdict = {
+                "passed": False,
+                "status": "no_code_block",
+                "tests_passed": 0,
+                "tests_total": len(entry["tests"]),
+                "failed_test": None,
+            }
+        else:
+            verdict = evaluate(
+                code,
+                entry,
+                python=args.python,
+                exec_timeout=args.exec_timeout,
+                memory_mb=args.exec_memory_mb,
+                item_budget=args.item_budget,
+            )
+
+        row = base_row(SUITE, item_id, replicate)
+        row.update(
+            {
+                # pass@1: every test must pass, matching LiveCodeBench.
+                "score": 1.0 if verdict["passed"] else 0.0,
+                "empty_answer": code is None,
+                "repetition_loop": has_repetition_loop(answer or reasoning),
+                # vLLM discards an unterminated think block, so a reply that ran to
+                # the cap arrives with no text at all -- exactly where a loop is most
+                # likely. Record whether there was anything to inspect, so a False
+                # here is not read as "checked, and clean".
+                "repetition_assessed": bool(answer or reasoning),
+                "malformed_tool_call": False,
+                "premature_final_answer": bool(thinking and answer.strip() and thought == 0),
+                "context_failure": finish_reason == "length",
+                # Execution outcomes stay out of the shared failure flags: a slow
+                # program is not the server failing to answer.
+                "execution_status": verdict["status"],
+                # A zero here means "not executed yet", never "failed". The
+                # comparator refuses a file containing one, so a deferred run cannot
+                # be read as a suite of failures.
+                "deferred": not execute,
+                "tests_passed": verdict["tests_passed"],
+                "tests_total": verdict["tests_total"],
+                "failed_test": verdict["failed_test"],
+                "category": f"{entry.get('platform')}/{entry.get('difficulty')}",
+                "platform": entry.get("platform"),
+                "difficulty": entry.get("difficulty"),
+                "finish_reason": finish_reason,
+                "output_tokens": usage.get("completion_tokens"),
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "reasoning_tokens": thought,
+            }
+        )
+        return row
+
+
+    def run_item(
+        item_id: str,
+        text: str,
+        entry: dict[str, Any],
+        *,
+        generation: dict[str, Any],
+        model: str,
+        seed: int,
+        replicate: int,
+        variant: str,
+        run_dir: Path,
+        base_url: str,
+        api_key: str,
+        args: argparse.Namespace,
+        client: Callable[..., dict[str, Any]],
+    ) -> dict[str, Any]:
+        payload = build_payload(
+            text, generation, model=model, seed=seed,
+            max_tokens=args.max_tokens, instruction=ANSWER_INSTRUCTION,
+        )
+        started_wall, started = time.time(), time.monotonic()
+        response, attempts = request_with_retries(
+            item_id, payload, base_url=base_url, api_key=api_key,
+            timeout=args.request_timeout, retries=args.retries, client=client,
+        )
+        if response is None:
+            row = _timeout_row(SUITE, item_id, replicate)
+            row.update(
+                {
+                    "execution_status": "not_run",
+                    "deferred": bool(getattr(args, "defer_execution", False)),
+                    "category": f"{entry.get('platform')}/{entry.get('difficulty')}",
+                    "platform": entry.get("platform"),
+                    "difficulty": entry.get("difficulty"),
+                }
+            )
+        else:
+            row = score_response(
+                item_id, response, entry=entry, replicate=replicate,
+                thinking=bool(generation["enable_thinking"]), args=args,
+                execute=not getattr(args, "defer_execution", False),
+            )
+            path = raw_response_path(run_dir, variant, replicate, item_id)
+            write_json(path, response)
+            row["raw_response"] = str(path)
+        row.update(timing(started_wall, started))
+        row["attempts"] = attempts
+        return row
+
+
+    def command_run(
+        args: argparse.Namespace, client: Callable[..., dict[str, Any]] = post_chat
+    ) -> int:
+        check_action("run", SUITE)
+        validate_pins(load_pins())
+
+        run_dir = env_path("EVAL_RUN_DIR")
+        prompts = {str(row["id"]): row["text"] for row in read_jsonl(env_path("EVAL_PROMPTS_JSONL"))}
+        order = json.loads(env_path("EVAL_TASK_ORDER_JSON").read_text(encoding="utf-8"))
+        key = json.loads(key_path(run_dir).read_text(encoding="utf-8"))["items"]
+        generation = json.loads(env_str("EVAL_GENERATION_JSON"))
+
+        missing = [item_id for item_id in order if item_id not in prompts or item_id not in key]
+        if missing:
+            raise AdapterError(f"task order references unmaterialized items: {missing[:10]}")
+
+        replicate = int(env_str("EVAL_REPLICATE"))
+        seed = int(env_str("EVAL_SEED"))
+        variant = env_str("EVAL_VARIANT")
+        model = env_str("EVAL_SERVED_MODEL")
+        base_url = env_str("OPENAI_BASE_URL")
+        api_key = os.environ.get("OPENAI_API_KEY", "EMPTY")
+        results_path = env_path("EVAL_RESULTS_JSONL")
+
+        started = time.monotonic()
+        rows = execute_order(
+            order,
+            lambda item_id: run_item(
+                item_id, prompts[item_id], key[item_id],
+                generation=generation, model=model, seed=seed, replicate=replicate,
+                variant=variant, run_dir=run_dir, base_url=base_url, api_key=api_key,
+                args=args, client=client,
+            ),
+            args.concurrency,
+        )
+        write_jsonl(results_path, rows)
+
+        if args.defer_execution:
+            # One self-contained file per replicate: the raw response plus the
+            # request-side facts scoring cannot recover. With the answer key that is
+            # everything the scorer needs, so it can run with no network at all.
+            records = []
+            for row in rows:
+                raw = row.get("raw_response")
+                records.append(
+                    {
+                        "id": row["id"],
+                        "replicate": replicate,
+                        "response": json.loads(Path(raw).read_text(encoding="utf-8")) if raw else None,
+                        "timeout": bool(row.get("timeout")),
+                        "attempts": row.get("attempts"),
+                        "started_at": row.get("started_at"),
+                        "finished_at": row.get("finished_at"),
+                        "elapsed_seconds": row.get("elapsed_seconds"),
+                    }
+                )
+            write_jsonl(generations_path(run_dir, variant, replicate), records)
+            write_json(
+                generations_meta_path(run_dir, variant, replicate),
+                {
+                    "suite": SUITE,
+                    "variant": variant,
+                    "replicate": replicate,
+                    "seed": seed,
+                    "served_model": model,
+                    "concurrency": args.concurrency,
+                    "max_tokens": args.max_tokens,
+                    "generation": generation,
+                    "adapter": self_pin(),
+                },
+            )
+            # Written even though nothing was scored: the driver folds the serving
+            # checkpoint's fingerprint into this file, and a generation whose
+            # provenance is unrecorded cannot be trusted later. `score` merges its
+            # verdict in rather than replacing it.
+            write_json(
+                run_dir / "metadata" / f"{SUITE}-{variant}-r{replicate}.json",
+                {
+                    "suite": SUITE,
+                    "variant": variant,
+                    "replicate": replicate,
+                    "seed": seed,
+                    "served_model": model,
+                    "items": len(rows),
+                    "concurrency": args.concurrency,
+                    "max_tokens": args.max_tokens,
+                    "generation": generation,
+                    "generation_overrides": {},
+                    "adapter": self_pin(),
+                    "wall_clock_seconds": round(time.monotonic() - started, 3),
+                    "deferred": True,
+                    "pass_at_1": None,
+                },
+            )
+            print(
+                f"generated {len(records)} {SUITE} items to "
+                f"{generations_path(run_dir, variant, replicate)}; execution deferred",
+                flush=True,
+            )
+            return 0
+
+        statuses: dict[str, int] = {}
+        for row in rows:
+            statuses[row.get("execution_status", "unknown")] = (
+                statuses.get(row.get("execution_status", "unknown"), 0) + 1
+            )
+        write_json(
+            run_dir / "metadata" / f"{SUITE}-{variant}-r{replicate}.json",
+            {
+                "suite": SUITE,
+                "variant": variant,
+                "replicate": replicate,
+                "seed": seed,
+                "served_model": model,
+                "items": len(rows),
+                "concurrency": args.concurrency,
+                "max_tokens": args.max_tokens,
+                "execution": {
+                    "timeout_seconds": args.exec_timeout,
+                    "memory_mb": args.exec_memory_mb,
+                    "item_budget_seconds": args.item_budget,
+                    "interpreter": args.python,
+                },
+                "generation": generation,
+                "generation_overrides": {},
+                "adapter": self_pin(),
+                "wall_clock_seconds": round(time.monotonic() - started, 3),
+                "pass_at_1": round(sum(row["score"] for row in rows) / len(rows), 6),
+                "execution_status_counts": statuses,
+            },
+        )
+        print(f"scored {len(rows)} {SUITE} items to {results_path}", flush=True)
+        return 0
+
+
+    def command_score(args: argparse.Namespace) -> int:
+        """Execute deferred generations and produce the results `run` would have.
+
+        Deliberately free of the EVAL_* environment contract: it needs a generations
+        file, an answer key, and somewhere to write. That is what lets it run in an
+        isolated sandbox with no network, which is the point of splitting it out.
+        """
+        key = json.loads(args.key.read_text(encoding="utf-8"))["items"]
+        records = read_jsonl(args.generations)
+        if not records:
+            raise AdapterError(f"{args.generations}: no generations to score")
+
+        meta_path = args.generations.with_suffix(".meta.json")
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+        thinking = bool((meta.get("generation") or {}).get("enable_thinking", True))
+
+        missing = [r["id"] for r in records if r["id"] not in key]
+        if missing:
+            raise AdapterError(f"generations reference unkeyed items: {missing[:10]}")
+
+        by_id = {str(r["id"]): r for r in records}
+        started = time.monotonic()
+
+        def score_one(item_id: str) -> dict[str, Any]:
+            record = by_id[item_id]
+            replicate = int(record.get("replicate", 0))
+            if record.get("response") is None:
+                row = _timeout_row(SUITE, item_id, replicate)
+                entry = key[item_id]
+                row.update(
+                    {
+                        "execution_status": "not_run",
+                        "deferred": False,
+                        "category": f"{entry.get('platform')}/{entry.get('difficulty')}",
+                        "platform": entry.get("platform"),
+                        "difficulty": entry.get("difficulty"),
+                    }
+                )
+            else:
+                row = score_response(
+                    item_id, record["response"], entry=key[item_id],
+                    replicate=replicate, thinking=thinking, args=args, execute=True,
+                )
+            # Request-side facts belong to generation and cannot be recovered here.
+            for field in ("started_at", "finished_at", "elapsed_seconds", "attempts"):
+                if record.get(field) is not None:
+                    row[field] = record[field]
+            return row
+
+        rows = execute_order([str(r["id"]) for r in records], score_one, args.concurrency)
+        write_jsonl(args.results, rows)
+
+        statuses: dict[str, int] = {}
+        for row in rows:
+            status = row.get("execution_status", "unknown")
+            statuses[status] = statuses.get(status, 0) + 1
+        if args.metadata:
+            # Merge: the generation step recorded which checkpoint produced these
+            # responses, and that must survive scoring.
+            existing = (
+                json.loads(args.metadata.read_text(encoding="utf-8"))
+                if args.metadata.is_file()
+                else {}
+            )
+            existing.update(
+                {
+                    "suite": SUITE,
+                    "variant": meta.get("variant"),
+                    "replicate": meta.get("replicate"),
+                    "seed": meta.get("seed"),
+                    "served_model": meta.get("served_model"),
+                    "items": len(rows),
+                    "concurrency": meta.get("concurrency"),
+                    "max_tokens": meta.get("max_tokens"),
+                    "execution": {
+                        "timeout_seconds": args.exec_timeout,
+                        "memory_mb": args.exec_memory_mb,
+                        "item_budget_seconds": args.item_budget,
+                        "interpreter": args.python,
+                        "deferred": True,
+                    },
+                    "generation": meta.get("generation"),
+                    "generation_overrides": {},
+                    "adapter": self_pin(),
+                    "wall_clock_seconds": round(time.monotonic() - started, 3),
+                    "pass_at_1": round(sum(row["score"] for row in rows) / len(rows), 6),
+                    "execution_status_counts": statuses,
+                    "deferred": False,
+                }
+            )
+            write_json(args.metadata, existing)
+        print(f"scored {len(rows)} {SUITE} items to {args.results}", flush=True)
+        return 0
+
+
+    def command_pin(args: argparse.Namespace) -> int:
+        dataset = args.dataset
+        if args.resolve_dataset:
+            try:
+                from huggingface_hub import HfApi
+            except ImportError as error:
+                raise AdapterError("huggingface_hub is required for --resolve-dataset") from error
+            dataset = str(HfApi().dataset_info(DATASET_REPO).sha)
+        print(
+            json.dumps(
+                {
+                    "dataset": dataset or "REPLACE_WITH_LCB_V6_LITE_REVISION",
+                    "harness": HARNESS_ID,
+                    "verifier": VERIFIER_ID,
+                    "adapter": self_pin(),
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+
+    def main(argv: list[str] | None = None) -> int:
+        args = parse_args(argv)
+        if args.action == "pin":
+            return command_pin(args)
+        if args.action == "prepare":
+            return command_prepare(args)
+        if args.action == "score":
+            return command_score(args)
+        return command_run(args)
+
+
+    if __name__ == "__main__":
+        try:
+            sys.exit(main())
+        except AdapterError as error:
+            print(f"error: {error}", file=sys.stderr)
+            sys.exit(1)
+kind: ConfigMap
+metadata:
+  name: lcb-adapter
+  namespace: qwen-lcb-score

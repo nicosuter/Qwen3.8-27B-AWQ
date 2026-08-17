@@ -15,7 +15,7 @@ def load_module(name: str, relative: str):
     return module
 
 
-bridge = load_module("evalscope_bridge", "scripts/evalscope_bridge.py")
+bridge = load_module("evalscope_bridge", "eval/scripts/evalscope_bridge.py")
 
 PIN = "cais/hle@" + "a" * 40
 
@@ -130,7 +130,7 @@ class ComparatorContractTests(unittest.TestCase):
     """The rows have to survive compare_eval_results.py's own loader."""
 
     def test_rows_load_in_the_comparator(self) -> None:
-        comparator = load_module("compare_eval", "scripts/compare_eval_results.py")
+        comparator = load_module("compare_eval", "eval/scripts/compare_eval_results.py")
         rows = bridge.convert(
             [review(0, text="a", acc=1.0), review(1, text="b", acc=0.0)],
             suite="hle", dataset_pin=PIN,
@@ -272,7 +272,7 @@ class BfclDatasetTests(unittest.TestCase):
             self.build({"multi_turn_base": [self.ROW]}, {})
 
     def test_the_ast_categories_match_our_adapter(self) -> None:
-        ours = load_module("bfcl_adapter", "scripts/adapters/bfcl.py")
+        ours = load_module("bfcl_adapter", "eval/scripts/adapters/bfcl.py")
         self.assertEqual(set(bridge.BFCL_AST_CATEGORIES), set(ours.CATEGORIES))
         self.assertEqual(set(bridge.BFCL_NO_GROUND_TRUTH), set(ours.NO_GROUND_TRUTH))
 
@@ -297,7 +297,7 @@ class DeferredReviewTests(unittest.TestCase):
     def test_the_comparator_refuses_a_deferred_row(self) -> None:
         # The whole point: a generating pass that did not execute cannot be
         # mistaken for a suite that scored zero.
-        comparator = load_module("compare_eval2", "scripts/compare_eval_results.py")
+        comparator = load_module("compare_eval2", "eval/scripts/compare_eval_results.py")
         rows = bridge.convert([self.deferred()], suite="lcb", dataset_pin=PIN)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "rows.jsonl"
@@ -375,7 +375,7 @@ class PinAgreementTests(unittest.TestCase):
         return path
 
     def compare(self, base_pin, cand_pin):
-        comparator = load_module("compare_eval3", "scripts/compare_eval_results.py")
+        comparator = load_module("compare_eval3", "eval/scripts/compare_eval_results.py")
         a = bridge.convert([review(0, text="q", acc=1.0)], suite="s", dataset_pin=base_pin)
         b = bridge.convert([review(0, text="q", acc=1.0)], suite="s", dataset_pin=cand_pin)
         with tempfile.TemporaryDirectory() as tmp:
@@ -397,7 +397,7 @@ class PinAgreementTests(unittest.TestCase):
 
     def test_rows_without_a_pin_still_compare(self) -> None:
         # Our own adapters do not record one; absence must not break them.
-        comparator = load_module("compare_eval4", "scripts/compare_eval_results.py")
+        comparator = load_module("compare_eval4", "eval/scripts/compare_eval_results.py")
         rows = [{"suite": "s", "id": "i", "replicate": 0, "score": 1.0}]
         with tempfile.TemporaryDirectory() as tmp:
             loaded = comparator.load_rows(self.write(tmp, "x.jsonl", rows))

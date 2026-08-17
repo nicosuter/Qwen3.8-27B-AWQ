@@ -12,10 +12,10 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "scripts" / "adapters"))
+sys.path.insert(0, str(ROOT / "eval" / "scripts" / "adapters"))
 
 SPEC = importlib.util.spec_from_file_location(
-    "_harbor", ROOT / "scripts" / "adapters" / "_harbor.py"
+    "_harbor", ROOT / "eval" / "scripts" / "adapters" / "_harbor.py"
 )
 assert SPEC and SPEC.loader
 harbor = importlib.util.module_from_spec(SPEC)

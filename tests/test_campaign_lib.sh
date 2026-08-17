@@ -11,7 +11,7 @@
 set -uo pipefail
 
 LIB="${1:?usage: test_campaign_lib.sh <path to campaign-lib.sh>}"
-ROOT="$(cd "$(dirname "$LIB")/.." && pwd)"
+ROOT="$(cd "$(dirname "$LIB")/../.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 PASS=0
@@ -29,15 +29,15 @@ check() { # check <desc> <expected> <actual>
 
 # A stub standing in for submit-paired.sh: records the arguments it was handed
 # and prints an id the way sbatch --parsable does.
-mkdir -p "$WORK/slurm"
-cat > "$WORK/slurm/submit-paired.sh" <<'STUB'
+mkdir -p "$WORK/eval/slurm"
+cat > "$WORK/eval/slurm/submit-paired.sh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${SUBMIT_LOG:?}"
 n="$(wc -l < "$SUBMIT_LOG" | tr -d ' ')"
 echo "$(( 1000 + n ))"
 STUB
-chmod +x "$WORK/slurm/submit-paired.sh"
-cp "$LIB" "$WORK/slurm/campaign-lib.sh"
+chmod +x "$WORK/eval/slurm/submit-paired.sh"
+cp "$LIB" "$WORK/eval/slurm/campaign-lib.sh"
 # The lib takes the commit from the checkout it came from, so it needs one.
 git -C "$WORK" init --quiet
 git -C "$WORK" -c user.email=t@t -c user.name=t commit --quiet --allow-empty -m t
@@ -57,7 +57,7 @@ set -euo pipefail
 CAMPAIGN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CAMPAIGN_JOB_PREFIX=eval-qwen38-27b
 CAMPAIGN_ARCH=testarch
-source "$CAMPAIGN_ROOT/slurm/campaign-lib.sh"
+source "$CAMPAIGN_ROOT/eval/slurm/campaign-lib.sh"
 lane alpha "" 01:00:00 "" "K=1"
 lane bravo "" 02:00:00 "" "K=2"
 lane charlie "" 03:00:00 "afterok:@alpha" "K=3"
@@ -109,7 +109,7 @@ CAMPAIGN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CAMPAIGN_JOB_PREFIX=eval-qwen38-27b
 CAMPAIGN_ARCH=testarch
 CAMPAIGN_JOB_NAME=shared
-source "$CAMPAIGN_ROOT/slurm/campaign-lib.sh"
+source "$CAMPAIGN_ROOT/eval/slurm/campaign-lib.sh"
 lane alpha "" 01:00:00 singleton "K=1"
 CAMPAIGN
 campaign
@@ -127,7 +127,7 @@ CAMPAIGN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CAMPAIGN_JOB_PREFIX=eval-qwen38-27b
 CAMPAIGN_ARCH=testarch
 CAMPAIGN_EXCLUDE=nodeX,nodeY
-source "$CAMPAIGN_ROOT/slurm/campaign-lib.sh"
+source "$CAMPAIGN_ROOT/eval/slurm/campaign-lib.sh"
 lane alpha "" 01:00:00 "" "K=1"
 CAMPAIGN
 campaign
@@ -144,7 +144,7 @@ set -euo pipefail
 CAMPAIGN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CAMPAIGN_JOB_PREFIX=eval-qwen38-27b
 CAMPAIGN_ARCH=testarch
-source "$CAMPAIGN_ROOT/slurm/campaign-lib.sh"
+source "$CAMPAIGN_ROOT/eval/slurm/campaign-lib.sh"
 lane solo "" 01:00:00 "afterok:@earlier,singleton" "K=1"
 CAMPAIGN
 SUBMIT_LOG="$WORK/submitted.txt"; : > "$SUBMIT_LOG"; export SUBMIT_LOG
@@ -159,7 +159,7 @@ set -euo pipefail
 CAMPAIGN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CAMPAIGN_JOB_PREFIX=eval-qwen38-27b
 CAMPAIGN_ARCH=testarch
-source "$CAMPAIGN_ROOT/slurm/campaign-lib.sh"
+source "$CAMPAIGN_ROOT/eval/slurm/campaign-lib.sh"
 lane cyankiwi short 01:00:00 "" "K=1"
 lane cyankiwi ruler 02:00:00 "afterok:@cyankiwi-short" "K=2"
 CAMPAIGN

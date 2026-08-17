@@ -15,10 +15,10 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "scripts" / "adapters"))
+sys.path.insert(0, str(ROOT / "eval" / "scripts" / "adapters"))
 
 _SPEC = importlib.util.spec_from_file_location(
-    "_common", ROOT / "scripts" / "adapters" / "_common.py"
+    "_common", ROOT / "eval" / "scripts" / "adapters" / "_common.py"
 )
 common = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(common)

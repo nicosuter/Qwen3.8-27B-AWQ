@@ -23,12 +23,23 @@ git clone <this-repository> qwen38-awq
 cd qwen38-awq
 cp .env.example .env
 # Edit .env and set RUN_BASE to persistent storage with at least 250 GB free.
-sbatch slurm/prepare.sbatch
+sbatch quant/slurm/prepare.sbatch
 # After preparation succeeds:
-sbatch slurm/quantize.sbatch
+sbatch quant/slurm/quantize.sbatch
 # After quantization succeeds:
-sbatch slurm/paired-smoke-eval.sbatch
+sbatch eval/slurm/paired-smoke-eval.sbatch
 ```
+
+The tree is grouped by what the code is for, not by which tool runs it:
+
+```
+quant/    scripts/ slurm/            producing the checkpoint
+eval/     *.json scripts/ slurm/ k8s/   measuring it, and what it measures
+common/   scripts/ slurm/ apptainer/    what both need
+```
+
+Cross-bucket use is one-directional: `eval/` reads the quantization side's
+description of the MTP artifact, never the reverse.
 
 All entry points read `RUN_BASE` from the local, gitignored `.env` file. The
 cache, calibration corpus, and model are stored beneath that directory. An
@@ -38,13 +49,13 @@ overridden independently when needed.
 For a direct eight-GPU H200 host instead of Slurm:
 
 ```bash
-./scripts/bootstrap.sh
+./common/scripts/bootstrap.sh
 source .venv/bin/activate
-python scripts/build_calibration.py
-python scripts/preflight.py
-torchrun --standalone --nproc_per_node=gpu scripts/quantize.py
-./scripts/smoke_test.sh
-python scripts/validate_generate.py
+python quant/scripts/build_calibration.py
+python quant/scripts/preflight.py
+torchrun --standalone --nproc_per_node=gpu quant/scripts/quantize.py
+./quant/scripts/smoke_test.sh
+python quant/scripts/validate_generate.py
 ```
 
 Defaults can be overridden without editing files:
@@ -52,7 +63,7 @@ Defaults can be overridden without editing files:
 ```bash
 MODEL_ID=Qwen/Qwen3.8-27B \
 OUTPUT_DIR="$RUN_BASE/Qwen3.8-27B-AWQ" \
-bash scripts/submit_quantize.sh 8
+bash quant/scripts/submit_quantize.sh 8
 ```
 
 The argument is the only GPU-count setting: the wrapper requests that many
@@ -62,7 +73,7 @@ GPUs, and the batch job derives both the expected distributed world size and
 `--fp8-gdn=true` selects the FP8 DeltaNet variant:
 
 ```bash
-bash scripts/submit_quantize.sh 8 --fp8-gdn=true
+bash quant/scripts/submit_quantize.sh 8 --fp8-gdn=true
 ```
 
 The two variants default to different output directories, `v2/model` and
@@ -73,14 +84,14 @@ The preparation job owns dependency setup, preflight, and calibration
 construction. The quantization job only validates that the prepared manifest
 exists, runs AWQ, serializes the checkpoint, and exits. The evaluation job owns
 checkpoint reload and all scored/generation checks. Source and collator smokes
-remain explicit diagnostics in `scripts/smoke_sources.py` and
-`scripts/smoke_collator.py`; preparation does not rerun them.
+remain explicit diagnostics in `quant/scripts/smoke_sources.py` and
+`quant/scripts/smoke_collator.py`; preparation does not rerun them.
 
 The quantization job writes `run-metadata.json`, the exact calibration JSONL and SHA256,
 package versions, GPU details, and the compressed checkpoint into the output
 directory. Keep these files with any published model. Tool definitions are
 included when the source row provides them. Quantization does not run source or
-generation smoke tests; submit `slurm/paired-smoke-eval.sbatch` separately after
+generation smoke tests; submit `eval/slurm/paired-smoke-eval.sbatch` separately after
 the checkpoint has been saved.
 
 The quantization workflow preserves and validates the source-precision MTP head
@@ -89,9 +100,9 @@ without recalibration or requantization:
 
 ```bash
 source .venv/bin/activate
-source scripts/load_env.sh
+source common/scripts/load_env.sh
 export HF_HOME="${HF_HOME:-$RUN_BASE/huggingface}"
-python scripts/preserve_mtp.py "$RUN_BASE/v2/model" \
+python quant/scripts/preserve_mtp.py "$RUN_BASE/v2/model" \
   --model-id Qwen/Qwen3.8-27B \
   --revision 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
 ```
@@ -100,7 +111,7 @@ If the artifact already contains the MTP tensors but not their vLLM
 quantization exclusions, update only `config.json`:
 
 ```bash
-python scripts/preserve_mtp.py "$RUN_BASE/v2/model" --ignore-only
+python quant/scripts/preserve_mtp.py "$RUN_BASE/v2/model" --ignore-only
 ```
 
 Reruns reuse the persistent virtual environment and calibration manifest after
@@ -128,7 +139,7 @@ to leave production margin. DDP gives each rank a disjoint calibration partition
 (64 rows at four ranks) and synchronizes AWQ activation statistics and
 scale-search errors.
 
-Qwen3.8 is new. `scripts/preflight.py` intentionally fails before the expensive
+Qwen3.8 is new. `quant/scripts/preflight.py` intentionally fails before the expensive
 step if the installed Transformers build cannot instantiate its architecture.
 Do not silently fall back to round-to-nearest and call that result calibrated
 AWQ.
@@ -204,7 +215,7 @@ compressed-tensors cache offload.
 
 ## Publishing the checkpoint
 
-Use `scripts/publish_checkpoint.py`. It plans the commit, refuses to publish a
+Use `quant/scripts/publish_checkpoint.py`. It plans the commit, refuses to publish a
 structurally broken artifact, and only uploads when told to. Publishing happens
 from a workstation, not the cluster, so it needs an interpreter that can import
 `huggingface_hub`. The `hf` CLI keeps its copy in a private virtualenv that is
@@ -221,7 +232,7 @@ one stays live. Copy it first:
 ```bash
 cp MODEL_CARD.md artifacts/Qwen3.8-27B-AWQ-FP8GDN/README.md
 
-.venv/bin/python scripts/publish_checkpoint.py \
+.venv/bin/python quant/scripts/publish_checkpoint.py \
     --repo nicosuter/Qwen3.8-27B-AWQ \
     --path artifacts/Qwen3.8-27B-AWQ-FP8GDN \
     --message "Requantize"          # add --execute to actually publish
@@ -246,7 +257,7 @@ ls -a artifacts/Qwen3.8-27B-AWQ-FP8GDN
 ## Rapid paired release smoke
 
 ```bash
-sbatch slurm/paired-smoke-eval.sbatch
+sbatch eval/slurm/paired-smoke-eval.sbatch
 ```
 
 Ranks 0-1 run complete `Qwen/Qwen3.8-27B-FP8` replicas, pinned by
@@ -273,7 +284,7 @@ If a distributed run reaches serialization but fails due to mismatched save
 collectives, recover on one H200 without rebuilding calibration:
 
 ```bash
-sbatch slurm/quantize-single.sbatch
+sbatch quant/slurm/quantize-single.sbatch
 ```
 
 The recovery recipe uses all 256 rows from the deterministically shuffled
