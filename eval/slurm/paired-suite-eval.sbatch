@@ -171,6 +171,19 @@ TIMEOUT_SCALE="${PAIRED_TIMEOUT_SCALE:-$TIMEOUT_SCALE_DEFAULT}"
 # activations as weight-only, so the results describe numerics the checkpoint
 # does not have, and the descriptor has to say so.
 GPU_CAPABILITY="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 || true)"
+# For a device this job is not running on, nvidia-smi cannot answer. An
+# inherited baseline names the card that produced it and nothing more, so the
+# capability has to come from the name. Only the validated parts are listed;
+# anything else returns empty and is treated as unknown rather than guessed.
+ATTESTED_HARDWARE="${PAIRED_ATTESTED_HARDWARE:-eval/inherited-baseline-hardware.json}"
+capability_of() { # capability_of <gpu name>  -> compute capability, or empty
+    case "$1" in
+        *B200*|*GB200*) echo "10.0" ;;
+        *H200*|*H100*)  echo "9.0" ;;
+        *A100*)         echo "8.0" ;;
+        *)              echo "" ;;
+    esac
+}
 echo "gpu=${GPU_NAME:-unknown} capability=${GPU_CAPABILITY:-unknown} timeout-scale=$TIMEOUT_SCALE"
 # Every suite is one wave of requests trailed by a long tail: gpqa averaged 37 of
 # 192 streams busy because a single 100k-token reply outlived the other 197, and
@@ -277,7 +290,18 @@ CAPABILITY_ARG=(${GPU_CAPABILITY:+--compute-capability "$GPU_CAPABILITY"})
 BASELINE_INFO="$("$PYTHON" eval/scripts/checkpoint_fingerprint.py "$BASELINE_DIR" --label baseline "${CAPABILITY_ARG[@]}")"
 CANDIDATE_INFO="$("$PYTHON" eval/scripts/checkpoint_fingerprint.py "$OUTPUT_DIR" --label candidate "${CAPABILITY_ARG[@]}")"
 mkdir -p "$RUN_DIR"
-printf '%s\n%s\n' "$BASELINE_INFO" "$CANDIDATE_INFO" | "$PYTHON" -c "$(cat <<'PY'
+# Both arms are fingerprinted -- identity is worth recording for the half this
+# job inherits as much as for the half it serves -- but only the arms this job
+# actually loads are reported on. The taint describes what THIS device does to
+# weights it is about to serve, so asserting it about an inherited baseline
+# claims something the run never did: a candidate-only job on an A100 announced
+# that it was serving the FP8 baseline weight-only when it was not loading the
+# baseline at all. Whether the inherited half carries a downgrade is a question
+# about the device that produced it, and it is asked where that is known.
+SERVED_INFO=""
+if variant_requested baseline; then SERVED_INFO+="$BASELINE_INFO"$'\n'; fi
+if variant_requested candidate; then SERVED_INFO+="$CANDIDATE_INFO"$'\n'; fi
+printf '%s' "$SERVED_INFO" | "$PYTHON" -c "$(cat <<'PY'
 import json, sys
 
 for line in sys.stdin:
@@ -352,6 +376,59 @@ if [[ -n "${PAIRED_INHERIT_BASELINE_FROM:-}" ]]; then
     cp -Rn "$INHERIT"/raw/baseline/*.jsonl   "$RUN_DIR/raw/baseline/"  2>/dev/null || true
     cp -Rn "$INHERIT"/metadata/*-baseline-r*.json "$RUN_DIR/metadata/" 2>/dev/null || true
     echo "inherited baseline and frozen order from $INHERIT"
+    # The rule three lines up was written down and then not checked, which is
+    # the same as not having it. An inherited baseline carries the numerics of
+    # the device that produced it: below sm_89 the FP8 baseline's declared
+    # float8 activations are served weight-only, so a baseline measured there
+    # and a candidate served here are not the same model, and the taint report
+    # above cannot catch it -- it only ever describes the device in this job.
+    INHERIT_GPU_INFO="$("$PYTHON" - "$RUN_DIR/metadata" "$INHERIT" "$ATTESTED_HARDWARE" <<'PY'
+import glob, json, os, sys
+
+metadata_dir, inherited_from, attestations = sys.argv[1:4]
+gpu = None
+for path in sorted(glob.glob(os.path.join(metadata_dir, "*-baseline-r*.json"))):
+    with open(path) as handle:
+        gpu = (json.load(handle).get("hardware") or {}).get("gpu")
+    if gpu:
+        break
+source = "recorded"
+if not gpu:
+    # Runs predating the hardware field record nothing, and null is not the
+    # same as "whatever is serving now". What produced them is still knowable,
+    # so it is attested by hand and labelled as such rather than inferred.
+    try:
+        with open(attestations) as handle:
+            runs = json.load(handle)["runs"]
+        entry = runs.get(os.path.basename(inherited_from.rstrip("/")))
+    except (OSError, ValueError, KeyError):
+        entry = None
+    if entry:
+        gpu, source = entry["gpu"], "attested"
+print("{}\t{}".format(gpu or "", source if gpu else "unknown"))
+PY
+)"
+    IFS=$'\t' read -r INHERIT_GPU INHERIT_GPU_SOURCE <<< "$INHERIT_GPU_INFO"
+    INHERIT_CAPABILITY="$(capability_of "$INHERIT_GPU")"
+    echo "inherited-baseline gpu=${INHERIT_GPU:-unknown} ($INHERIT_GPU_SOURCE)" \
+         "capability=${INHERIT_CAPABILITY:-unknown}"
+    if [[ "${PAIRED_ALLOW_CROSS_HARDWARE_BASELINE:-0}" != "1" ]]; then
+        if [[ -z "$INHERIT_CAPABILITY" ]]; then
+            echo "the inherited baseline does not record what device produced it" >&2
+            echo "and nothing attests it. Add an entry for $(basename "$INHERIT")" >&2
+            echo "to $ATTESTED_HARDWARE, or set" >&2
+            echo "PAIRED_ALLOW_CROSS_HARDWARE_BASELINE=1 to pair it anyway." >&2
+            exit 1
+        fi
+        if [[ -n "$GPU_CAPABILITY" && "$INHERIT_CAPABILITY" != "$GPU_CAPABILITY" ]]; then
+            echo "inherited baseline was measured at capability $INHERIT_CAPABILITY" >&2
+            echo "on ${INHERIT_GPU}; this device is $GPU_CAPABILITY (${GPU_NAME:-unknown})." >&2
+            echo "The FP8 baseline is served weight-only below 8.9, so the two" >&2
+            echo "arms would not be the same model. Set" >&2
+            echo "PAIRED_ALLOW_CROSS_HARDWARE_BASELINE=1 to pair them anyway." >&2
+            exit 1
+        fi
+    fi
 fi
 
 # What a copy produced is only checkable against what the suites will read, so

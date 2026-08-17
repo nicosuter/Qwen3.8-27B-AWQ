@@ -1,0 +1,11 @@
+{
+  "why": "A run directory records the GPU that produced each result, and runs from before that field existed record null. Null is not 'the same device that is serving now' -- an inherited baseline can come from a different cluster, and below sm_89 the FP8 baseline's declared float8 activations are served weight-only, so pairing across that boundary compares two different models. Where the device is known out of band it is written down here, by hand and labelled as attested, so the check can tell 'measured on A100' from 'nobody recorded it'.",
+  "how": "Keyed by the basename of the run directory being inherited from. paired-suite-eval.sbatch consults this only when the run's own metadata has no hardware.gpu; a recorded value always wins. Adding an entry is a claim about what actually happened, so say where the claim comes from.",
+  "runs": {
+    "eval-suite-v1-cyan": {
+      "gpu": "NVIDIA A100 80GB PCIe",
+      "attested_by": "The run predates the hardware field, so its metadata records null. Every one of its result files records request_timeout_scale 2.5, and paired-suite-eval.sbatch derives that scale from the GPU name, assigning 2.5 to A100 and to no other validated card. The checkpoints it scored were staged only where A100s were available.",
+      "note": "Serves the FP8 baseline weight-only at capability 8.0. Any candidate paired against this baseline must be measured on the same hardware."
+    }
+  }
+}

@@ -24,7 +24,7 @@ check() { # check <desc> <expected> <actual>
 awk '/^suite_is_current\(\) \{/,/^\}/' "$SBATCH" > "$WORK/fns.sh"
 awk '/^count_alive\(\) \{/,/^\}/'     "$SBATCH" >> "$WORK/fns.sh"
 for fn in suite_failed record_failure usable_suites report_failures require_usable_suites \
-          variant_requested candidate_bind stale_suites \
+          variant_requested candidate_bind stale_suites capability_of \
           require_materialized; do
     awk -v f="^${fn}\\\\(\\\\) \\\\{" '$0 ~ f, /^\}/' "$SBATCH" >> "$WORK/fns.sh"
 done
@@ -188,6 +188,18 @@ check "all three ready passes" 0 "$rc"
 rm -f "$RUN_DIR/materialized/alpha.jsonl"
 out="$(require_materialized alpha 2>&1)"; rc=$?
 check "a missing manifest is refused too" 1 "$rc"
+
+# An inherited baseline names the card that produced it and nothing else, so the
+# capability has to come from the name. Guessing is the failure that matters:
+# treating an unknown card as equivalent to the one serving now is what lets an
+# A100-measured baseline pair against an H200 candidate without complaint.
+echo "== case 2e: a gpu name maps to a capability, or to nothing =="
+check "A100 is 8.0, below the 8.9 fp8 threshold" "8.0" "$(capability_of 'NVIDIA A100 80GB PCIe')"
+check "H200 is 9.0" "9.0" "$(capability_of 'NVIDIA H200 NVL')"
+check "H100 is 9.0" "9.0" "$(capability_of 'NVIDIA H100 80GB HBM3')"
+check "B200 is 10.0" "10.0" "$(capability_of 'NVIDIA B200')"
+check "an unvalidated card is unknown, not assumed" "" "$(capability_of 'Tesla V100-SXM2-32GB')"
+check "an empty name is unknown too" "" "$(capability_of '')"
 
 echo "== case 2b: no lane is narrowed, by class or by the job =="
 setup; mixed_classes
