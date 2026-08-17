@@ -15,6 +15,10 @@
       "path": "v2/model",
       "why": "Ours: the same W4A16 AWQ weights with those projections left in bf16."
     },
+    "inproj-int8": {
+      "path": "v2/model-inproj-int8",
+      "why": "Ours: the same W4A16 AWQ with linear_attn.in_proj_qkv and in_proj_z at int8 group-128 instead of FP8 with quantized activations. Differs from bf16gdn in those two projections alone, so the pair isolates what eight bits on the state-update input costs."
+    },
     "cyankiwi": {
       "repo": "cyankiwi/Qwen3.8-27B-AWQ-INT4",
       "revision": "63768c10df38c0395e12ef49edac1bd539eaeeea",
