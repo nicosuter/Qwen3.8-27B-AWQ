@@ -14,10 +14,10 @@ runner refuses placeholders.
 
 ## What gets measured
 
-`eval/eval-suite-v1.json` is the one place that says which suites this protocol
+`eval/eval-suite-v2.json` is the one place that says which suites this protocol
 measures, and everything derives from it: `run_eval_protocol.py` reads its
 `REQUIRED_SUITES` from there rather than declaring one, the paired sbatch
-resolves its lane list through it, and `compare_eval_results.py --eval-suite v1`
+resolves its lane list through it, and `compare_eval_results.py --eval-suite v2`
 refuses results carrying a suite it does not contain.
 
 That set previously lived in four places at once, and they drifted. RULER was
@@ -45,21 +45,23 @@ directory. Both are refused.
 
 | batch | suites | why |
 |---|---|---|
-| `prepare` | all seven, `--phase prepare` | no GPU; resolves every pin and materializes every dataset, so a bad pin fails before an allocation |
-| `short-context` | bfcl_v4, gpqa_diamond, livecodebench_v6, matharena_2026_06, mmmu_pro, multimodal | everything that tolerates forty or more requests in flight |
-| `long-context` | ruler | one 128k sequence holds roughly 8.5 GB of KV, so it wants about a dozen per replica where the others take forty |
+| `prepare` | all six, `--phase prepare` | no GPU; resolves every pin and materializes every dataset, so a bad pin fails before an allocation |
+| `shakedown` | mmmu_pro, 50 items, baseline only | proves image encoding and answer parsing against a live server for about twenty minutes |
+| `full` | every scored suite | they are complementary, not competing |
 
 ```bash
 python3 eval/scripts/eval_suite.py --batches
-PAIRED_BATCH=short-context sbatch eval/slurm/paired-suite-eval.sbatch
+PAIRED_BATCH=full sbatch eval/slurm/paired-suite-eval.sbatch
 ```
 
-RULER is separated because sharing a server with forty-way lanes means one
-starves the other, and it would do so to whichever arm happened to be running.
-The rest are kept together deliberately: lanes fill each other's tails, and each
-split costs another server load per arm. A batch's own comparison is
-`--allow-partial` by construction; the protocol's macro appears once every
-scoring batch has written into the same run directory.
+RULER used to be a batch of its own, on the expectation that its 128k prompts
+would starve the short suites. The telemetry says the opposite: the short suites
+are item-starved rather than cache-starved -- 43% of their wall clock runs under
+sixteen requests in flight at 4% cache -- and RULER is the complement, cache-
+hungry and item-poor, prefill-heavy where they are decode-heavy. Its hour fits
+inside their drain. Each suite still runs at the concurrency it was measured at:
+a lane's share is divided among the lanes of its own `kv_class`, so colocating
+does not quietly narrow the others.
 
 ## Campaigns
 
@@ -69,18 +71,23 @@ between two runs of it is on the command line:
 
 ```bash
 eval/slurm/campaign.sh --candidates cyankiwi,soyrsoyr --arch a100 \
-    --gpu-quota 8 --gpus-per-lane 4 --lane short-context=16:00:00
+    --gpu-quota 8 --gpus-per-lane 4
 
-eval/slurm/campaign.sh --candidates philbert,barry,bf16gdn --arch h200 \
-    --gpu-quota 4 --baseline-from "$RUN_BASE/v2/eval-suite-v1"
+eval/slurm/campaign.sh --candidates philbert,barry --arch h200 \
+    --gpu-quota 4 --baseline-from "$RUN_BASE/v2/eval-suite-v2"
 ```
 
 `--gpu-quota` divided by `--gpus-per-lane` is how many lanes may run at once.
-The lanes are dealt into that many slurm job names and every one carries
-`--dependency=singleton`, so slurm runs one job per name and the campaign never
-holds more of the cluster than it was granted. The alternative -- chaining lanes
-on `afterok` -- serialises correctly and then propagates: one lane that overruns
-turns every lane behind it into `DependencyNeverSatisfied`.
+The lanes are dealt round-robin into that many slots, and each waits on
+`afterany` of the previous lane in its slot, so the campaign never holds more of
+the cluster than it was granted and every job keeps a name that says what it
+measures. Two earlier answers did not survive. Chaining on `afterok` serialises
+correctly and then propagates: one lane that overruns turns every lane behind it
+into `DependencyNeverSatisfied`. Giving each slot a shared name and
+`--dependency=singleton` fixes that, and costs the name -- singleton keys on the
+job name and nothing else, so the name has to be the slot, and a queue of
+identically named jobs says nothing about what any of it measures. `afterany`
+has singleton's indifference to outcome and leaves the name free.
 
 `--gpus-per-lane` is also the data-parallel size vLLM is started at, so the GRES
 the job asks for and what the server is given cannot disagree.
@@ -364,14 +371,15 @@ and roughly 12M prompt tokens per checkpoint.
 Each prints its pins with `pin`, refuses a branch name where a commit belongs,
 and hashes its own source together with `_common.py` so an edit without a repin
 stops the run. The two Harbor adapters hash `_harbor.py` as well, since that is
-where their scoring rules live, though neither is in the protocol right now. Three of them score data that differs from what
-`EVAL.md` names, and each records the substitution in its own run metadata:
+where their scoring rules live, though neither is in the protocol right now.
+Several score data that differs from what `EVAL.md` names, and each records the
+substitution in its own run metadata:
 
 | suite | adapter | data actually scored | verifier |
 |---|---|---|---|
-| `bfcl_v4` | `bfcl.py` | BFCL **v3** static split, 1240 items; no v4 exists on the Hub | AST match |
+| `bfcl_v4` | `bfcl.py` | BFCL **v3**, all eleven static and live categories, 3486 items; no v4 exists on the Hub | AST match |
 | `livecodebench_v6` | `livecodebench.py` | release v6, 175 problems, 7000 tests | sandboxed execution, pass@1 |
-| `matharena_2026_06` | `matharena.py` | AIME 2026 + Apex shortlist; the named 2026-06 snapshots are **not published** | exact integer |
+| `matharena_2026_06` | `matharena.py` | AIME 2026 + Apex shortlist; the named 2026-06 snapshots are **not published**. Parked, not in the protocol: four replicates put its recovery ratio's between-draw standard deviation at 4.77 points on 77 items | exact integer |
 | `multimodal` | `multimodal.py` | DocVQA, ChartQA, TextVQA; the private UI pack does **not exist** here | ANLS / relaxed / VQA |
 
 ```bash

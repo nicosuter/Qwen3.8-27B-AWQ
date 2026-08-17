@@ -6,13 +6,16 @@ quantization and retained in BF16/FP16. Post-save validation checks its dtype
 and runs an actual image prompt. The calibration blend targets Hermes-style
 tool use, multi-turn agent trajectories, mathematics, and STEM.
 
-The recipe has two variants. They differ only in what happens to the Gated
-DeltaNet input projections `in_proj_qkv` and `in_proj_z`, which are 4.0B
-parameters and most of the checkpoint's size: the default holds them in source
-precision and produces a 25.5 GB checkpoint, `--fp8-gdn=true` quantizes them
-with `FP8_BLOCK` and produces a 21.5 GB one. Everything else is W4A16 either
-way, and both come from the same calibration, so the two can be compared
-directly. `nicosuter/Qwen3.8-27B-AWQ` publishes the FP8 variant.
+The recipe has one axis: what happens to the Gated DeltaNet input projections
+`in_proj_qkv` and `in_proj_z`, which are 4.0B parameters and most of the
+checkpoint's size. `--gdn-in-proj` selects `int8` (the default), `int4`, or
+`source`. Everything else is W4A16 in every mode and every build comes from the
+same calibration, so they can be compared directly.
+
+Activations are BF16 in every mode and there is no flag for them. FP8 activation
+quantization needs sm_89 and the serving cards are sm_86, so vLLM's capability
+gate drops it: declaring it describes numerics no deployment of ours performs.
+The published checkpoint predates that decision; see `quant/scripts/gdn_in_proj.py`.
 
 ## Fast path
 
@@ -70,14 +73,19 @@ The argument is the only GPU-count setting: the wrapper requests that many
 GPUs, and the batch job derives both the expected distributed world size and
 `torchrun` process count from the CUDA devices Slurm actually exposes.
 
-`--fp8-gdn=true` selects the FP8 DeltaNet variant:
+`--gdn-in-proj` selects what those two projections are built at:
 
 ```bash
-bash quant/scripts/submit_quantize.sh 8 --fp8-gdn=true
+bash quant/scripts/submit_quantize.sh 8 --gdn-in-proj=int4
 ```
 
-The two variants default to different output directories, `v2/model` and
-`v2/model-fp8gdn`, so both can exist at once, and the wrapper refuses to
+Eight bits is the default because the AWQ mappings do not reach this path: four
+bits here would be bare round-to-nearest on the inputs to a recurrent state,
+where every other four-bit tensor in the model is rescaled by AWQ first.
+
+Each mode defaults to its own output directory -- `v2/model`,
+`v2/model-inproj-int8`, `v2/model-inproj-int4` -- so they can all exist at once
+while they are compared, and the wrapper refuses to
 overwrite an existing checkpoint. `--output-dir=PATH` overrides the default.
 
 The preparation job owns dependency setup, preflight, and calibration
@@ -125,11 +133,13 @@ an existing valid manifest backfills those caches without another Hub read.
 
 Require at least 250 GB free on fast scratch: roughly 55 GB for the source
 cache, up to another source-sized temporary/offload footprint, calibration and
-environment artifacts, and roughly 28 GB for the result. The checkpoint is
-21.5 GB, 2.6x compression against the 55.6 GB BF16 source, and 25.5 GB at 2.2x
-without `--fp8-gdn=true`. Both are larger than a fully 4-bit checkpoint of this
-size, because the exclusions leave 4.9B of the model's 27.8B parameters in BF16,
-or 8.9B without the flag.
+environment artifacts, and roughly 28 GB for the result. Against the 55.6 GB
+BF16 source the checkpoint is about 21.6 GB at `int8` (2.6x), about 19.5 GB at
+`int4` (2.9x) and 25.5 GB at `source` (2.2x). All are larger than a fully 4-bit
+checkpoint of this size, because the exclusions leave 4.9B of the model's 27.8B
+parameters in BF16, or 8.9B under `source`. The `int8` and `int4` figures are
+arithmetic rather than measurements: no build has been made under either yet,
+though a third-party checkpoint of the `int4` shape measures 19.5 GB.
 
 Once dependencies are installed and preparation has run, a quantization finishes
 inside 30 minutes. The recorded `elapsed_seconds` is 6.1 minutes at eight H200s
@@ -195,7 +205,7 @@ tracer's static optional-pixel branch and still keeps vision calibration.
 The full BF16 model and rank-local AWQ cache remain on each H200. The target
 set matches the reference quantizations except in one place: vision, MTP,
 `lm_head`, and the DeltaNet `in_proj_{a,b}` projections stay in source
-precision, as do `in_proj_{qkv,z}` unless `--fp8-gdn=true`. Qwen's own FP8
+precision, and `in_proj_{qkv,z}` are whatever `--gdn-in-proj` says. Qwen's own FP8
 checkpoint keeps the vision tower and `lm_head` in BF16 too, so those exclusions
 are not conservatism.
 
@@ -273,12 +283,17 @@ Results are written under `v2/smoke-eval/`.
 
 The complete `EVAL.md` protocol is implemented by the fail-closed Apptainer
 runner in [`eval/README.md`](eval/README.md). It freezes and audits prompts
-before inference, alternates checkpoint order across seeds, serves both models
-with the same eight-replica vLLM SIF, validates adapter output, produces full
-and calibration-clean paired reports, and runs the separate MTP gate. The
-benchmark adapters and their dataset/verifier revisions must be supplied and
-pinned in a copy of `eval/protocol.example.json`; unresolved placeholders are
-rejected rather than silently selecting moving benchmark versions.
+before inference, serves both checkpoints with the same vLLM SIF under one
+served name so no harness behaviour can branch on which is loaded, validates
+adapter output, and produces the paired report.
+
+What is measured is `eval/eval-suite-v2.json`, which names the suites and their
+dataset, harness, verifier and adapter pins; how it is divided across jobs is
+`eval/batches.json`, which is scheduling and not pre-registration. A campaign
+is submitted with `eval/slurm/campaign.sh`, one lane per candidate, and the
+lanes hold the allocation by waiting on each other rather than by sharing a job
+name. Every scored suite runs on one server: they are complementary rather than
+competing, and the telemetry that says so is in `batches.json`.
 
 If a distributed run reaches serialization but fails due to mismatched save
 collectives, recover on one H200 without rebuilding calibration:
