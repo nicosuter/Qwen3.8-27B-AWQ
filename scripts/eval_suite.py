@@ -183,10 +183,17 @@ def main(argv: list[str] | None = None) -> int:
         help="print one field of a batch, so a shell can act on it",
     )
     parser.add_argument("--batches", action="store_true", help="list the batch plan")
+    parser.add_argument(
+        "--names", action="store_true",
+        help="print the suite names, so a shell can filter what the protocol defines",
+    )
     args = parser.parse_args(argv)
 
     if args.select:
         print(" ".join(select(args.select, args.version)))
+        return 0
+    if args.names:
+        print(" ".join(sorted(names(args.version))))
         return 0
     if args.batch_field:
         name, field = args.batch_field

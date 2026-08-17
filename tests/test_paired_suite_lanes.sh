@@ -89,6 +89,9 @@ JSON
     FAILURE_LOG="$RUN_DIR/logs/suite-failures.tsv"
     FAILED_SUITES=()
     EXCLUDE_SUITES=""
+    # concat_variant drops anything the eval suite does not define.
+    DEFINED="alpha beta failsuite bfcl_v4"
+    EVAL_SUITE_VERSION="vtest"
 }
 
 max_overlap() {
@@ -333,6 +336,19 @@ setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
 out="$(score_variant baseline 2>&1)"; rc=$?
 check "adapter runner still used by default" 1 "$(grep -c 'script=run_adapter_suite.py' <<<"$out")"
 unset RUNNER
+
+echo "== case 17b: a suite the eval suite no longer defines never reaches the macro =="
+# A run directory outlives the protocol version that filled it. The comparator
+# refuses a suite set it was not calibrated against, so these have to be dropped
+# when the file is assembled, not left for it to reject.
+setup
+mkdir -p "$RUN_DIR/raw/baseline"
+echo '{"id":"kept"}'    > "$RUN_DIR/raw/baseline/bfcl_v4-r0.jsonl"
+echo '{"id":"dropped"}' > "$RUN_DIR/raw/baseline/matharena_2026_06-r0.jsonl"
+DEFINED="bfcl_v4"   # matharena is not in it, standing in for a retired suite
+out="$(concat_variant baseline 2>&1)"
+check "in-protocol suite kept" '{"id":"kept"}' "$(cat "$RUN_DIR/baseline-all.jsonl")"
+check "retired suite named" 1 "$(grep -c 'does not define it' <<<"$out")"
 
 echo "== case 18: a candidate in the HF cache is bound through its repository root =="
 # The snapshot directory is relative symlinks into ../../blobs. Bound on its own

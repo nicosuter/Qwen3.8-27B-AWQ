@@ -28,9 +28,21 @@ ALLOW_PARTIAL="${ALLOW_PARTIAL:-0}"
 RUN_STAMP="${RUN_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
 COMPARISON_TAG="${COMPARISON_TAG:-manual}"
 
+# Suites the eval suite does not define. A run directory outlives the protocol
+# version that filled it -- dropping a suite leaves its results on disk -- and
+# the comparator refuses a set it was not calibrated against rather than
+# averaging one in. Excluding them here keeps the rows as evidence without
+# letting them reach the macro.
+DEFINED="$("$PYTHON" scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" --names)"
+
 excluded() {
-    local name
+    local name found=0
     for name in $EXCLUDE_SUITES; do [[ "$name" == "$1" ]] && return 0; done
+    for name in $DEFINED; do [[ "$name" == "$1" ]] && found=1; done
+    if (( ! found )); then
+        echo "excluding $1: eval suite $EVAL_SUITE_VERSION does not define it" >&2
+        return 0
+    fi
     return 1
 }
 
