@@ -84,20 +84,41 @@ else
     SUITES="$("${EVAL_PYTHON:-python3}" eval/scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" --select $SUITES)"
 fi
 echo "eval-suite=$EVAL_SUITE_VERSION suites=$SUITES"
-# Four, not eight: the node is shared and the rest is somebody else's. A
-# campaign sets this and the job's --gres together from --gpus-per-lane, so the
-# default is only what a hand-submitted job gets.
-DP="${PAIRED_DP:-4}"
-# A hand-submitted job's --gres and this DP are set independently, so they can
+# Tensor-parallel by default, not data-parallel, because the wall clock here is
+# a tail. 43% of a scoring run's wall clock passes with under sixteen requests in
+# flight, and decode is weight-read bound: four data-parallel replicas each read
+# their whole copy per step, so fifteen sequences spread across them move four
+# times the bytes that one sharded replica would. Tensor parallelism also pools
+# the KV cache instead of partitioning it into four, which matters more now that
+# RULER shares a server with the short suites.
+#
+# The all-reduce this costs scales with batch size, so it is largest in the burst
+# and negligible in the drain -- the opposite shape to where the wall clock is.
+TP="${PAIRED_TP:-4}"
+DP="${PAIRED_DP:-1}"
+# A hand-submitted job's --gres and these are set independently, so they can
 # disagree. vLLM would then either idle GPUs or fail deep into startup, after
 # the image and weights are already loaded. Check what the cgroup granted.
 VISIBLE_GPUS="$(nvidia-smi -L | wc -l)"
-if (( DP > VISIBLE_GPUS )); then
-    echo "data-parallel size $DP exceeds the $VISIBLE_GPUS GPUs this job was granted" >&2
-    echo "raise --gres, lower PAIRED_DP, or set the campaign's --gpus-per-lane" >&2
+if (( TP * DP > VISIBLE_GPUS )); then
+    echo "tensor-parallel $TP x data-parallel $DP needs $(( TP * DP )) GPUs;" \
+         "this job was granted $VISIBLE_GPUS" >&2
+    echo "raise --gres, lower PAIRED_TP/PAIRED_DP, or set --gpus-per-lane" >&2
     exit 1
 fi
-echo "gpus=$VISIBLE_GPUS data-parallel=$DP"
+echo "gpus=$VISIBLE_GPUS tensor-parallel=$TP data-parallel=$DP"
+# Recorded because nothing else will say it. This cluster runs
+# TopologyPlugin=topology/default and declares no core affinity on its eight
+# GPUs, so which four a job receives is arbitrary, and H200 NVL has bridges
+# rather than a switch -- an allocation that straddles two bridge groups does
+# its all-reduce over PCIe. That changes throughput and not results, since the
+# reduction order is fixed by the parallel size and not by the link, but a run
+# that was slow for that reason should be able to say so afterwards.
+mkdir -p "$RUN_DIR/logs"
+nvidia-smi topo -m > "$RUN_DIR/logs/gpu-topology.txt" 2>&1 || true
+grep -cE "NV[0-9]+" "$RUN_DIR/logs/gpu-topology.txt" > /dev/null 2>&1 \
+    && echo "gpu-topology=nvlink-present" \
+    || echo "gpu-topology=no-nvlink-between-allocated-gpus"
 
 # Request timeouts in the config are written for the reference card (H200). A
 # slower one needs proportionally longer, or the token cap stops being what
@@ -186,7 +207,12 @@ CONCURRENCY="${PAIRED_CONCURRENCY:-}"
 # protocol's eight-replica server this job actually has. One absolute number
 # across suites is wrong: RULER holds about six percent of the KV pool per
 # request where a short prompt holds one.
-CONCURRENCY_SCALE="${PAIRED_CONCURRENCY_SCALE:-$(python3 -c "print($DP/8)")}"
+# Scaled by the GPUs the job holds, not by the replica count: the protocol's
+# concurrencies were written for an eight-GPU server, and moving those GPUs from
+# data-parallel replicas into one tensor-parallel replica does not change how
+# many requests they can carry. Keying this on DP alone would have quartered
+# every suite's concurrency the moment the default became TP=4, DP=1.
+CONCURRENCY_SCALE="${PAIRED_CONCURRENCY_SCALE:-$(python3 -c "print($TP*$DP/8)")}"
 # Which suites compete with which for the cache. A lane's concurrency is divided
 # among the lanes of its own class rather than among every lane in the job, so a
 # job that scores RULER alongside the short suites runs each of them at the width
@@ -390,7 +416,7 @@ start_server() {
         --served-model-name "$SERVED_NAME" \
         --host 127.0.0.1 \
         --port "$PORT" \
-        --tensor-parallel-size 1 \
+        --tensor-parallel-size "$TP" \
         --data-parallel-size "$DP" \
         --max-model-len 262144 \
         --kv-cache-dtype auto \

@@ -12,11 +12,6 @@ checkpoint's size. `--gdn-in-proj` selects `int8` (the default), `int4`, or
 `source`. Everything else is W4A16 in every mode and every build comes from the
 same calibration, so they can be compared directly.
 
-Activations are BF16 in every mode and there is no flag for them. FP8 activation
-quantization needs sm_89 and the serving cards are sm_86, so vLLM's capability
-gate drops it: declaring it describes numerics no deployment of ours performs.
-The published checkpoint predates that decision; see `quant/scripts/gdn_in_proj.py`.
-
 ## Fast path
 
 On the cluster login node:

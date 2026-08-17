@@ -15,9 +15,12 @@
 # lane whose dependency was skipped has to be given that job id explicitly.
 #
 # A lane's share of the allocation is declared, not assumed. `--gpus-per-lane`
-# sets both the GRES the job asks slurm for and the data-parallel size vLLM is
-# started at, so the two cannot disagree; the sbatch checks them against the
-# cgroup anyway and refuses a job that got fewer.
+# sets both the GRES the job asks slurm for and how vLLM is started across them,
+# so the two cannot disagree; the sbatch checks them against the cgroup anyway
+# and refuses a job that got fewer. By default those GPUs go into one
+# tensor-parallel replica rather than that many data-parallel ones, because the
+# wall clock is a tail and tensor parallelism is what shortens a tail;
+# `--tp`/`--dp` override, and their product has to be the lane's GPU count.
 #
 # And the campaign holds no more of the cluster than it was told it may.
 # `--gpu-quota` divided by `--gpus-per-lane` is how many lanes may run at once;
@@ -57,6 +60,8 @@ CANDIDATES="${PAIRED_CANDIDATES:-}"
 BASELINE_FROM="${PAIRED_BASELINE_FROM:-}"
 GPU_QUOTA="${PAIRED_GPU_QUOTA:-}"
 GPUS_PER_LANE="${PAIRED_GPUS_PER_LANE:-4}"
+LANE_TP="${PAIRED_TP:-}"
+LANE_DP="${PAIRED_DP:-}"
 CAMPAIGN_ARCH="${PAIRED_ARCH:-}"
 # Derived, never written down twice. A job named v1 while scoring v2 is the
 # same drift the suite file exists to stop, and it is worse in a job name
@@ -78,7 +83,9 @@ usage: $(basename "$0") --candidates <name,...> --arch <name>
                        ($("$PYTHON" "$CAMPAIGN_ROOT/eval/scripts/checkpoints.py" --names 2>/dev/null || echo "eval/checkpoints.json"))
   --arch NAME          what the lanes run on; names the job and its log only
   --gpu-quota N        GPUs this campaign may hold at once, in total
-  --gpus-per-lane N    GPUs one lane asks for, and its data-parallel size (4)
+  --gpus-per-lane N    GPUs one lane asks for, and how vLLM spans them (4)
+  --tp N / --dp N      how those GPUs are split; the product must equal
+                       --gpus-per-lane (default: all tensor-parallel)
   --lane BATCH=TIME    a lane per candidate, repeatable; a batch from
                        eval/batches.json and its walltime
                        (full=16:00:00)
@@ -110,6 +117,10 @@ while (( $# )); do
         --gpu-quota=*)      GPU_QUOTA="${1#*=}"; shift ;;
         --gpus-per-lane)    GPUS_PER_LANE="$2"; shift 2 ;;
         --gpus-per-lane=*)  GPUS_PER_LANE="${1#*=}"; shift ;;
+        --tp)               LANE_TP="$2"; shift 2 ;;
+        --tp=*)             LANE_TP="${1#*=}"; shift ;;
+        --dp)               LANE_DP="$2"; shift 2 ;;
+        --dp=*)             LANE_DP="${1#*=}"; shift ;;
         --lane)             LANE_PLAN+=("$2"); shift 2 ;;
         --lane=*)           LANE_PLAN+=("${1#*=}"); shift ;;
         --baseline-from)    BASELINE_FROM="$2"; shift 2 ;;
@@ -127,6 +138,19 @@ is_positive() { [[ "$1" =~ ^[1-9][0-9]*$ ]]; }
 [[ -n "$CAMPAIGN_ARCH" ]] || { echo "--arch is required" >&2; campaign_usage; }
 is_positive "${GPU_QUOTA:-}" || { echo "--gpu-quota must be a positive integer" >&2; campaign_usage; }
 is_positive "$GPUS_PER_LANE" || { echo "--gpus-per-lane must be a positive integer" >&2; campaign_usage; }
+# One tensor-parallel replica over the lane's GPUs unless told otherwise.
+LANE_TP="${LANE_TP:-$GPUS_PER_LANE}"
+LANE_DP="${LANE_DP:-1}"
+is_positive "$LANE_TP" || { echo "--tp must be a positive integer" >&2; campaign_usage; }
+is_positive "$LANE_DP" || { echo "--dp must be a positive integer" >&2; campaign_usage; }
+# Refused here rather than after the job starts: a product that does not match
+# leaves vLLM either idling GPUs the campaign paid for or failing deep into
+# startup, and the sbatch's own check cannot suggest the campaign flag to fix.
+if (( LANE_TP * LANE_DP != GPUS_PER_LANE )); then
+    echo "--tp $LANE_TP x --dp $LANE_DP is $(( LANE_TP * LANE_DP )) GPUs," \
+         "but --gpus-per-lane is $GPUS_PER_LANE" >&2
+    exit 2
+fi
 
 # How many lanes may be in flight. A quota smaller than one lane is a mistake
 # worth failing on: it would either hold more than was granted or nothing at all.
@@ -246,7 +270,7 @@ lane() {
     [[ -n "$slot_prev" ]] && dep="${dep:+$dep,}afterany:$slot_prev"
 
     local exports
-    exports="$(IFS=,; echo "$*"),PAIRED_DP=$GPUS_PER_LANE"
+    exports="$(IFS=,; echo "$*"),PAIRED_TP=$LANE_TP,PAIRED_DP=$LANE_DP"
     local args=(--commit "$COMMIT" --export "$exports"
                 --time "$walltime" --parsable
                 --output "slurm-logs/$scheme-%j.out" --comment "$key"
@@ -282,6 +306,7 @@ campaign_summary() {
     echo >&2
     echo "submitted at commit $COMMIT" >&2
     echo "$SUBMITTED lanes over $SLOTS slot(s) of $GPUS_PER_LANE GPUs" >&2
+    echo "  tensor-parallel $LANE_TP, data-parallel $LANE_DP" >&2
     for name in ${LANE_ORDER[@]+"${LANE_ORDER[@]}"}; do
         var="$(lane_var "$name")"
         printf '  %-28s %s\n' "$name" "${!var}" >&2
