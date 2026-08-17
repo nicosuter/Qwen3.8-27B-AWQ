@@ -160,6 +160,10 @@ class SubmitterAgreementTests(unittest.TestCase):
         self.assertNotIn("fp8-a16 | fp8", text, "the mode list has a second copy")
         self.assertIn("--gdn-in-proj=*)", text)
         self.assertIn("gdn_in_proj.py", text)
+        # The usage line used to print "(default source)" as a literal, which
+        # went stale the moment the default moved. It asks now.
+        for precision in GDN_IN_PROJ_PRECISIONS:
+            self.assertNotIn(f"(default {precision})", text)
 
 class ActivationTaintTests(unittest.TestCase):
     """Declared activation quantization the serving device will not perform.

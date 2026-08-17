@@ -41,7 +41,7 @@ usage() {
     echo "usage: bash quant/scripts/submit_quantize.sh NGPUS [--gdn-in-proj=MODE] [--output-dir=PATH]" >&2
     echo "                                      [--algorithm=awq|awq+gptq]" >&2
     echo "  --gdn-in-proj  what linear_attn.in_proj_qkv and in_proj_z are built at:" >&2
-    echo "         $(gdn --modes) (default source)" >&2
+    echo "         $(gdn --modes) (default $(gdn))" >&2
     echo "         quant/scripts/gdn_in_proj.py says what each one means" >&2
     echo "                                      [--dependency=SPEC] [--time=HH:MM:SS]" >&2
     exit 2
