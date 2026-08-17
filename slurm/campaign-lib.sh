@@ -76,13 +76,22 @@ lane_id() {
 # already in flight. Resolving eagerly in the campaign file instead meant
 # --only cyan-short died on a dependency belonging to a lane it was skipping.
 resolve_dep() {
-    local spec="$1" name id
-    while [[ "$spec" =~ @([A-Za-z0-9_-]+) ]]; do
-        name="${BASH_REMATCH[1]}"
-        id="$(lane_id "$name")" || return 1
-        spec="${spec//@$name/$id}"
+    local spec="$1" name id term out=() terms=()
+    IFS=',' read -ra terms <<< "$spec"
+    for term in ${terms[@]+"${terms[@]}"}; do
+        if [[ "$term" =~ @([A-Za-z0-9_-]+) ]]; then
+            name="${BASH_REMATCH[1]}"
+            id="$(lane_id "$name")" || return 1
+            # DEP_<LANE>=done says that lane has already finished, which is the
+            # normal case when a campaign is resumed part-way. Slurm rejects a
+            # dependency on a job it has already purged -- "Job dependency
+            # problem" -- so the term is dropped rather than resolved.
+            [[ "$id" == "done" ]] && continue
+            term="${term//@$name/$id}"
+        fi
+        out+=("$term")
     done
-    printf '%s' "$spec"
+    printf '%s' "$(IFS=,; echo "${out[*]-}")"
 }
 
 # lane <quant> <suffix|""> <walltime> <dependency|""> <KEY=VALUE>...

@@ -136,6 +136,23 @@ check "excluded nodes passed through" 1 "$(grep -c -- '--exclude nodeX,nodeY' "$
 echo "== case 7: exports are one comma-joined list, as sbatch wants =="
 check "joined" 1 "$(grep -c -- '--export K=1' "$SUBMIT_LOG")"
 
+echo "== case 7b: a dependency already finished is dropped, not resolved =="
+# Slurm rejects afterok on a job it has purged, which is what a resumed campaign
+# hands it. DEP_<LANE>=done says so explicitly.
+cat > "$WORK/campaign.sh" <<'CAMPAIGN'
+set -euo pipefail
+CAMPAIGN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CAMPAIGN_JOB_PREFIX=eval-qwen38-27b
+CAMPAIGN_ARCH=testarch
+source "$CAMPAIGN_ROOT/slurm/campaign-lib.sh"
+lane solo "" 01:00:00 "afterok:@earlier,singleton" "K=1"
+CAMPAIGN
+SUBMIT_LOG="$WORK/submitted.txt"; : > "$SUBMIT_LOG"; export SUBMIT_LOG
+out="$(RUN_BASE=/scratch/test DEP_EARLIER=done bash "$WORK/campaign.sh" 2>&1)"; rc=$?
+check "exit 0" 0 "$rc"
+check "the finished term is gone" 0 "$(grep -c 'afterok' "$SUBMIT_LOG")"
+check "the rest of the dependency survives" 1 "$(grep -c -- '--dependency singleton' "$SUBMIT_LOG")"
+
 echo "== case 8: the suffix lands in the job name and in the lane key =="
 cat > "$WORK/campaign.sh" <<'CAMPAIGN'
 set -euo pipefail
