@@ -55,10 +55,12 @@ campaign() { # campaign <args...>  -> sets $out $rc, writes $SUBMIT_LOG
 cat > "$WORK/campaign.sh" <<'CAMPAIGN'
 set -euo pipefail
 CAMPAIGN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CAMPAIGN_JOB_PREFIX=eval-qwen38-27b
+CAMPAIGN_ARCH=testarch
 source "$CAMPAIGN_ROOT/slurm/campaign-lib.sh"
-lane alpha 01:00:00 "" "K=1"
-lane bravo 02:00:00 "" "K=2"
-lane charlie 03:00:00 "afterok:@alpha" "K=3"
+lane alpha "" 01:00:00 "" "K=1"
+lane bravo "" 02:00:00 "" "K=2"
+lane charlie "" 03:00:00 "afterok:@alpha" "K=3"
 campaign_summary
 CAMPAIGN
 
@@ -68,6 +70,9 @@ check "exit 0" 0 "$rc"
 check "three lanes submitted" 3 "$(wc -l < "$SUBMIT_LOG" | tr -d ' ')"
 check "charlie waits on alpha's id" 1 "$(grep -c -- '--dependency afterok:1001' "$SUBMIT_LOG")"
 check "alpha carries its own walltime" 1 "$(grep -c -- '--time 01:00:00' "$SUBMIT_LOG")"
+# One glance at squeue has to say which checkpoint is being scored and on what.
+check "the job name follows the scheme" 1 \
+    "$(grep -c -- '--job-name eval-qwen38-27b-alpha-v1-testarch' "$SUBMIT_LOG")"
 
 echo "== case 2: --only submits just the named lanes =="
 campaign --only bravo
@@ -101,29 +106,54 @@ echo "== case 5: a shared job name serialises lanes and renames the logs =="
 cat > "$WORK/campaign.sh" <<'CAMPAIGN'
 set -euo pipefail
 CAMPAIGN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CAMPAIGN_JOB_PREFIX=eval-qwen38-27b
+CAMPAIGN_ARCH=testarch
 CAMPAIGN_JOB_NAME=shared
 source "$CAMPAIGN_ROOT/slurm/campaign-lib.sh"
-lane alpha 01:00:00 singleton "K=1"
+lane alpha "" 01:00:00 singleton "K=1"
 CAMPAIGN
 campaign
 check "exit 0" 0 "$rc"
 check "one slurm name for the campaign" 1 "$(grep -c -- '--job-name shared' "$SUBMIT_LOG")"
-check "output still names the lane" 1 "$(grep -c -- '--output slurm-logs/alpha-%j.out' "$SUBMIT_LOG")"
+check "output still follows the scheme" 1 \
+    "$(grep -c -- '--output slurm-logs/eval-qwen38-27b-alpha-v1-testarch-%j.out' "$SUBMIT_LOG")"
+check "and the comment carries the lane" 1 "$(grep -c -- '--comment alpha' "$SUBMIT_LOG")"
 check "singleton passed through" 1 "$(grep -c -- '--dependency singleton' "$SUBMIT_LOG")"
 
 echo "== case 6: node exclusions reach sbatch only when set =="
 cat > "$WORK/campaign.sh" <<'CAMPAIGN'
 set -euo pipefail
 CAMPAIGN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CAMPAIGN_JOB_PREFIX=eval-qwen38-27b
+CAMPAIGN_ARCH=testarch
 CAMPAIGN_EXCLUDE=nodeX,nodeY
 source "$CAMPAIGN_ROOT/slurm/campaign-lib.sh"
-lane alpha 01:00:00 "" "K=1"
+lane alpha "" 01:00:00 "" "K=1"
 CAMPAIGN
 campaign
 check "excluded nodes passed through" 1 "$(grep -c -- '--exclude nodeX,nodeY' "$SUBMIT_LOG")"
 
 echo "== case 7: exports are one comma-joined list, as sbatch wants =="
 check "joined" 1 "$(grep -c -- '--export K=1' "$SUBMIT_LOG")"
+
+echo "== case 8: the suffix lands in the job name and in the lane key =="
+cat > "$WORK/campaign.sh" <<'CAMPAIGN'
+set -euo pipefail
+CAMPAIGN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CAMPAIGN_JOB_PREFIX=eval-qwen38-27b
+CAMPAIGN_ARCH=testarch
+source "$CAMPAIGN_ROOT/slurm/campaign-lib.sh"
+lane cyankiwi short 01:00:00 "" "K=1"
+lane cyankiwi ruler 02:00:00 "afterok:@cyankiwi-short" "K=2"
+CAMPAIGN
+campaign
+check "exit 0" 0 "$rc"
+check "quant and suffix both in the name" 1 \
+    "$(grep -c -- '--job-name eval-qwen38-27b-cyankiwi-v1-testarch-short' "$SUBMIT_LOG")"
+check "the ruler lane too" 1 \
+    "$(grep -c -- '--job-name eval-qwen38-27b-cyankiwi-v1-testarch-ruler' "$SUBMIT_LOG")"
+# Dependencies refer to the short key, never to the slurm name.
+check "dependency resolved through the key" 1 "$(grep -c -- '--dependency afterok:1001' "$SUBMIT_LOG")"
 
 echo
 echo "passed $PASS, failed $FAIL"

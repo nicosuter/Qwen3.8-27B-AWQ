@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# The sbrinz half of the v1 campaign: the FP8 baseline against our own
-# W4A16+FP8-GDN checkpoint and then the published AWQ quantizations, on H200.
+# The other half of the v1 campaign: the FP8 baseline against our own
+# W4A16+FP8-GDN checkpoint and then the published AWQ quantizations.
 #
 # The baseline and our candidate are already scored in v2/eval-suite-v1, so the
 # lanes here are the ones that inherit that baseline rather than rebuy it. Order
 # is deliberate and is the order they were asked for: ours, then philbert, then
 # barry, then the bf16-GDN variant last.
 #
-# Serialisation is the whole difficulty on this cluster. sbrinz has two nodes of
-# eight H200s but our share is four GPUs and one running job, and slurm will not
-# enforce that for us -- left alone it would happily start three of these at
-# once on somebody else's GPUs. The previous answer was to chain every lane on
+# Serialisation is the whole difficulty here. Our share of the allocation is
+# smaller than what the scheduler will hand out, and slurm will not enforce the
+# difference -- left alone it would happily start three of these at once on
+# capacity that is not ours. The previous answer was to chain every lane on
 # afterok, which serialises correctly and then propagates: one lane that
 # overruns its limit turns every lane behind it into DependencyNeverSatisfied.
-# That is what happened on piora, with four dead jobs and idle nodes.
+# That is what happened on the other cluster, with four dead jobs and an idle
+# allocation.
 #
 # --dependency=singleton is the right tool and was the missing one. Slurm runs
 # at most one job per (user, job name) at a time, and it keys on nothing else,
@@ -29,7 +30,14 @@
 set -euo pipefail
 
 CAMPAIGN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CAMPAIGN_JOB_NAME="${PAIRED_CAMPAIGN_NAME:-v1-h200}"
+# All lanes share this so --dependency=singleton can serialise them. Do not
+# change it while lanes are queued under the old name: singleton keys on the
+# name alone, so a rename mid-queue lets an old lane and a new one run at
+# once. Rename the queued jobs with scontrol at the same time, or wait.
+CAMPAIGN_JOB_NAME="${PAIRED_CAMPAIGN_NAME:-eval-qwen38-27b-v1-h200}"
+CAMPAIGN_JOB_PREFIX="${PAIRED_JOB_PREFIX:-eval-qwen38-27b}"
+CAMPAIGN_ARCH="${PAIRED_ARCH:-h200}"
+CAMPAIGN_EXCLUDE="${PAIRED_EXCLUDE:-}"
 SHORT_TIME="${PAIRED_SHORT_TIME:-12:00:00}"
 LONG_TIME="${PAIRED_LONG_TIME:-10:00:00}"
 # shellcheck source=slurm/campaign-lib.sh
@@ -55,16 +63,16 @@ BF16GDN="$RUN_BASE/v2/model"
 
 # Every lane waits on the running RULER job as well as on the singleton, because
 # singleton only serialises against lanes sharing this name and that job does
-# not. Without it the first lane would start beside it and take eight GPUs.
-GATE="afterok:@baseline-ruler,singleton"
+# not. Without it the first lane would start beside it and double our share.
+GATE="afterok:@fp8-ruler,singleton"
 
 candidate_lanes() { # candidate_lanes <name> <checkpoint>
     local name="$1" checkpoint="$2" run_dir="$RUN_BASE/v2/eval-suite-v1-$1"
-    lane "$name-short" "$SHORT_TIME" "$GATE" \
+    lane "$name" short "$SHORT_TIME" "$GATE" \
         "${BASELINE[@]}" "PAIRED_RUN_DIR=$run_dir" "OUTPUT_DIR=$checkpoint" \
         "PAIRED_INHERIT_BASELINE_FROM=$RUN_BASE_DIR" \
         "PAIRED_BATCH=short-context" "PAIRED_VARIANTS=candidate"
-    lane "$name-ruler" "$LONG_TIME" "$GATE" \
+    lane "$name" ruler "$LONG_TIME" "$GATE" \
         "${BASELINE[@]}" "PAIRED_RUN_DIR=$run_dir" "OUTPUT_DIR=$checkpoint" \
         "PAIRED_INHERIT_BASELINE_FROM=$RUN_BASE_DIR" \
         "PAIRED_BATCH=long-context" "PAIRED_VARIANTS=candidate"

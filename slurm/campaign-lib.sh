@@ -85,31 +85,39 @@ resolve_dep() {
     printf '%s' "$spec"
 }
 
-# lane <name> <walltime> <dependency|""> <KEY=VALUE>...
+# lane <quant> <suffix|""> <walltime> <dependency|""> <KEY=VALUE>...
 #
-# CAMPAIGN_JOB_NAME, if set, makes every lane share one slurm job name so that
-# --dependency=singleton can serialise them. Slurm keys singleton on the name,
-# and the per-lane names exist to keep the logs readable, so the output file is
-# named for the lane instead.
+# Every job this repository submits is named
+#   <prefix>-<quant>-<suite version>-<arch>[-<suffix>]
+# so that one glance at squeue says which checkpoint is being scored and on
+# what. The lane key -- what --only and dependencies refer to -- is the short
+# "<quant>-<suffix>" and never appears in slurm.
+#
+# CAMPAIGN_JOB_NAME, if set, overrides the job name so that every lane shares
+# one and --dependency=singleton can serialise them; slurm keys singleton on the
+# name and nothing else. The scheme is then carried by the output file and by
+# --comment, which squeue prints with %k, so the lanes stay tellable apart.
 lane() {
-    local name="$1" walltime="$2" dep="$3"
-    shift 3
-    if ! lane_selected "$name"; then
-        printf 'lane %-22s skipped (not in --only)\n' "$name" >&2
+    local quant="$1" suffix="$2" walltime="$3" dep="$4"
+    shift 4
+    local key="$quant${suffix:+-$suffix}"
+    if ! lane_selected "$key"; then
+        printf 'lane %-22s skipped (not in --only)\n' "$key" >&2
         return 0
     fi
     dep="$(resolve_dep "$dep")" || exit 1
-    LANE_ORDER+=("$name")
+    LANE_ORDER+=("$key")
+
+    local scheme="${CAMPAIGN_JOB_PREFIX:?set CAMPAIGN_JOB_PREFIX}-$quant"
+    scheme="$scheme-${CAMPAIGN_SUITE_VERSION:-v1}-${CAMPAIGN_ARCH:?set CAMPAIGN_ARCH}"
+    scheme="$scheme${suffix:+-$suffix}"
 
     local exports
     exports="$(IFS=,; echo "$*")"
     local args=(--commit "$COMMIT" --export "$exports"
-                --time "$walltime" --parsable)
-    if [[ -n "${CAMPAIGN_JOB_NAME:-}" ]]; then
-        args+=(--job-name "$CAMPAIGN_JOB_NAME" --output "slurm-logs/$name-%j.out")
-    else
-        args+=(--job-name "$name")
-    fi
+                --time "$walltime" --parsable
+                --output "slurm-logs/$scheme-%j.out" --comment "$key")
+    args+=(--job-name "${CAMPAIGN_JOB_NAME:-$scheme}")
     [[ -n "${CAMPAIGN_EXCLUDE:-}" ]] && args+=(--exclude "$CAMPAIGN_EXCLUDE")
     [[ -n "$dep" ]] && args+=(--dependency "$dep")
 
@@ -124,12 +132,13 @@ lane() {
     printf '%s\n' "$out" >&2
     local id
     if (( DRY )); then
-        id="would-be-$name"
+        id="would-be-$key"
     else
         id="$(printf '%s\n' "$out" | grep -xE '[0-9]+' | tail -n1)"
     fi
-    printf -v "$(lane_var "$name")" '%s' "$id"
-    printf 'lane %-22s %s  %s  dep=%s\n' "$name" "$id" "$walltime" "${dep:-none}" >&2
+    printf -v "$(lane_var "$key")" '%s' "$id"
+    printf 'lane %-22s %s  %-9s dep=%-24s %s\n' \
+        "$key" "$id" "$walltime" "${dep:-none}" "$scheme" >&2
 }
 
 campaign_summary() {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The piora half of the v1 campaign: the FP8 baseline against cyankiwi's and
-# soyrsoyr's AWQ checkpoints, on A100.
+# One half of the v1 campaign: the FP8 baseline against two externally
+# published AWQ checkpoints.
 #
 # Two failures this file exists to stop repeating.
 #
@@ -18,19 +18,25 @@
 # four dead jobs and an idle cluster. The dependencies below are the real ones
 # and nothing more -- a candidate that inherits a baseline waits for that
 # baseline, and everything else waits for nobody. That is also what lets both
-# A100 nodes work at once instead of one.
+# allocation work in parallel instead of one lane at a time.
 #
-# On node selection: piora advertises gpu:4 on six nodes, but only piora1 and
-# piora2 carry A100s. piora6-8 are V100, which cannot hold a 27B checkpoint at
-# any data-parallel size, and piora5 is usually down. sinfo's GRES column does
-# not name the part and there is no node feature to select on, so they are
-# excluded by name. paired-suite-eval.sbatch would refuse to score on a V100
+# On node selection: the partition advertises the same GRES on hardware that is
+# not the same part, and some of it cannot hold a 27B checkpoint at any
+# data-parallel size. sinfo's GRES column does not name the device and there is
+# no node feature to select on, so the unusable nodes are excluded by name
+# below. paired-suite-eval.sbatch refuses to score on an unvalidated device
 # anyway; that guard is the backstop, not the plan.
 set -euo pipefail
 
 CAMPAIGN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CAMPAIGN_EXCLUDE="${PAIRED_EXCLUDE:-piora5,piora6,piora7,piora8}"
-# Six suites against a dequantized FP8 baseline took a measured 6h+ on A100 and
+# Which nodes to keep off is a property of one deployment, not of the protocol,
+# so it comes from the environment the way RUN_BASE does rather than being
+# written down here. Unset is safe but wasteful: the sbatch refuses to score on
+# an unvalidated device, so a bad landing costs a scheduling round-trip.
+CAMPAIGN_EXCLUDE="${PAIRED_EXCLUDE:-}"
+CAMPAIGN_JOB_PREFIX="${PAIRED_JOB_PREFIX:-eval-qwen38-27b}"
+CAMPAIGN_ARCH="${PAIRED_ARCH:-a100}"
+# Six suites against a dequantized FP8 baseline took a measured 6h+ here and
 # was killed at a six-hour limit; RULER is one suite but a long-context one.
 # Both sit well above the measurement, because an overrun costs the whole lane
 # and a generous limit costs only scheduling priority.
@@ -56,19 +62,19 @@ RUN_SOY="$RUN_BASE/v2/eval-suite-v1-soy"
 # The two arms of the cyan comparison are separate lanes on purpose: they write
 # disjoint paths under one run directory, so they can hold a node each, and
 # whichever finishes second is the one that produces the comparison.
-lane baseline-short "$SHORT_TIME" "" \
+lane fp8 short "$SHORT_TIME" "" \
     "${BASELINE[@]}" "PAIRED_RUN_DIR=$RUN_CYAN" "OUTPUT_DIR=$CYAN" \
     "PAIRED_BATCH=short-context" "PAIRED_VARIANTS=baseline"
 
-lane cyan-short "$SHORT_TIME" "" \
+lane cyankiwi short "$SHORT_TIME" "" \
     "${BASELINE[@]}" "PAIRED_RUN_DIR=$RUN_CYAN" "OUTPUT_DIR=$CYAN" \
     "PAIRED_BATCH=short-context" "PAIRED_VARIANTS=candidate"
 
-lane baseline-ruler "$LONG_TIME" "" \
+lane fp8 ruler "$LONG_TIME" "" \
     "${BASELINE[@]}" "PAIRED_RUN_DIR=$RUN_CYAN" "OUTPUT_DIR=$CYAN" \
     "PAIRED_BATCH=long-context" "PAIRED_VARIANTS=baseline"
 
-lane cyan-ruler "$LONG_TIME" "" \
+lane cyankiwi ruler "$LONG_TIME" "" \
     "${BASELINE[@]}" "PAIRED_RUN_DIR=$RUN_CYAN" "OUTPUT_DIR=$CYAN" \
     "PAIRED_BATCH=long-context" "PAIRED_VARIANTS=candidate"
 
@@ -76,12 +82,12 @@ lane cyan-ruler "$LONG_TIME" "" \
 # waits on the lane that produces the half it needs -- and on nothing else. The
 # inherit copies orders, materialized items and the baseline results across at
 # job start, so the source has to be finished, not merely running.
-lane soy-short "$SHORT_TIME" "afterok:@baseline-short" \
+lane soyrsoyr short "$SHORT_TIME" "afterok:@fp8-short" \
     "${BASELINE[@]}" "PAIRED_RUN_DIR=$RUN_SOY" "OUTPUT_DIR=$SOY" \
     "PAIRED_INHERIT_BASELINE_FROM=$RUN_CYAN" \
     "PAIRED_BATCH=short-context" "PAIRED_VARIANTS=candidate"
 
-lane soy-ruler "$LONG_TIME" "afterok:@baseline-ruler" \
+lane soyrsoyr ruler "$LONG_TIME" "afterok:@fp8-ruler" \
     "${BASELINE[@]}" "PAIRED_RUN_DIR=$RUN_SOY" "OUTPUT_DIR=$SOY" \
     "PAIRED_INHERIT_BASELINE_FROM=$RUN_CYAN" \
     "PAIRED_BATCH=long-context" "PAIRED_VARIANTS=candidate"
