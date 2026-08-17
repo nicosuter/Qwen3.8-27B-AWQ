@@ -1,0 +1,44 @@
+# A place to put files on the work volume, and to take results off it.
+#
+# The scoring job has no network, so its inputs cannot be fetched and its outputs
+# cannot be pushed: they cross the boundary as files, and something has to mount
+# the volume to place them. That was done three times from an ad-hoc pod that
+# existed only in a shell history, which is the same mistake as a campaign whose
+# configuration lived in a --export list.
+#
+# It sleeps rather than serving, and `kubectl cp` reaches it. Nothing here scores
+# anything, so it holds no generated code and needs none of the scorer's limits
+# beyond the ones the namespace enforces on every pod.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: lcb-stage
+  namespace: qwen-lcb-score
+  labels: {app: lcb-stage}
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: stage
+      image: python:3.12-slim
+      # Long enough to stage a 300 MB answer key and take the results back, short
+      # enough that forgetting to delete it costs nothing.
+      command: ["sleep", "7200"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: [ALL]}
+      resources:
+        requests: {cpu: "100m", memory: 128Mi}
+        limits:   {cpu: "1", memory: 1Gi}
+      volumeMounts:
+        - {name: work, mountPath: /work}
+  volumes:
+    - name: work
+      persistentVolumeClaim: {claimName: lcb-work}
