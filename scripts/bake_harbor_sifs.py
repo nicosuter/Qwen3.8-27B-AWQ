@@ -38,6 +38,21 @@ from typing import Any
 
 DEFAULT_TIMEOUT = 3600.0
 
+# Terminus-2 drives a task container through tmux, and if tmux is missing it
+# installs it -- apt, pip or a source build -- from inside the container. A task
+# run with `--network none` has no mirror to install from, so the agent dies on
+# its first command with an error about the terminal rather than about the
+# network. Build time is the one moment a task image is allowed network, so tmux
+# goes in then. The last line asserts under `set -e`: a task image that ends up
+# without tmux fails here, where it is cheap, instead of mid-rollout.
+ENSURE_TMUX = """\
+    command -v tmux >/dev/null 2>&1 || \\
+        (apt-get update && apt-get install -y --no-install-recommends tmux) || \\
+        apk add --no-cache tmux || \\
+        yum install -y tmux || \\
+        dnf install -y tmux
+    command -v tmux >/dev/null 2>&1"""
+
 
 class BakeError(RuntimeError):
     pass
@@ -89,7 +104,7 @@ def parse_dockerfile(text: str) -> dict[str, Any]:
     return {"image": image, "workdir": workdir, "envs": envs, "runs": runs}
 
 
-def definition(parsed: dict[str, Any]) -> str:
+def definition(parsed: dict[str, Any], ensure_tmux: bool = True) -> str:
     exports = "\n".join(f"    export {entry}" for entry in parsed["envs"])
     body = "\n".join(f"    {command}" for command in parsed["runs"])
     lines = [
@@ -102,6 +117,8 @@ def definition(parsed: dict[str, Any]) -> str:
         # into $HOME. Without this it would land somewhere else.
         "    export HOME=/root",
     ]
+    if ensure_tmux:
+        lines.append(ENSURE_TMUX)
     if exports:
         lines.append(exports)
     lines.append(f"    cd {parsed['workdir'] or '/'}")
@@ -145,7 +162,8 @@ def pin_image(task_toml: Path, sif_path: Path) -> bool:
     return True
 
 
-def bake(task_dir: Path, sif_dir: Path, timeout: float) -> dict[str, Any]:
+def bake(task_dir: Path, sif_dir: Path, timeout: float,
+         ensure_tmux: bool = True) -> dict[str, Any]:
     dockerfile = task_dir / "environment" / "Dockerfile"
     if not dockerfile.is_file():
         raise BakeError(f"{task_dir.name} has no environment/Dockerfile")
@@ -153,7 +171,7 @@ def bake(task_dir: Path, sif_dir: Path, timeout: float) -> dict[str, Any]:
     sif_path = sif_dir / f"{task_dir.name}.sif"
     definition_path = sif_path.with_suffix(".def")
     definition_path.parent.mkdir(parents=True, exist_ok=True)
-    definition_path.write_text(definition(parsed), encoding="utf-8")
+    definition_path.write_text(definition(parsed, ensure_tmux), encoding="utf-8")
     if not sif_path.is_file():
         build(definition_path, sif_path, timeout)
     pinned = pin_image(task_dir / "task.toml", sif_path)
@@ -188,6 +206,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, help="stop after this many tasks")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     parser.add_argument("--report", type=Path, help="write a JSON summary here")
+    parser.add_argument(
+        "--no-ensure-tmux", action="store_true",
+        help="skip installing tmux; only for images that already carry it",
+    )
     args = parser.parse_args(argv)
 
     tasks = selected_tasks(args.tasks_dir, args.subset)
@@ -197,7 +219,8 @@ def main(argv: list[str] | None = None) -> int:
     baked, failures = [], []
     for index, task_dir in enumerate(tasks, start=1):
         try:
-            record = bake(task_dir, args.sif_dir, args.timeout)
+            record = bake(task_dir, args.sif_dir, args.timeout,
+                          ensure_tmux=not args.no_ensure_tmux)
         except BakeError as error:
             # One unbuildable task should not cost the other 299.
             failures.append({"task": task_dir.name, "error": str(error)})

@@ -294,3 +294,54 @@ class MainTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TmuxGuaranteeTests(unittest.TestCase):
+    """A task container with no network cannot install its own terminal.
+
+    Terminus-2 drives the container through tmux and installs it at run time if
+    it is missing. Under `--network none` that install has no mirror, so the
+    agent dies on its first command. Build time is the only moment the image is
+    allowed network.
+    """
+
+    PARSED = {
+        "image": "example/base:1",
+        "workdir": "/app",
+        "envs": ["PATH=/usr/bin"],
+        "runs": ["echo build"],
+    }
+
+    def test_tmux_is_installed_at_build_time(self) -> None:
+        body = baker.definition(self.PARSED)
+        self.assertIn("tmux", body)
+        self.assertIn("apt-get install", body)
+
+    def test_a_package_manager_that_is_absent_falls_through(self) -> None:
+        """Task images are not all Debian; apk, yum and dnf are tried too."""
+        body = baker.definition(self.PARSED)
+        for manager in ("apk add", "yum install", "dnf install"):
+            with self.subTest(manager=manager):
+                self.assertIn(manager, body)
+
+    def test_an_image_that_still_lacks_tmux_fails_the_build(self) -> None:
+        """Under `set -e` the trailing check is what turns this into an error.
+
+        Failing at bake time is cheap; failing mid-rollout costs the task and
+        reports itself as a terminal problem rather than a missing package.
+        """
+        body = baker.definition(self.PARSED)
+        post = body.split("%post", 1)[1]
+        self.assertIn("set -e", post)
+        self.assertTrue(
+            post.rstrip().count("command -v tmux") >= 2,
+            "the definition must verify tmux after trying to install it",
+        )
+
+    def test_it_can_be_skipped_for_images_that_carry_tmux(self) -> None:
+        self.assertNotIn("tmux", baker.definition(self.PARSED, ensure_tmux=False))
+
+    def test_the_task_commands_still_run(self) -> None:
+        body = baker.definition(self.PARSED)
+        self.assertIn("echo build", body)
+        self.assertIn("cd /app", body)
