@@ -61,6 +61,50 @@ split costs another server load per arm. A batch's own comparison is
 `--allow-partial` by construction; the protocol's macro appears once every
 scoring batch has written into the same run directory.
 
+## Campaigns
+
+A campaign is one baseline against one or more candidates, a lane per candidate
+per batch. `eval/slurm/campaign.sh` submits it, and everything that differs
+between two runs of it is on the command line:
+
+```bash
+eval/slurm/campaign.sh --candidates cyankiwi,soyrsoyr --arch a100 \
+    --gpu-quota 8 --gpus-per-lane 4 --lane short-context=16:00:00
+
+eval/slurm/campaign.sh --candidates philbert,barry,bf16gdn --arch h200 \
+    --gpu-quota 4 --baseline-from "$RUN_BASE/v2/eval-suite-v1"
+```
+
+`--gpu-quota` divided by `--gpus-per-lane` is how many lanes may run at once.
+The lanes are dealt into that many slurm job names and every one carries
+`--dependency=singleton`, so slurm runs one job per name and the campaign never
+holds more of the cluster than it was granted. The alternative -- chaining lanes
+on `afterok` -- serialises correctly and then propagates: one lane that overruns
+turns every lane behind it into `DependencyNeverSatisfied`.
+
+`--gpus-per-lane` is also the data-parallel size vLLM is started at, so the GRES
+the job asks for and what the server is given cannot disagree.
+
+Without `--baseline-from`, the baseline is scored into the first candidate's run
+directory and every other candidate inherits it. With it, no baseline lane is
+submitted at all and each candidate copies a finished one in at job start. That
+inherited baseline must have been scored on the same cluster: A100 dequantizes
+the FP8 baseline where H200 runs it natively, and a comparison across that
+boundary is not paired. A lane that inherits waits for the lane that produced
+its half, so when that job is not part of this submission its id has to be given
+as `DEP_FP8_<BATCH>`, or `DEP_FP8_<BATCH>=done` if it has already finished.
+
+What each candidate name refers to is in `eval/checkpoints.json`:
+
+```bash
+python3 eval/scripts/checkpoints.py
+```
+
+Node exclusions are a property of one deployment and come from `PAIRED_EXCLUDE`
+in the environment; nothing about a cluster's hardware is written down here.
+`--only` names lanes to submit when the rest are already in flight, and
+`--dry-run` prepares the checkout and prints the sbatch without submitting.
+
 ## Build and run
 
 The repository defaults to the official Qwen3.8-specific vLLM image for

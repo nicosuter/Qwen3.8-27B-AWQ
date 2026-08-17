@@ -84,15 +84,17 @@ else
     SUITES="$("${EVAL_PYTHON:-python3}" eval/scripts/eval_suite.py --version "$EVAL_SUITE_VERSION" --select $SUITES)"
 fi
 echo "eval-suite=$EVAL_SUITE_VERSION suites=$SUITES"
-# Four, not eight: the node is shared and the rest is somebody else's.
+# Four, not eight: the node is shared and the rest is somebody else's. A
+# campaign sets this and the job's --gres together from --gpus-per-lane, so the
+# default is only what a hand-submitted job gets.
 DP="${PAIRED_DP:-4}"
-# The header's --gres and this DP are set independently, so they can disagree.
-# vLLM would then either idle GPUs or fail deep into startup, after the image
-# and weights are already loaded. Check against what the cgroup actually grants.
+# A hand-submitted job's --gres and this DP are set independently, so they can
+# disagree. vLLM would then either idle GPUs or fail deep into startup, after
+# the image and weights are already loaded. Check what the cgroup granted.
 VISIBLE_GPUS="$(nvidia-smi -L | wc -l)"
 if (( DP > VISIBLE_GPUS )); then
     echo "data-parallel size $DP exceeds the $VISIBLE_GPUS GPUs this job was granted" >&2
-    echo "raise --gres in the sbatch header, or lower PAIRED_DP" >&2
+    echo "raise --gres, lower PAIRED_DP, or set the campaign's --gpus-per-lane" >&2
     exit 1
 fi
 echo "gpus=$VISIBLE_GPUS data-parallel=$DP"

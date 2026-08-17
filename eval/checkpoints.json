@@ -1,0 +1,37 @@
+{
+  "note": "What a campaign may score, by name. The campaign file says which of these run and on what; this says where each one lives and what it is. Published quantizations are named by repository and revision and are read out of the Hugging Face cache; ours are directories we wrote under RUN_BASE.",
+  "baseline": {
+    "repo": "Qwen/Qwen3.8-27B-FP8",
+    "revision": "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+    "why": "The paired arm every candidate is measured against. A100 dequantizes it where H200 runs it natively, so a baseline scored on one cluster cannot be inherited by a candidate on the other."
+  },
+  "candidates": {
+    "fp8gdn": {
+      "path": "v2/model-fp8gdn",
+      "run_dir": "eval-suite-v1",
+      "why": "Ours: W4A16 AWQ with the 96 linear-attention projections in FP8."
+    },
+    "bf16gdn": {
+      "path": "v2/model",
+      "why": "Ours: the same W4A16 AWQ weights with those projections left in bf16."
+    },
+    "cyankiwi": {
+      "repo": "cyankiwi/Qwen3.8-27B-AWQ-INT4",
+      "revision": "63768c10df38c0395e12ef49edac1bd539eaeeea",
+      "run_dir": "eval-suite-v1-cyan"
+    },
+    "soyrsoyr": {
+      "repo": "soyrsoyr/Qwen3.8-27B-W4A16-AWQ-GPTQ",
+      "revision": "15a8ec529ecb0c5d3437c3f853ce6df871f40028",
+      "run_dir": "eval-suite-v1-soy"
+    },
+    "philbert": {
+      "repo": "philbert440/Qwen3.8-27B-W4A16-AWQ",
+      "revision": "7908d42a71077a5e4dc458f273682b12dfe384a0"
+    },
+    "barry": {
+      "repo": "barrydeen/Qwen3.8-27B-AWQ-4bit",
+      "revision": "e6b4b8b025f85b3e18f13281db576e0b7d5fe314"
+    }
+  }
+}

@@ -1,20 +1,37 @@
 #!/usr/bin/env bash
-# Shared submit machinery for the per-cluster campaign files. Sourced, not run.
+# Submit machinery for campaign.sh. Sourced, not run.
 #
-# A campaign file declares its lanes and nothing else; how a lane becomes a
-# queued job -- the checkout, the export list, the node exclusions, the job-id
-# bookkeeping -- lives here so the two clusters cannot drift apart in the
-# mechanics while differing, as they should, in what they measure.
+# The campaign file declares lanes; this turns a lane into a queued job -- the
+# checkout, the export list, the GPU request, the serialisation, the job-id
+# bookkeeping. The split exists so that what a campaign measures stays readable
+# next to how it reaches the queue.
 #
-# The one piece of policy that is here rather than in the campaign files is that
-# a lane is skippable. Re-running a campaign to pick up a harness fix used to
+# Three pieces of policy live here rather than in the campaign file.
+#
+# A lane is skippable. Re-running a campaign to pick up a harness fix used to
 # resubmit every lane, including the ones already in flight, which put two jobs
 # on the same run directory writing the same file. `--only` names the lanes to
 # submit; the rest are reported as skipped rather than silently omitted, and a
 # lane whose dependency was skipped has to be given that job id explicitly.
+#
+# A lane's share of the allocation is declared, not assumed. `--gpus-per-lane`
+# sets both the GRES the job asks slurm for and the data-parallel size vLLM is
+# started at, so the two cannot disagree; the sbatch checks them against the
+# cgroup anyway and refuses a job that got fewer.
+#
+# And the campaign holds no more of the cluster than it was told it may.
+# `--gpu-quota` divided by `--gpus-per-lane` is how many lanes may run at once;
+# the lanes are dealt round-robin into that many slots, each slot is one slurm
+# job name, and every lane carries --dependency=singleton. Slurm runs at most one
+# job per (user, job name), so the quota holds without any lane depending on
+# another one succeeding. The previous answer was to chain every lane on afterok,
+# which serialises correctly and then propagates: one lane that overruns turns
+# every lane behind it into DependencyNeverSatisfied, which is how one timeout
+# once cost four jobs and left the allocation idle.
 
 RUN_BASE="${RUN_BASE:-/scratch/$USER/qwen38-27b-awq}"
 export RUN_BASE
+PYTHON="${EVAL_PYTHON:-python3}"
 
 # The commit every lane runs, which is the commit the campaign file came from.
 # Naming a fixed sha reads as safer and is not: it goes stale the moment the
@@ -23,22 +40,102 @@ export RUN_BASE
 # the code that produced it.
 COMMIT="${PAIRED_COMMIT:-$(git -C "$CAMPAIGN_ROOT" rev-parse HEAD)}"
 
+# Everything below is a runtime decision. Anything that describes one deployment
+# rather than the measurement -- which nodes to keep off, how much of the cluster
+# is ours -- comes from the environment and is never written down in the
+# repository.
 DRY=0
 ONLY=""
+CANDIDATES="${PAIRED_CANDIDATES:-}"
+BASELINE_FROM="${PAIRED_BASELINE_FROM:-}"
+GPU_QUOTA="${PAIRED_GPU_QUOTA:-}"
+GPUS_PER_LANE="${PAIRED_GPUS_PER_LANE:-4}"
+CAMPAIGN_ARCH="${PAIRED_ARCH:-}"
+CAMPAIGN_SUITE_VERSION="${PAIRED_SUITE_VERSION:-v1}"
+CAMPAIGN_JOB_PREFIX="${PAIRED_JOB_PREFIX:-eval-qwen38-27b}"
+CAMPAIGN_EXCLUDE="${PAIRED_EXCLUDE:-}"
+declare -a LANE_PLAN=()
+
+campaign_usage() {
+    cat >&2 <<USAGE
+usage: $(basename "$0") --candidates <name,...> --arch <name>
+                    --gpu-quota <n> [--gpus-per-lane <n>] [options]
+
+  --candidates a,b     which checkpoints to score, by name from the registry
+                       ($("$PYTHON" "$CAMPAIGN_ROOT/eval/scripts/checkpoints.py" --names 2>/dev/null || echo "eval/checkpoints.json"))
+  --arch NAME          what the lanes run on; names the job and its log only
+  --gpu-quota N        GPUs this campaign may hold at once, in total
+  --gpus-per-lane N    GPUs one lane asks for, and its data-parallel size (4)
+  --lane BATCH=TIME    a lane per candidate, repeatable; a batch from
+                       eval/batches.json and its walltime
+                       (short-context=12:00:00 long-context=10:00:00)
+  --baseline-from DIR  inherit an already-scored baseline from a run directory
+                       instead of scoring one in the first candidate's
+  --suite-version V    which suite version the job names carry (v1)
+  --only a,b           submit just these lanes; the rest are reported skipped
+  --dry-run            prepare the checkout and print the sbatch, submit nothing
+
+Deployment details stay in the environment, never in the repository:
+PAIRED_EXCLUDE for nodes to keep off, RUN_BASE for where a run lives.
+A lane whose dependency is not submitted in this run needs its job id in
+DEP_<LANE>, or DEP_<LANE>=done if it has already finished.
+USAGE
+    exit 2
+}
+
 while (( $# )); do
     case "$1" in
-        --dry-run) DRY=1; shift ;;
-        --only)    ONLY="$2"; shift 2 ;;
-        --only=*)  ONLY="${1#*=}"; shift ;;
-        *) echo "usage: $(basename "$0") [--dry-run] [--only lane,lane]" >&2; exit 2 ;;
+        --dry-run)          DRY=1; shift ;;
+        --only)             ONLY="$2"; shift 2 ;;
+        --only=*)           ONLY="${1#*=}"; shift ;;
+        --candidates)       CANDIDATES="$2"; shift 2 ;;
+        --candidates=*)     CANDIDATES="${1#*=}"; shift ;;
+        --arch)             CAMPAIGN_ARCH="$2"; shift 2 ;;
+        --arch=*)           CAMPAIGN_ARCH="${1#*=}"; shift ;;
+        --gpu-quota)        GPU_QUOTA="$2"; shift 2 ;;
+        --gpu-quota=*)      GPU_QUOTA="${1#*=}"; shift ;;
+        --gpus-per-lane)    GPUS_PER_LANE="$2"; shift 2 ;;
+        --gpus-per-lane=*)  GPUS_PER_LANE="${1#*=}"; shift ;;
+        --lane)             LANE_PLAN+=("$2"); shift 2 ;;
+        --lane=*)           LANE_PLAN+=("${1#*=}"); shift ;;
+        --baseline-from)    BASELINE_FROM="$2"; shift 2 ;;
+        --baseline-from=*)  BASELINE_FROM="${1#*=}"; shift ;;
+        --suite-version)    CAMPAIGN_SUITE_VERSION="$2"; shift 2 ;;
+        --suite-version=*)  CAMPAIGN_SUITE_VERSION="${1#*=}"; shift ;;
+        -h|--help)          campaign_usage ;;
+        *) echo "unknown argument: $1" >&2; campaign_usage ;;
     esac
 done
+
+is_positive() { [[ "$1" =~ ^[1-9][0-9]*$ ]]; }
+
+[[ -n "$CANDIDATES" ]] || { echo "--candidates is required" >&2; campaign_usage; }
+[[ -n "$CAMPAIGN_ARCH" ]] || { echo "--arch is required" >&2; campaign_usage; }
+is_positive "${GPU_QUOTA:-}" || { echo "--gpu-quota must be a positive integer" >&2; campaign_usage; }
+is_positive "$GPUS_PER_LANE" || { echo "--gpus-per-lane must be a positive integer" >&2; campaign_usage; }
+
+# How many lanes may be in flight. A quota smaller than one lane is a mistake
+# worth failing on: it would either hold more than was granted or nothing at all.
+SLOTS=$(( GPU_QUOTA / GPUS_PER_LANE ))
+if (( SLOTS < 1 )); then
+    echo "a quota of $GPU_QUOTA GPUs cannot run a lane of $GPUS_PER_LANE" >&2
+    exit 2
+fi
+
+# Both batches of the protocol, at walltimes well above the measurement: six
+# suites against a dequantized FP8 baseline took a measured 6h+ on A100 and was
+# killed at a six-hour limit, and RULER is one suite but a long-context one. An
+# overrun costs the whole lane where a generous limit costs scheduling priority.
+if (( ${#LANE_PLAN[@]} == 0 )); then
+    LANE_PLAN=("short-context=12:00:00" "long-context=10:00:00")
+fi
 
 # Lane ids are held in LANE_ID_<lane> rather than an associative array, and the
 # variable names are built with tr rather than ${x^^}: both of those are bash 4,
 # and the shell a developer runs the tests under is not the shell the cluster
 # runs the campaign under. macOS is still on 3.2.
 declare -a LANE_ORDER=()
+SUBMITTED=0
 
 lane_var() { # lane_var <lane> [prefix]  -> the variable holding its job id
     printf '%s%s' "${2:-LANE_ID_}" "$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"
@@ -70,11 +167,11 @@ lane_id() {
     return 1
 }
 
-# A dependency names lanes rather than job ids: "afterok:@baseline-ruler" or
-# "afterok:@baseline-ruler,singleton". Resolving it here, after the lane is
-# known to be selected, is what lets --only name a lane whose siblings are
-# already in flight. Resolving eagerly in the campaign file instead meant
-# --only cyan-short died on a dependency belonging to a lane it was skipping.
+# A dependency names lanes rather than job ids: "afterok:@fp8-long-context".
+# Resolving it here, after the lane is known to be selected, is what lets --only
+# name a lane whose siblings are already in flight. Resolving eagerly in the
+# campaign file instead meant --only cyankiwi-short-context died on a dependency
+# belonging to a lane it was skipping.
 resolve_dep() {
     local spec="$1" name id term out=() terms=()
     IFS=',' read -ra terms <<< "$spec"
@@ -94,41 +191,39 @@ resolve_dep() {
     printf '%s' "$(IFS=,; echo "${out[*]-}")"
 }
 
-# lane <quant> <suffix|""> <walltime> <dependency|""> <KEY=VALUE>...
+# lane <quant> <batch|""> <walltime> <dependency|""> <KEY=VALUE>...
 #
-# Every job this repository submits is named
-#   <prefix>-<quant>-<suite version>-<arch>[-<suffix>]
-# so that one glance at squeue says which checkpoint is being scored and on
-# what. The lane key -- what --only and dependencies refer to -- is the short
-# "<quant>-<suffix>" and never appears in slurm.
-#
-# CAMPAIGN_JOB_NAME, if set, overrides the job name so that every lane shares
-# one and --dependency=singleton can serialise them; slurm keys singleton on the
-# name and nothing else. The scheme is then carried by the output file and by
-# --comment, which squeue prints with %k, so the lanes stay tellable apart.
+# The lane key -- what --only and dependencies refer to -- is "<quant>-<batch>".
+# The slurm job name is a slot, shared by every lane the quota puts behind the
+# same one, because --dependency=singleton keys on the name and nothing else. So
+# what a job is measuring is carried by its output file,
+#   <prefix>-<quant>-<suite version>-<arch>[-<batch>]-<jobid>.out
+# and by --comment, which squeue prints with %k.
 lane() {
-    local quant="$1" suffix="$2" walltime="$3" dep="$4"
+    local quant="$1" batch="$2" walltime="$3" dep="$4"
     shift 4
-    local key="$quant${suffix:+-$suffix}"
+    local key="$quant${batch:+-$batch}"
     if ! lane_selected "$key"; then
-        printf 'lane %-22s skipped (not in --only)\n' "$key" >&2
+        printf 'lane %-28s skipped (not in --only)\n' "$key" >&2
         return 0
     fi
     dep="$(resolve_dep "$dep")" || exit 1
     LANE_ORDER+=("$key")
 
-    local scheme="${CAMPAIGN_JOB_PREFIX:?set CAMPAIGN_JOB_PREFIX}-$quant"
-    scheme="$scheme-${CAMPAIGN_SUITE_VERSION:-v1}-${CAMPAIGN_ARCH:?set CAMPAIGN_ARCH}"
-    scheme="$scheme${suffix:+-$suffix}"
+    local scheme="$CAMPAIGN_JOB_PREFIX-$quant-$CAMPAIGN_SUITE_VERSION-$CAMPAIGN_ARCH"
+    scheme="$scheme${batch:+-$batch}"
+    local slot="$CAMPAIGN_JOB_PREFIX-$CAMPAIGN_ARCH-s$(( SUBMITTED % SLOTS ))"
+    SUBMITTED=$(( SUBMITTED + 1 ))
+    dep="${dep:+$dep,}singleton"
 
     local exports
-    exports="$(IFS=,; echo "$*")"
+    exports="$(IFS=,; echo "$*"),PAIRED_DP=$GPUS_PER_LANE"
     local args=(--commit "$COMMIT" --export "$exports"
                 --time "$walltime" --parsable
-                --output "slurm-logs/$scheme-%j.out" --comment "$key")
-    args+=(--job-name "${CAMPAIGN_JOB_NAME:-$scheme}")
-    [[ -n "${CAMPAIGN_EXCLUDE:-}" ]] && args+=(--exclude "$CAMPAIGN_EXCLUDE")
-    [[ -n "$dep" ]] && args+=(--dependency "$dep")
+                --output "slurm-logs/$scheme-%j.out" --comment "$key"
+                --job-name "$slot" --gres "gpu:$GPUS_PER_LANE"
+                --dependency "$dep")
+    [[ -n "$CAMPAIGN_EXCLUDE" ]] && args+=(--exclude "$CAMPAIGN_EXCLUDE")
 
     # A dry run goes through submit-paired.sh too rather than printing what this
     # script believes it would do. The interesting mistakes are in the checkout,
@@ -146,16 +241,17 @@ lane() {
         id="$(printf '%s\n' "$out" | grep -xE '[0-9]+' | tail -n1)"
     fi
     printf -v "$(lane_var "$key")" '%s' "$id"
-    printf 'lane %-22s %s  %-9s dep=%-24s %s\n' \
-        "$key" "$id" "$walltime" "${dep:-none}" "$scheme" >&2
+    printf 'lane %-28s %s  %-9s %s dep=%s\n' \
+        "$key" "$id" "$walltime" "$slot" "$dep" >&2
 }
 
 campaign_summary() {
     local name var
     echo >&2
     echo "submitted at commit $COMMIT" >&2
+    echo "$SUBMITTED lanes over $SLOTS slot(s) of $GPUS_PER_LANE GPUs" >&2
     for name in ${LANE_ORDER[@]+"${LANE_ORDER[@]}"}; do
         var="$(lane_var "$name")"
-        printf '  %-22s %s\n' "$name" "${!var}" >&2
+        printf '  %-28s %s\n' "$name" "${!var}" >&2
     done
 }

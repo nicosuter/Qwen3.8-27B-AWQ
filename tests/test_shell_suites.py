@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SUITES = (
     ("tests/test_paired_suite_lanes.sh", "eval/slurm/paired-suite-eval.sbatch"),
     ("tests/test_campaign_lib.sh", "eval/slurm/campaign-lib.sh"),
+    ("tests/test_campaign.sh", "eval/slurm/campaign.sh"),
 )
 
 
