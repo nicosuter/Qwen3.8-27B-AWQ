@@ -3,7 +3,7 @@
 #
 #   bash quant/scripts/submit_quantize.sh 8
 #   bash quant/scripts/submit_quantize.sh 8 --gdn-in-proj=source
-#   bash quant/scripts/submit_quantize.sh 8 --gdn-in-proj=fp8 --algorithm=awq+gptq
+#   bash quant/scripts/submit_quantize.sh 4 --gdn-in-proj=int4 --algorithm=awq+gptq
 #
 # --algorithm chooses how weights are rounded once AWQ has scaled activations.
 # awq rounds each weight to the nearest representable value on its own;
@@ -44,6 +44,7 @@ usage() {
     echo "  --gdn-in-proj  what linear_attn.in_proj_qkv and in_proj_z are built at:" >&2
     echo "         $(gdn --modes) (default $(gdn))" >&2
     echo "         quant/scripts/gdn_in_proj.py says what each one means" >&2
+    echo "  --cpus-per-gpu N  cores per GPU (16); the total scales with NGPUS" >&2
     echo "                                      [--dependency=SPEC] [--time=HH:MM:SS]" >&2
     exit 2
 }
@@ -57,6 +58,12 @@ esac
 
 GDN_IN_PROJ_PRECISION=""
 ALGORITHM=awq
+# The job header asks for 64 cores because it was written for a whole-node,
+# eight-GPU run. Asking for the same 64 while using two GPUs is half a shared
+# node's CPU for a quarter of its GPUs, and CPU is a consumable resource where
+# host memory here is not -- so this is the request that can actually keep
+# somebody else's job pending. Scaled with the GPU count instead.
+CPUS_PER_GPU=16
 OUTPUT_DIR=""
 DEPENDENCY=""
 # The job header reserves 24h for a full prepare-and-quantize. A requant is
@@ -75,6 +82,7 @@ for arg in "$@"; do
                 *) echo "--algorithm must be awq or awq+gptq, got: $ALGORITHM" >&2; exit 2 ;;
             esac
             ;;
+        --cpus-per-gpu=*) CPUS_PER_GPU="${arg#*=}" ;;
         --output-dir=*) OUTPUT_DIR="${arg#*=}" ;;
         -h | --help) usage ;;
         *) echo "unknown argument: $arg" >&2; usage ;;
@@ -100,7 +108,12 @@ if [[ -e "$OUTPUT_DIR/config.json" ]]; then
     exit 3
 fi
 
+is_positive() { [[ "$1" =~ ^[1-9][0-9]*$ ]]; }
+is_positive "$CPUS_PER_GPU" || { echo "--cpus-per-gpu must be a positive integer" >&2; exit 2; }
+CPUS=$(( NGPUS * CPUS_PER_GPU ))
+
 echo "gpus           : $NGPUS"
+echo "cpus           : $CPUS ($CPUS_PER_GPU per gpu)"
 echo "gdn in_proj    : $GDN_IN_PROJ_PRECISION"
 echo "algorithm      : $ALGORITHM"
 echo "output         : $OUTPUT_DIR"
@@ -109,6 +122,7 @@ echo "output         : $OUTPUT_DIR"
 
 exec sbatch \
     --gres="gpu:$NGPUS" \
+    --cpus-per-task="$CPUS" \
     ${DEPENDENCY:+--dependency="$DEPENDENCY"} \
     ${TIME_LIMIT:+--time="$TIME_LIMIT"} \
     --export="ALL,GDN_IN_PROJ_PRECISION=$GDN_IN_PROJ_PRECISION,QUANT_ALGORITHM=$ALGORITHM,OUTPUT_DIR=$OUTPUT_DIR" \
