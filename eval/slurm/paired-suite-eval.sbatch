@@ -129,7 +129,12 @@ case "$GPU_NAME" in
         ;;
 esac
 TIMEOUT_SCALE="${PAIRED_TIMEOUT_SCALE:-$TIMEOUT_SCALE_DEFAULT}"
-echo "gpu=${GPU_NAME:-unknown} timeout-scale=$TIMEOUT_SCALE"
+# Not for selecting a device -- for recording what the device will actually do
+# with the checkpoint. A card below sm_89 silently serves declared FP8
+# activations as weight-only, so the results describe numerics the checkpoint
+# does not have, and the descriptor has to say so.
+GPU_CAPABILITY="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 || true)"
+echo "gpu=${GPU_NAME:-unknown} capability=${GPU_CAPABILITY:-unknown} timeout-scale=$TIMEOUT_SCALE"
 # Every suite is one wave of requests trailed by a long tail: gpqa averaged 37 of
 # 192 streams busy because a single 100k-token reply outlived the other 197, and
 # multimodal spent 485 of its 502 seconds on one runaway item. Scoring jobs
@@ -240,12 +245,33 @@ test -s "$BASELINE_DIR/config.json"
 # which weights produced it. Several checkpoints sit side by side under v2/ and
 # OUTPUT_DIR has a default, so a submit that forgets to set it silently scores
 # the wrong one. Fingerprint both now, print them, and keep them with the run.
-BASELINE_INFO="$("$PYTHON" eval/scripts/checkpoint_fingerprint.py "$BASELINE_DIR" --label baseline)"
-CANDIDATE_INFO="$("$PYTHON" eval/scripts/checkpoint_fingerprint.py "$OUTPUT_DIR" --label candidate)"
+CAPABILITY_ARG=(${GPU_CAPABILITY:+--compute-capability "$GPU_CAPABILITY"})
+BASELINE_INFO="$("$PYTHON" eval/scripts/checkpoint_fingerprint.py "$BASELINE_DIR" --label baseline "${CAPABILITY_ARG[@]}")"
+CANDIDATE_INFO="$("$PYTHON" eval/scripts/checkpoint_fingerprint.py "$OUTPUT_DIR" --label candidate "${CAPABILITY_ARG[@]}")"
 mkdir -p "$RUN_DIR"
 printf '%s\n%s\n' "$BASELINE_INFO" "$CANDIDATE_INFO" > "$RUN_DIR/checkpoints.jsonl"
 echo "baseline-checkpoint=$BASELINE_INFO"
 echo "candidate-checkpoint=$CANDIDATE_INFO"
+# Reported, not refused. A tainted run is still a paired measurement of what
+# this hardware serves, and on the serving hardware it is the more relevant one;
+# what it is not is a measurement of the checkpoint as declared. That
+# distinction belongs to whoever reads the result, so it is stated here and
+# carried in every suite's metadata rather than being turned into an exit code.
+printf '%s\n%s\n' "$BASELINE_INFO" "$CANDIDATE_INFO" | "$PYTHON" -c '
+import json, sys
+
+for line in sys.stdin:
+    info = json.loads(line)
+    for taint in info.get("activation_taint") or []:
+        print(
+            f"TAINT {info[\"label\"]}: {info[\"path\"].split(\"/\")[-1]} declares"
+            f" {taint[\"declared\"]} on {taint[\"group\"]}, and this device"
+            f" (capability {taint[\"capability\"]}, needs"
+            f" {taint[\"requires_capability\"]}) serves them as"
+            f" {taint[\"served_as\"]}. The run measures what is served.",
+            file=sys.stderr,
+        )
+'
 
 # The checkpoint is fingerprinted but the code that scored it was not, and this
 # harness decides lane structure, timeouts, reuse and the gate arithmetic. A

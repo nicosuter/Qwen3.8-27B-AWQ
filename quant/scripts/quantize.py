@@ -24,6 +24,13 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
 from distributed_lifecycle import run_rank0_after_group_teardown
+from gdn_precision import (
+    DEFAULT_GDN_PRECISION,
+    FOUR_BIT_TARGETS,
+    GDN_PRECISIONS,
+    GDN_TARGETS,
+    gdn_plan,
+)
 from preserve_mtp import (
     QWEN38_MTP_KEYS,
     QWEN38_MTP_LINEAR_MODULES,
@@ -42,9 +49,16 @@ OUTPUT_DIR = Path(
     os.environ.get("OUTPUT_DIR", "artifacts/Qwen3.8-27B-AWQ")
 ).resolve()
 MAX_LENGTH = int(os.environ.get("MAX_SEQ_LENGTH", "4096"))
-# "source" keeps the Gated DeltaNet input projections in BF16; "fp8" quantizes
-# them the way Qwen's own FP8 release does. Everything else is W4A16 either way.
-GDN_PRECISION = os.environ.get("GDN_PRECISION", "source")
+# What the Gated DeltaNet input projections are built at; see gdn_precision.py
+# for what each mode means and why the set is four rather than a boolean.
+# Validated here rather than at first use: until this check existed, any value
+# that was not "source" selected FP8, so a typo shipped the most aggressive mode
+# in the set and recorded itself in run-metadata as whatever was misspelled.
+GDN_PRECISION = os.environ.get("GDN_PRECISION", DEFAULT_GDN_PRECISION)
+if GDN_PRECISION not in GDN_PRECISIONS:
+    raise SystemExit(
+        f"GDN_PRECISION must be one of {', '.join(GDN_PRECISIONS)}; got {GDN_PRECISION!r}"
+    )
 # "awq" scales activations, then rounds each weight to the nearest representable
 # value independently. "awq+gptq" keeps the scaling and replaces the rounding
 # with GPTQ, which pushes each column's rounding error into the columns it has
@@ -382,30 +396,21 @@ def main() -> None:
         "re:.*linear_attn.in_proj_a$",
         "re:.*linear_attn.in_proj_b$",
     ]
-    # Targets are listed explicitly rather than as "Linear" so the two schemes
-    # cannot overlap on a module, and so a projection that is neither 4-bit nor
-    # 8-bit shows up as a drop in the packed-tensor count rather than silently
-    # staying in source precision.
-    four_bit_targets = [
-        "re:.*mlp\\.(gate|up|down)_proj$",
-        "re:.*self_attn\\.(q|k|v|o)_proj$",
-        "re:.*linear_attn\\.out_proj$",
-    ]
-    gdn_targets = [
-        "re:.*linear_attn\\.in_proj_qkv$",
-        "re:.*linear_attn\\.in_proj_z$",
-    ]
-    if GDN_PRECISION == "source":
-        ignores.extend(gdn_targets)
-        config_groups = {"group_0": preset_name_to_scheme("W4A16_ASYM", four_bit_targets)}
-    else:
+    plan = gdn_plan(GDN_PRECISION)
+    ignores.extend(plan["ignore"])
+    config_groups = {
+        "group_0": preset_name_to_scheme(
+            "W4A16_ASYM", list(FOUR_BIT_TARGETS) + list(plan["four_bit"])
+        )
+    }
+    if plan["own_group"]:
         # FP8_BLOCK is what Qwen's own FP8 release applies to these projections:
-        # e4m3, 128x128 blocks, dynamic activations. Eight bits on the recurrent
-        # path is a different proposition from four.
-        config_groups = {
-            "group_0": preset_name_to_scheme("W4A16_ASYM", four_bit_targets),
-            "group_1": preset_name_to_scheme("FP8_BLOCK", gdn_targets),
-        }
+        # e4m3, 128x128 blocks, dynamic activations. Dropping the activations
+        # leaves W8A16-FP8, which is what the serving hardware runs either way.
+        scheme = preset_name_to_scheme(plan["own_group"], list(GDN_TARGETS))
+        if not plan["quantize_activations"]:
+            scheme = scheme.model_copy(update={"input_activations": None})
+        config_groups["group_1"] = scheme
     mappings = [
         AWQMapping(
             "re:.*post_attention_layernorm$",

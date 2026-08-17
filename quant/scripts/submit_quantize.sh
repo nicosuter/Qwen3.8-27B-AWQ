@@ -2,8 +2,8 @@
 # Submit a quantization run.
 #
 #   bash quant/scripts/submit_quantize.sh 8
-#   bash quant/scripts/submit_quantize.sh 8 --fp8-gdn=true
-#   bash quant/scripts/submit_quantize.sh 8 --fp8-gdn=true --algorithm=awq+gptq
+#   bash quant/scripts/submit_quantize.sh 8 --gdn=int4
+#   bash quant/scripts/submit_quantize.sh 8 --gdn=fp8 --algorithm=awq+gptq
 #
 # --algorithm chooses how weights are rounded once AWQ has scaled activations.
 # awq rounds each weight to the nearest representable value on its own;
@@ -11,19 +11,33 @@
 # quantized, correcting the layer output instead. GPTQ costs roughly two to
 # three times the runtime and writes to its own directory so both survive.
 #
-# --fp8-gdn selects what happens to the Gated DeltaNet input projections,
+# --gdn selects what happens to the Gated DeltaNet input projections,
 # in_proj_qkv and in_proj_z, which are 4.0B parameters and most of the
-# checkpoint's size. false keeps them in source precision; true quantizes them
-# with FP8_BLOCK, the scheme Qwen's own FP8 release applies to those same
-# layers. Everything else is W4A16 either way.
+# checkpoint's size. Everything else is W4A16 in every mode. It used to be a
+# --fp8-gdn boolean, which could only express the two ends of what turned out to
+# be a four-way choice: the useful modes are int4, which is what the third-party
+# releases that quantize this path at all use, and fp8-a16, which is what the
+# serving hardware executes when handed the fp8 build. See gdn_precision.py.
 #
-# The two variants write to different directories so both can exist while both
-# are evaluated.
+# Every build writes to its own directory so they can all exist while they are
+# being compared, which is the only way to attribute a difference to one of
+# them.
 set -euo pipefail
 
+# The mode list, its validation and the directory a mode writes to all come from
+# the module the job itself imports, so the submitter and the job cannot
+# disagree about what a mode means or where it lands. A shell script repeating
+# the list is one that accepts a mode the job then rejects, an hour into a
+# reservation.
+GDN_MODULE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gdn_precision.py"
+gdn() { python3 "$GDN_MODULE" "$@"; }
+
 usage() {
-    echo "usage: bash quant/scripts/submit_quantize.sh NGPUS [--fp8-gdn=true|false] [--output-dir=PATH]" >&2
+    echo "usage: bash quant/scripts/submit_quantize.sh NGPUS [--gdn=MODE] [--output-dir=PATH]" >&2
     echo "                                      [--algorithm=awq|awq+gptq]" >&2
+    echo "  --gdn  what the Gated DeltaNet input projections are built at:" >&2
+    echo "         $(gdn --modes) (default source)" >&2
+    echo "         quant/scripts/gdn_precision.py says what each one means" >&2
     echo "                                      [--dependency=SPEC] [--time=HH:MM:SS]" >&2
     exit 2
 }
@@ -35,7 +49,7 @@ case "$NGPUS" in
     *[!0-9]* | 0) echo "NGPUS must be a positive integer, got: $NGPUS" >&2; exit 2 ;;
 esac
 
-FP8_GDN=false
+GDN_PRECISION=""
 ALGORITHM=awq
 OUTPUT_DIR=""
 DEPENDENCY=""
@@ -47,13 +61,7 @@ for arg in "$@"; do
     case "$arg" in
         --dependency=*) DEPENDENCY="${arg#*=}" ;;
         --time=*) TIME_LIMIT="${arg#*=}" ;;
-        --fp8-gdn=*)
-            FP8_GDN="${arg#*=}"
-            case "$FP8_GDN" in
-                true | false) ;;
-                *) echo "--fp8-gdn must be true or false, got: $FP8_GDN" >&2; exit 2 ;;
-            esac
-            ;;
+        --gdn=*) GDN_PRECISION="${arg#*=}" ;;
         --algorithm=*)
             ALGORITHM="${arg#*=}"
             case "$ALGORITHM" in
@@ -67,16 +75,11 @@ for arg in "$@"; do
     esac
 done
 
-if [[ "$FP8_GDN" == "true" ]]; then
-    GDN_PRECISION=fp8
-    DEFAULT_SUFFIX="-fp8gdn"
-else
-    GDN_PRECISION=source
-    DEFAULT_SUFFIX=""
-fi
-# The algorithm leaves config.json untouched, so without a distinct directory an
-# AWQ+GPTQ build and an AWQ one differ only in their weights.
-[[ "$ALGORITHM" == "awq+gptq" ]] && DEFAULT_SUFFIX="$DEFAULT_SUFFIX-gptq"
+# Rejected here rather than in the job: an invalid mode should cost a shell
+# prompt, not a queued reservation. The suffix comes from the same call, so the
+# algorithm and the mode cannot both claim the same directory.
+GDN_PRECISION="$(gdn "$GDN_PRECISION")" || exit 2
+DEFAULT_SUFFIX="$(gdn "$GDN_PRECISION" --algorithm "$ALGORITHM" --suffix)"
 
 # Resolve the default output directory the same way the job would, so the two
 # variants cannot overwrite each other by accident.

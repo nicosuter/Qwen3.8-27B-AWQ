@@ -111,4 +111,27 @@ COMPARISON="$RUN_DIR/comparisons/$RUN_STAMP-job$COMPARISON_TAG.json"
 if [[ -s "$COMPARISON" ]]; then
     ln -sfn "comparisons/$(basename "$COMPARISON")" "$RUN_DIR/comparison.json"
 fi
+
+# Repeated after the verdict, because the verdict is the part that gets quoted.
+# A recovery figure measured where the server would not perform the checkpoint's
+# declared activation quantization is a figure about what ran, not about what
+# was built, and the two only diverge on some hardware -- so the same checkpoint
+# scored in two lanes can produce two honest and different answers.
+if [[ -s "$RUN_DIR/checkpoints.jsonl" ]]; then
+    "$PYTHON" - "$RUN_DIR/checkpoints.jsonl" <<'PY'
+import json, sys
+
+for line in open(sys.argv[1], encoding="utf-8"):
+    if not line.strip():
+        continue
+    info = json.loads(line)
+    for taint in info.get("activation_taint") or []:
+        print(
+            f"TAINT {info['label']}: declared {taint['declared']} on"
+            f" {taint['group']} were served as {taint['served_as']}"
+            f" (device capability {taint['capability']}, needs"
+            f" {taint['requires_capability']})"
+        )
+PY
+fi
 echo "comparison=$COMPARISON"
