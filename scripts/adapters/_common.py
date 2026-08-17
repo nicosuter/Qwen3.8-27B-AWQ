@@ -153,10 +153,9 @@ def build_payload(
     # Derive the seed from the prompt so a run stays reproducible while items
     # stay independent of one another.
     digest = hashlib.sha256(f"{seed}:{text}".encode("utf-8")).digest()
-    return {
+    payload = {
         "model": model,
         "messages": [{"role": "user", "content": f"{text}\n\n{instruction}"}],
-        "max_tokens": max_tokens,
         "seed": int.from_bytes(digest[:4], "big"),
         "temperature": generation["temperature"],
         "top_p": generation["top_p"],
@@ -166,6 +165,18 @@ def build_payload(
         "repetition_penalty": generation["repetition_penalty"],
         "chat_template_kwargs": template_kwargs,
     }
+    # max_tokens <= 0 means "whatever is left of the context window", which is
+    # what the server does when the field is absent. It is not a convenience:
+    # nothing tells the model what its budget is -- the API does not carry it
+    # and the prompt does not mention it -- so the model cannot spend against
+    # one. Under a 131072 cap, nine of the ten truncated MathArena items had
+    # spent 131072 tokens on reasoning and emitted zero answer tokens. A cap
+    # therefore does not buy a shorter answer, it buys no answer, and it costs
+    # the arm that reasons longer roughly twice as often, which is exactly the
+    # arm under test.
+    if max_tokens > 0:
+        payload["max_tokens"] = max_tokens
+    return payload
 
 
 def post_chat(

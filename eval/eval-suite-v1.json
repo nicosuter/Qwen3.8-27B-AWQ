@@ -10,7 +10,8 @@
       "hle": "Secondary: judged, so it sets no per-suite floor.",
       "aa_lcr": "Never part of the protocol; ran as a diagnostic.",
       "aa_omniscience": "Never part of the protocol; ran as a diagnostic."
-    }
+    },
+    "token_budget": "Suites cap the response at 131072 tokens; MathArena does not cap it at all (--max-tokens 0 sends no cap, so the server allows the rest of the context window). Nothing tells the model what its budget is -- neither the API nor the prompt carries it -- so it cannot spend against one. Under the 131072 cap, nine of MathArena's ten truncated candidate items had put all 131072 tokens into reasoning and emitted no answer at all, so the cap bought no answer rather than a shorter one. It bound 13.0% of candidate items against 7.8% of baseline ones, penalising the arm that reasons longer, which is the arm under test. The other suites keep the cap because it never came close to binding: median output is 208 tokens on bfcl_v4, 2201 on mmmu_pro and 90 on multimodal, against a cap three orders of magnitude away."
   },
   "served_model_name": "qwen38-eval",
   "order_seed": 38027,
@@ -31,7 +32,7 @@
         "dataset": "61fc0608cfd831fcfbbaa676ebdfef0ed963eeda",
         "harness": "builtin-bfcl-ast-v1",
         "verifier": "bfcl-ast-match-v1",
-        "adapter": "sha256:218c075b89fb78f36e88b1ac95fca29f78bcf03387cb63ab3047abb3190f28fe"
+        "adapter": "sha256:8721e2a8dab454ea41c35ff32abb91bb2deccf0121ab96a337bd026654891fa7"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -57,7 +58,7 @@
         "dataset": "633f5ee89ab8ad4522a9f850766b73f62147ffdd",
         "harness": "builtin-gpqa-mcq-v1",
         "verifier": "exact-choice-v1",
-        "adapter": "sha256:b864ae05c34d8f07579cff3ba2a81a61bcb91435600380b92a9a3442d6f9f206"
+        "adapter": "sha256:8a4282e7003a2669dc152a54247b3a816d1b180506724bf6b10fe4c1faa80c5d"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -85,7 +86,7 @@
         "dataset": "0fe84c3912ea0c4d4a78037083943e8f0c4dd505",
         "harness": "builtin-lcb-exec-v1",
         "verifier": "stdin-and-functional-exec-v1",
-        "adapter": "sha256:cc80dfbeadd5558b58096d69d9f8f89b5fcce3513725dafa1eda9ce5f03dab3e"
+        "adapter": "sha256:71d84ddee36048836e7493fb6e41f2f3835704c9e0f2fe6fa088cfde9b8c89e4"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -114,7 +115,7 @@
         "dataset": "MathArena/aime_2026@d2de22f3c656b4f56cf8981212186377d1e23bc3,MathArena/apex-shortlist@f3efdf224ef665f129ddaae37699f6098c65781b",
         "harness": "builtin-matharena-exact-v1",
         "verifier": "exact-integer-answer-v1",
-        "adapter": "sha256:5994dd409f084e522dda67cb20e7639dc38e5eaa41b0ce82ea4711c80e79ccf2"
+        "adapter": "sha256:b46cbd1c20d5f97846995d727be20848805a5b13739740e3ac7e0bca5b3ec5d4"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -128,7 +129,7 @@
         "--concurrency",
         "64",
         "--max-tokens",
-        "131072",
+        "0",
         "--request-timeout",
         "5400"
       ],
@@ -140,7 +141,7 @@
         "dataset": "563f3e84bb3b90893083a1f039cfa13077f2302b",
         "harness": "builtin-mmmu-pro-mcq-v1",
         "verifier": "exact-choice-v1",
-        "adapter": "sha256:ff7f4bf4707d6ec31abd6f89f9c32382f74da2c0162ef4149d0e6e4ab728e7f3"
+        "adapter": "sha256:7bd58b89439190bb2b0cbdbe191557cbb126340bf8524f23bdd84c8dce1addbd"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -166,7 +167,7 @@
         "dataset": "lmms-lab/DocVQA@539088ef8a8ada01ac8e2e6d4e372586748a265e,lmms-lab/ChartQA@9e63b7df1592a1c2158e735cc1725454aef0d6d9,lmms-lab/textvqa@9c0699cd19768ac5ab97568f6b3cbac4c0062884",
         "harness": "builtin-vqa-v1",
         "verifier": "anls-relaxed-vqa-v1",
-        "adapter": "sha256:2a52fa156a668ce9c040f06a4993ca530576f642bcec62de1aefaa49fc5b39aa"
+        "adapter": "sha256:2bec3b4b2dbbe7f5478c80842de51f022939e7b0ffef90b72ee1b966ba1cf229"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -194,7 +195,7 @@
         "dataset": "sha256:632a63b0ccd60b992c263937e996f462bc43bc0e87c0b22d7edcea0d5aaa8540",
         "harness": "builtin-ruler-synth-v1",
         "verifier": "recall-string-match-v1",
-        "adapter": "sha256:dffa35e9e0067060bd9849c84eb6150d278124b9cbb9ba03c9c59e75c759e1df"
+        "adapter": "sha256:f317c6e41c241080131ba51ce875b560ea611116773a45d11826ce57d960b6ec"
       },
       "prepare": [
         "${EVAL_PYTHON}",

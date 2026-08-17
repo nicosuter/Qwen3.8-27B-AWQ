@@ -381,6 +381,17 @@ if have_fingerprint != want_fingerprint:
     sys.exit(1)
 
 # The cap decides what was measured, so it has to match exactly.
+#
+# It is tempting to relax this the way the timeout check below is relaxed -- a
+# cap no item reached did not bind, so why rescore? Two reasons. Removing
+# max_tokens changes admission control and KV preallocation, so it changes batch
+# composition and therefore the order of floating-point reductions; the results
+# are the same in distribution but not identical, and the timeout argument is an
+# identity argument. And "no item reached it" is a property of one draw rather
+# than of the distribution: MathArena's p90 output length sat exactly at the
+# 131072 cap, so keeping the draws that happened to fit and rescoring the ones
+# that did not would select on the outcome, biasing what is kept toward shorter
+# reasoning -- the axis the two arms actually differ on.
 if "--max-tokens" in run:
     want = float(run[run.index("--max-tokens") + 1])
     have = recorded.get("max_tokens")
