@@ -27,7 +27,8 @@
     },
     "philbert": {
       "repo": "philbert440/Qwen3.8-27B-W4A16-AWQ",
-      "revision": "7908d42a71077a5e4dc458f273682b12dfe384a0"
+      "revision": "7908d42a71077a5e4dc458f273682b12dfe384a0",
+      "run_dir": "eval-suite-v1-philbert"
     },
     "barry": {
       "repo": "barrydeen/Qwen3.8-27B-AWQ-4bit",
