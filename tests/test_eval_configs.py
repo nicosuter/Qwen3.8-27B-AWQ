@@ -228,13 +228,19 @@ class NarrowExpansionTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)
-        self.previous = os.environ.get("EVAL_CORPUS")
+        # Both are restored: EVAL_PYTHON used to be left pointing at an
+        # interpreter that does not exist, which every later test running a
+        # shell out of this process then inherited.
+        self.previous = {key: os.environ.get(key) for key in ("EVAL_CORPUS", "EVAL_PYTHON")}
         os.environ.pop("EVAL_CORPUS", None)
         os.environ["EVAL_PYTHON"] = "/venv/bin/python"
 
     def tearDown(self) -> None:
-        if self.previous is not None:
-            os.environ["EVAL_CORPUS"] = self.previous
+        for key, value in self.previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def test_a_suite_is_held_only_to_the_variables_it_names(self) -> None:
         loaded = runner.load_config(self.config(self.dir), "plain")
