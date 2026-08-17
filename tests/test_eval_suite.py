@@ -10,6 +10,7 @@ never part of. Both directions are tested here.
 
 import importlib.util
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -249,3 +250,30 @@ class InterpreterCompatibilityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DefaultVersionTests(unittest.TestCase):
+    """Four shell entry points hardcode the default; they must not drift from it.
+
+    The version lives in two languages. eval_suite.DEFAULT_VERSION is what every
+    python caller gets, and each sbatch spells its own `${PAIRED_EVAL_SUITE:-vN}`
+    because shell cannot import. Bumping one and not the others would have a job
+    score the previous protocol while the comparator checked it against the
+    current one.
+    """
+
+    SHELL = (
+        "slurm/paired-suite-eval.sbatch",
+        "slurm/prepare-eval.sbatch",
+        "slurm/score-deferred.sbatch",
+        "scripts/compare_run_dir.sh",
+    )
+
+    def test_the_shell_defaults_match_the_python_default(self) -> None:
+        want = eval_suite.DEFAULT_VERSION
+        for name in self.SHELL:
+            with self.subTest(entry=name):
+                text = (ROOT / name).read_text(encoding="utf-8")
+                found = re.findall(r"(?:PAIRED_EVAL_SUITE|EVAL_SUITE_VERSION):-(v\d+)", text)
+                self.assertTrue(found, f"{name} names no default suite version")
+                self.assertEqual(set(found), {want})

@@ -30,7 +30,7 @@ cd "$PROJECT_DIR"
 source ./scripts/load_env.sh
 
 RUN_DIR="${PAIRED_RUN_DIR:?set PAIRED_RUN_DIR to the run directory to score}"
-EVAL_SUITE_VERSION="${PAIRED_EVAL_SUITE:-v1}"
+EVAL_SUITE_VERSION="${PAIRED_EVAL_SUITE:-v2}"
 SUITE="${PAIRED_DEFERRED_SUITE:-livecodebench_v6}"
 REPLICATES="${PAIRED_REPLICATES:-1}"
 # Same convention as the other entry points: EVAL_VENV names the environment and

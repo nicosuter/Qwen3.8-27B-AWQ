@@ -58,7 +58,7 @@ CONFIG="${PAIRED_CONFIG:-$PROJECT_DIR/eval/eval-suite-v1.json}"
 # rather than trusting the string is the point: a typo, or a suite the protocol
 # never contained, used to reach the comparator and enter the macro silently.
 SUITES="${PAIRED_SUITES:-}"
-EVAL_SUITE_VERSION="${PAIRED_EVAL_SUITE:-v1}"
+EVAL_SUITE_VERSION="${PAIRED_EVAL_SUITE:-v2}"
 # PAIRED_BATCH names a plan entry from eval/batches.json, which is the recorded
 # way to run part of the protocol. PAIRED_SUITES stays for one-off lists.
 BATCH="${PAIRED_BATCH:-}"

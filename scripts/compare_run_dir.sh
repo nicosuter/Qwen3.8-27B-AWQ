@@ -22,7 +22,7 @@ set -euo pipefail
 
 RUN_DIR="${RUN_DIR:?set RUN_DIR to the run directory to compare}"
 PYTHON="${PYTHON:-python3}"
-EVAL_SUITE_VERSION="${EVAL_SUITE_VERSION:-v1}"
+EVAL_SUITE_VERSION="${EVAL_SUITE_VERSION:-v2}"
 EXCLUDE_SUITES="${EXCLUDE_SUITES:-}"
 ALLOW_PARTIAL="${ALLOW_PARTIAL:-0}"
 RUN_STAMP="${RUN_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"

@@ -27,7 +27,7 @@ cd "$PROJECT_DIR"
 source ./scripts/load_env.sh
 
 RUN_DIR="${PAIRED_RUN_DIR:?set PAIRED_RUN_DIR to the run directory to prepare}"
-EVAL_SUITE_VERSION="${PAIRED_EVAL_SUITE:-v1}"
+EVAL_SUITE_VERSION="${PAIRED_EVAL_SUITE:-v2}"
 CONFIG="${PAIRED_CONFIG:-$PROJECT_DIR/eval/eval-suite-$EVAL_SUITE_VERSION.json}"
 BATCH="${PAIRED_BATCH:-prepare}"
 # Same convention as paired-suite-eval.sbatch: EVAL_VENV names the environment,
