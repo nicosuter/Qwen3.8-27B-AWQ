@@ -45,6 +45,8 @@ with them quantized, and the one the scored Class A result belongs to. No mode
 reproduces it and no mode writes to its directory.
 """
 
+from __future__ import annotations
+
 import argparse
 import re
 import sys

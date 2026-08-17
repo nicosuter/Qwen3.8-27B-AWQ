@@ -236,12 +236,42 @@ class InterpreterCompatibilityTests(unittest.TestCase):
     sbatch called bare `python3` while the rest of the job used the venv.
     """
 
-    SHELLED_OUT = ("eval/scripts/eval_suite.py", "eval/scripts/bake_harbor_sifs.py")
+    def shelled_out_modules(self):
+        """Every module a shipped shell script runs with a bare `python3`.
+
+        Discovered rather than listed. The list version had two entries and did
+        not have quant/scripts/gdn_in_proj.py, which submit_quantize.sh runs to
+        validate its own flag -- so the submitter exited 2 on the cluster while
+        every test passed. Tests are excluded: they run under the developer's
+        interpreter, not the cluster's.
+        """
+        import re
+
+        modules = set()
+        shells = [
+            path
+            for pattern in ("*.sh", "*.sbatch")
+            for path in ROOT.rglob(pattern)
+            if ".git" not in path.parts and "tests" not in path.parts
+        ]
+        for shell in shells:
+            source = shell.read_text(encoding="utf-8", errors="replace")
+            # A bare `python3 something`, not "${EVAL_PYTHON:-python3}" and not
+            # `python3 -c`, which carries its own source and imports nothing.
+            if not re.search(r"(?<![:{-])\bpython3\s+(?!-)", source):
+                continue
+            for match in re.findall(r"[\w./${}-]*\.py\b", source):
+                for found in ROOT.rglob(match.split("/")[-1]):
+                    if "__pycache__" not in found.parts and ".git" not in found.parts:
+                        modules.add(found)
+        return modules
 
     def test_shelled_out_modules_defer_their_annotations(self) -> None:
-        for name in self.SHELLED_OUT:
-            with self.subTest(module=name):
-                source = (ROOT / name).read_text(encoding="utf-8")
+        modules = self.shelled_out_modules()
+        self.assertGreater(len(modules), 3, "discovery found nothing; the regex broke")
+        for module in sorted(modules):
+            with self.subTest(module=str(module.relative_to(ROOT))):
+                source = module.read_text(encoding="utf-8")
                 self.assertIn("from __future__ import annotations", source)
 
     def test_the_sbatch_prefers_the_configured_interpreter(self) -> None:
