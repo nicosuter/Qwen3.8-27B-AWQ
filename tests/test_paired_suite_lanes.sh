@@ -307,6 +307,44 @@ out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
 check "reused despite the shorter timeout" 1 "$(grep -c 'already scored' <<<"$out")"
 
+# Only two adapters write request_timeout_seconds. Reading its absence as "not
+# scored under this config" made the other four permanently unreusable: rescored
+# on every job, and -- since stale_suites feeds the same predicate into the
+# comparison's exclusions -- dropped from every macro ever produced. Both
+# clusters had been reporting a two-suite macro without saying so.
+echo "== case 7b: an unrecorded timeout that never fired is still reusable =="
+setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0; TIMEOUT_SCALE="2.5"
+mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
+echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
+{"max_tokens":1000,"timeouts":0,"checkpoint":{"fingerprint":"sha256:bbb"}}
+JSON
+out="$(score_variant candidate 2>&1)"; rc=$?
+check "exit 0" 0 "$rc"
+check "reused with no recorded timeout" 1 "$(grep -c 'already scored' <<<"$out")"
+
+echo "== case 7c: an unrecorded timeout that DID fire is not reusable =="
+setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0; TIMEOUT_SCALE="2.5"
+mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
+echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
+{"max_tokens":1000,"timeouts":38,"checkpoint":{"fingerprint":"sha256:bbb"}}
+JSON
+out="$(score_variant candidate 2>&1)"; rc=$?
+check "exit 0" 0 "$rc"
+check "rescored, the threshold it hit is unknown" 0 "$(grep -c 'already scored' <<<"$out")"
+
+echo "== case 7d: no timeout count at all establishes nothing =="
+setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0; TIMEOUT_SCALE="2.5"
+mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
+echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
+{"max_tokens":1000,"checkpoint":{"fingerprint":"sha256:bbb"}}
+JSON
+out="$(score_variant candidate 2>&1)"; rc=$?
+check "exit 0" 0 "$rc"
+check "rescored, nothing recorded either way" 0 "$(grep -c 'already scored' <<<"$out")"
+
 echo "== case 8: a shorter timeout that DID fire is not reusable =="
 setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0; TIMEOUT_SCALE="2.5"
 mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"

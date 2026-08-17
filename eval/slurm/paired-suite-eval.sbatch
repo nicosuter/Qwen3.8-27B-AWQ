@@ -631,7 +631,22 @@ if "--request-timeout" in run:
     want = float(run[run.index("--request-timeout") + 1]) * float(timeout_scale)
     have = recorded.get("request_timeout_seconds")
     fired = recorded.get("timeouts")
-    if have is None or (float(have) < want and fired != 0):
+    # Not recording the threshold is not the same as having failed it. Only two
+    # adapters write request_timeout_seconds, so `have is None` rejected the
+    # other four permanently: they were rescored on every job that touched the
+    # run directory, and -- because stale_suites feeds the same predicate into
+    # EXCLUDE_SUITES -- dropped from every comparison ever produced here. Both
+    # clusters' macros had been running over gpqa and ruler alone, the two that
+    # pass for unrelated reasons: one records the field, the other declares no
+    # --request-timeout at all so this block never runs.
+    #
+    # The rule above already says a timeout matters only when it fired. Applied
+    # to an unrecorded threshold: zero timeouts means it did not bind, whatever
+    # it was, so the result is the one a longer timeout would have produced. A
+    # threshold that did fire still has to be known to be ruled reusable, and a
+    # run that did not record the count either establishes nothing.
+    long_enough = have is not None and float(have) >= want
+    if not long_enough and fired != 0:
         print(
             f"{suite}: --request-timeout wants {want:.0f}s, recorded {have}"
             f" with timeouts={fired}",
