@@ -182,6 +182,31 @@ CONCURRENCY="${PAIRED_CONCURRENCY:-}"
 # across suites is wrong: RULER holds about six percent of the KV pool per
 # request where a short prompt holds one.
 CONCURRENCY_SCALE="${PAIRED_CONCURRENCY_SCALE:-$(python3 -c "print($DP/8)")}"
+# Which suites compete with which for the cache. A lane's concurrency is divided
+# among the lanes of its own class rather than among every lane in the job, so a
+# job that scores RULER alongside the short suites runs each of them at the width
+# it was measured at instead of at a sixth of it. Suites that predate the field
+# are short: every batch that existed then held one class, where dividing by the
+# class and dividing by the job are the same number.
+KV_CLASSES="$(python3 - "$CONFIG" <<'PY'
+import json, sys
+for suite in json.load(open(sys.argv[1]))["suites"]:
+    print(f"{suite['name']}\t{suite.get('kv_class', 'short')}")
+PY
+)"
+kv_class_of() { # kv_class_of <suite>  -> its class, "short" if it declares none
+    printf '%s\n' "$KV_CLASSES" |
+        awk -F'\t' -v want="$1" '$1 == want { print $2; hit = 1 }
+                                 END { if (!hit) print "short" }'
+}
+class_mates() { # class_mates <class> <suite:rep>...  -> how many are in <class>
+    local want="$1" job n=0
+    shift
+    for job in "$@"; do
+        [[ "$(kv_class_of "${job%%:*}")" == "$want" ]] && n=$(( n + 1 ))
+    done
+    echo "$n"
+}
 PYTHON="${EVAL_VENV:-$PROJECT_DIR/.venv}/bin/python"
 # One stamp for the whole job, so everything it supersedes or emits sorts
 # together and can be attributed to a single run.
@@ -536,22 +561,6 @@ score_variant() {
     if (( PARALLEL > 0 && PARALLEL < lanes )); then
         lanes=$PARALLEL
     fi
-    # Divide the request budget across lanes, so the server holds the same number
-    # in flight as a sequential run would. The win comes from item supply keeping
-    # the batch full, not from asking the server to carry more at once.
-    local lane_conc="" lane_scale=""
-    if [[ -n "$CONCURRENCY" ]]; then
-        lane_conc=$(( CONCURRENCY / lanes ))
-        (( lane_conc > 0 )) || lane_conc=1
-    elif [[ -n "$CONCURRENCY_SCALE" ]]; then
-        lane_scale="$(python3 -c "print($CONCURRENCY_SCALE/$lanes)")"
-    fi
-
-    # Same budget split as the adapter lanes: the win comes from item supply
-    # keeping the batch full, not from asking the server to carry more at once.
-    local es_lane_conc=$(( ${ES_CONCURRENCY:-256} / lanes ))
-    (( es_lane_conc > 0 )) || es_lane_conc=1
-
     local lane_dir="$RUN_DIR/logs/lanes-$variant"
     mkdir -p "$lane_dir"
     echo "scoring ${#pending[@]} job(s) for $variant across $lanes lane(s); live logs in $lane_dir"
@@ -561,6 +570,25 @@ score_variant() {
         rep="${job##*:}"
         label="$suite-r$rep"
         rm -f "$lane_dir/$label.rc"
+        # Divide the request budget among the lanes this one contends with, so
+        # the class holds the same number in flight as a job running that class
+        # alone would. The win from running lanes together comes from item supply
+        # keeping the batch full -- short suites spend 43% of their wall clock
+        # under sixteen requests in flight at 4% cache -- not from asking the
+        # server to carry more at once.
+        local mates
+        mates="$(class_mates "$(kv_class_of "$suite")" "${pending[@]}")"
+        (( mates > lanes )) && mates=$lanes
+        (( mates > 0 )) || mates=1
+        local lane_conc="" lane_scale=""
+        if [[ -n "$CONCURRENCY" ]]; then
+            lane_conc=$(( CONCURRENCY / mates ))
+            (( lane_conc > 0 )) || lane_conc=1
+        elif [[ -n "$CONCURRENCY_SCALE" ]]; then
+            lane_scale="$(python3 -c "print($CONCURRENCY_SCALE/$mates)")"
+        fi
+        local es_lane_conc=$(( ${ES_CONCURRENCY:-256} / mates ))
+        (( es_lane_conc > 0 )) || es_lane_conc=1
         # Hold at `lanes` running jobs. `wait -n` returns the exit status of
         # whichever finished, which is why each job records its own into a file.
         while (( $(count_alive "${lane_pids[@]}") >= lanes )); do wait -n || true; done

@@ -19,7 +19,7 @@
 # differs between two runs of it is written on the command line:
 #
 #   eval/slurm/campaign.sh --candidates cyankiwi,soyrsoyr --arch a100 \
-#       --gpu-quota 8 --gpus-per-lane 4 --lane short-context=16:00:00
+#       --gpu-quota 8 --gpus-per-lane 4 --lane full=16:00:00
 #
 #   eval/slurm/campaign.sh --candidates philbert,barry,bf16gdn --arch h200 \
 #       --gpu-quota 4 --gpus-per-lane 4 \

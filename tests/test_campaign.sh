@@ -58,11 +58,12 @@ campaign() { # campaign <args...>  -> sets $out $rc, writes $SUBMIT_LOG
 echo "== case 1: with nothing to inherit, the first candidate hosts the baseline =="
 campaign --candidates cyankiwi,soyrsoyr
 check "exit 0" 0 "$rc"
-# Two batches by default, two candidates, plus the baseline's own two lanes.
-check "six lanes" 6 "$(wc -l < "$SUBMIT_LOG" | tr -d ' ')"
-check "the baseline is scored twice, once per batch" 2 \
+# One batch by default -- every scored suite colocates on one server -- so two
+# candidates plus the baseline's own lane.
+check "three lanes" 3 "$(wc -l < "$SUBMIT_LOG" | tr -d ' ')"
+check "the baseline is scored once" 1 \
     "$(grep -c -- 'PAIRED_VARIANTS=baseline' "$SUBMIT_LOG")"
-check "into the first candidate's run directory, which is cyankiwi's" 4 \
+check "into the first candidate's run directory, which is cyankiwi's" 2 \
     "$(grep -c -- "PAIRED_RUN_DIR=$RUN/v2/eval-suite-v1-cyan," "$SUBMIT_LOG")"
 # The host's own arm shares that directory and needs nothing copied into it.
 check "the host inherits nothing" 0 \
@@ -72,51 +73,57 @@ check "and waits on nothing but its slot" 0 \
     "$(grep -- 'comment cyankiwi' "$SUBMIT_LOG" | grep -c 'afterok')"
 
 echo "== case 2: every other candidate inherits that baseline and waits for it =="
-check "soyrsoyr inherits" 2 \
+check "soyrsoyr inherits" 1 \
     "$(grep -c -- "PAIRED_INHERIT_BASELINE_FROM=$RUN/v2/eval-suite-v1-cyan" "$SUBMIT_LOG")"
-check "into its own run directory" 2 \
+check "into its own run directory" 1 \
     "$(grep -c -- "PAIRED_RUN_DIR=$RUN/v2/eval-suite-v1-soy," "$SUBMIT_LOG")"
 # The inherit copies the baseline results at job start, so the lane that
 # produces them has to be finished, not merely running.
-check "short-context waits on the short-context baseline" 1 \
-    "$(grep -- 'comment soyrsoyr-short-context' "$SUBMIT_LOG" | grep -c -- '--dependency afterok:1001')"
-check "long-context waits on the long-context baseline" 1 \
-    "$(grep -- 'comment soyrsoyr-long-context' "$SUBMIT_LOG" | grep -c -- '--dependency afterok:1002')"
+check "the candidate waits on the baseline lane" 1 \
+    "$(grep -- 'comment soyrsoyr-full' "$SUBMIT_LOG" | grep -c -- '--dependency afterok:1001')"
 
 echo "== case 3: the checkpoint paths come from the registry =="
-# Four: the two candidate lanes, and the two baseline lanes that share the
-# host's run directory and so are told the same candidate.
-check "a published quantization is addressed through its snapshot" 4 \
+# Two: the candidate's lane, and the baseline lane that shares the host's run
+# directory and so is told the same candidate.
+check "a published quantization is addressed through its snapshot" 2 \
     "$(grep -c -- "OUTPUT_DIR=$HUB/models--cyankiwi--Qwen3.8-27B-AWQ-INT4/snapshots/63768c10df38c0395e12ef49edac1bd539eaeeea" "$SUBMIT_LOG")"
 # The baseline is bound through its repository root, not its snapshot: a
 # snapshot is a farm of symlinks into ../../blobs.
-check "the baseline through its repository root" 6 \
+check "the baseline through its repository root" 3 \
     "$(grep -c -- "PAIRED_BASELINE_REPO=$HUB/models--Qwen--Qwen3.8-27B-FP8," "$SUBMIT_LOG")"
-check "with its revision beside it" 6 \
+check "with its revision beside it" 3 \
     "$(grep -c -- 'PAIRED_BASELINE_REVISION=017b9c7af6b5689d5dd426a76e0bc077eb5ca20a' "$SUBMIT_LOG")"
 SUBMIT_LOG="$WORK/submitted.txt"; : > "$SUBMIT_LOG"; export SUBMIT_LOG
-out="$(RUN_BASE="$RUN" EVAL_PYTHON=python3 DEP_FP8_SHORT_CONTEXT=done bash "$WORK/eval/slurm/campaign.sh" \
+out="$(RUN_BASE="$RUN" EVAL_PYTHON=python3 DEP_FP8_FULL=done bash "$WORK/eval/slurm/campaign.sh" \
     --arch testarch --gpu-quota 8 --candidates bf16gdn \
-    --baseline-from "$RUN/v2/eval-suite-v1" --only bf16gdn-short-context 2>&1)"; rc=$?
+    --baseline-from "$RUN/v2/eval-suite-v1" --only bf16gdn-full 2>&1)"; rc=$?
 check "one of ours is served as the directory we wrote" 1 \
     "$(grep -c -- "OUTPUT_DIR=$RUN/v2/model," "$SUBMIT_LOG")"
 
 echo "== case 4: an inherited baseline is not scored again =="
 SUBMIT_LOG="$WORK/submitted.txt"; : > "$SUBMIT_LOG"; export SUBMIT_LOG
-out="$(RUN_BASE="$RUN" EVAL_PYTHON=python3 DEP_FP8_SHORT_CONTEXT=done DEP_FP8_LONG_CONTEXT=4242 \
+out="$(RUN_BASE="$RUN" EVAL_PYTHON=python3 DEP_FP8_FULL=done \
     bash "$WORK/eval/slurm/campaign.sh" --arch testarch --gpu-quota 8 \
     --candidates philbert,barry --baseline-from "$RUN/v2/eval-suite-v1" 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
-check "four lanes, none of them a baseline" 4 "$(wc -l < "$SUBMIT_LOG" | tr -d ' ')"
+check "two lanes, neither of them a baseline" 2 "$(wc -l < "$SUBMIT_LOG" | tr -d ' ')"
 check "no baseline arm submitted" 0 "$(grep -c -- 'PAIRED_VARIANTS=baseline' "$SUBMIT_LOG")"
-check "all four inherit" 4 \
+check "both inherit" 2 \
     "$(grep -c -- "PAIRED_INHERIT_BASELINE_FROM=$RUN/v2/eval-suite-v1" "$SUBMIT_LOG")"
 # A baseline lane that has already finished cannot be depended on -- slurm
-# rejects a dependency on a job it has purged -- but one still running can.
-check "the finished half is depended on by nobody" 0 \
-    "$(grep -- 'comment philbert-short-context' "$SUBMIT_LOG" | grep -c 'afterok')"
-check "the running half still gates its lane" 1 \
-    "$(grep -- 'comment philbert-long-context' "$SUBMIT_LOG" | grep -c -- '--dependency afterok:4242')"
+# rejects a dependency on a job it has purged.
+check "the finished baseline is depended on by nobody" 0 \
+    "$(grep -- 'comment philbert-full' "$SUBMIT_LOG" | grep -c 'afterok')"
+
+# The other half of that rule, which needs its own submission because a lane is
+# either finished or running and one campaign cannot show both of one lane.
+SUBMIT_LOG="$WORK/submitted.txt"; : > "$SUBMIT_LOG"; export SUBMIT_LOG
+out="$(RUN_BASE="$RUN" EVAL_PYTHON=python3 DEP_FP8_FULL=4242 \
+    bash "$WORK/eval/slurm/campaign.sh" --arch testarch --gpu-quota 8 \
+    --candidates philbert --baseline-from "$RUN/v2/eval-suite-v1" 2>&1)"; rc=$?
+check "exit 0" 0 "$rc"
+check "a baseline still running gates its lane" 1 \
+    "$(grep -- 'comment philbert-full' "$SUBMIT_LOG" | grep -c -- '--dependency afterok:4242')"
 
 echo "== case 5: a baseline that is neither scored nor named is refused =="
 SUBMIT_LOG="$WORK/submitted.txt"; : > "$SUBMIT_LOG"; export SUBMIT_LOG
@@ -124,13 +131,13 @@ out="$(RUN_BASE="$RUN" EVAL_PYTHON=python3 bash "$WORK/eval/slurm/campaign.sh" -
     --gpu-quota 8 --candidates philbert --baseline-from "$RUN/v2/eval-suite-v1" 2>&1)"; rc=$?
 check "refused" 1 "$rc"
 check "and said which variable would supply it" 1 \
-    "$(grep -c 'DEP_FP8_SHORT_CONTEXT is unset' <<<"$out")"
+    "$(grep -c 'DEP_FP8_FULL is unset' <<<"$out")"
 
 echo "== case 6: lanes and their walltimes are runtime decisions =="
-campaign --candidates cyankiwi --lane short-context=16:00:00
+campaign --candidates cyankiwi --lane full=16:00:00
 check "one batch, one candidate, plus its baseline" 2 "$(wc -l < "$SUBMIT_LOG" | tr -d ' ')"
 check "at the walltime asked for" 2 "$(grep -c -- '--time 16:00:00' "$SUBMIT_LOG")"
-check "and the batch reaches the job" 2 "$(grep -c -- 'PAIRED_BATCH=short-context' "$SUBMIT_LOG")"
+check "and the batch reaches the job" 2 "$(grep -c -- 'PAIRED_BATCH=full' "$SUBMIT_LOG")"
 
 echo "== case 7: an unknown checkpoint is refused before anything is queued =="
 campaign --candidates nosuchthing

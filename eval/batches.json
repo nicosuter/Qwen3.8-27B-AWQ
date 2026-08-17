@@ -29,24 +29,18 @@
       "why": "MMMU-Pro has never met a live server, and at 1730 items it is the second largest suite in the protocol: an adapter fault at item 1600 would cost the whole short-context batch. Fifty items of the frozen order against one arm proves image encoding, answer parsing and the token budget for about twenty minutes. run_adapter_suite.py --limit marks these results diagnostics, so they cannot be mistaken for a score."
     },
     {
-      "name": "short-context",
+      "name": "full",
       "scoring": true,
       "suites": [
         "bfcl_v4",
         "gpqa_diamond",
         "livecodebench_v6",
         "mmmu_pro",
-        "multimodal"
-      ],
-      "why": "Everything that tolerates forty or more requests in flight. Kept together because lanes fill each other's tails: GPQA averaged 37 of 192 streams busy and multimodal spent 485 of 502 seconds on a single item, so splitting these pays each tail separately and adds a server load per split."
-    },
-    {
-      "name": "long-context",
-      "scoring": true,
-      "suites": [
+        "multimodal",
         "ruler"
       ],
-      "why": "RULER alone. One 128k sequence holds roughly 8.5 GB of KV, so it wants about a dozen requests in flight per replica where the others take forty. Sharing a server means one starves the other, and it would do so to one arm at a time, which is exactly the asymmetry a paired delta cannot absorb."
+      "why": "Every scored suite on one server, because they are complementary rather than competing. This was two batches, split on the expectation that RULER would starve the short suites. The telemetry says the opposite. The short suites are item-starved, not cache-starved: 43% of their wall clock runs under sixteen requests in flight at 4% cache, and their time-weighted mean cache use is 0.14 over four hours. RULER is the complement -- cache-hungry and item-poor, 0.51 mean cache use over one hour, prefill-heavy where the others are decode-heavy. RULER's hour fits inside the short suites' drain with room. It also already runs with a backlog of thirty to forty queued requests and two preemptions in an hour, so queueing is its normal operating point rather than the failure the split was protecting against. Each suite keeps the concurrency it was measured at: kv_class divides a lane's share among its own class, so nothing here runs at a width that has not been run before.",
+      "measure_first": "The first job under this plan is a measurement. Compare its telemetry against the split runs it replaces -- cache use, num_requests_waiting, preemptions and per-suite wall clock -- before treating a colocated score as routine. Splitting back is two batches, one per kv_class."
     }
   ]
 }

@@ -200,10 +200,11 @@ class BatchPlanTests(unittest.TestCase):
     def test_naming_a_batch_that_does_not_exist_lists_the_ones_that_do(self) -> None:
         with self.assertRaises(eval_suite.EvalSuiteError) as caught:
             eval_suite.batch("nope")
-        self.assertIn("short-context", str(caught.exception))
+        self.assertIn("full", str(caught.exception))
 
-    def test_the_long_context_batch_is_ruler_alone(self) -> None:
-        self.assertEqual(eval_suite.batch("long-context")["suites"], ["ruler"])
+    def test_the_scoring_batch_covers_every_suite(self) -> None:
+        """RULER used to be a batch of its own; colocating it is what merged them."""
+        self.assertEqual(set(eval_suite.batch("full")["suites"]), eval_suite.names("v2"))
 
 
 class BatchFieldTests(unittest.TestCase):
@@ -215,7 +216,7 @@ class BatchFieldTests(unittest.TestCase):
         self.assertEqual(entry["variants"], ["baseline"])
 
     def test_a_scoring_batch_limits_nothing(self) -> None:
-        for name in ("short-context", "long-context"):
+        for name in ("full",):
             with self.subTest(batch=name):
                 self.assertNotIn("limit", eval_suite.batch(name))
 
@@ -224,7 +225,7 @@ class BatchFieldTests(unittest.TestCase):
         self.assertEqual(eval_suite.main(["--batch-field", "shakedown", "variants"]), 0)
 
     def test_an_absent_field_prints_nothing_rather_than_failing(self) -> None:
-        self.assertEqual(eval_suite.main(["--batch-field", "short-context", "limit"]), 0)
+        self.assertEqual(eval_suite.main(["--batch-field", "full", "limit"]), 0)
 
 
 class InterpreterCompatibilityTests(unittest.TestCase):

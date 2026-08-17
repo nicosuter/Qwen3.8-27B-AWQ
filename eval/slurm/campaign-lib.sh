@@ -74,7 +74,7 @@ usage: $(basename "$0") --candidates <name,...> --arch <name>
   --gpus-per-lane N    GPUs one lane asks for, and its data-parallel size (4)
   --lane BATCH=TIME    a lane per candidate, repeatable; a batch from
                        eval/batches.json and its walltime
-                       (short-context=12:00:00 long-context=10:00:00)
+                       (full=16:00:00)
   --baseline-from DIR  inherit an already-scored baseline from a run directory
                        instead of scoring one in the first candidate's
   --suite-version V    which suite version the job names carry (defaults to
@@ -129,12 +129,14 @@ if (( SLOTS < 1 )); then
     exit 2
 fi
 
-# Both batches of the protocol, at walltimes well above the measurement: six
-# suites against a dequantized FP8 baseline took a measured 6h+ on A100 and was
-# killed at a six-hour limit, and RULER is one suite but a long-context one. An
-# overrun costs the whole lane where a generous limit costs scheduling priority.
+# One lane for the whole protocol, at a walltime well above the measurement. The
+# split runs it replaces measured 4.0h and 4.9h for the two arms of the short
+# suites plus 1.0h each for RULER, so about 11h of work that the colocated job
+# overlaps down to roughly 9.5h. An overrun costs the whole lane where a generous
+# limit costs scheduling priority, and this lane now carries every scored suite,
+# so it is the one place where an overrun costs everything.
 if (( ${#LANE_PLAN[@]} == 0 )); then
-    LANE_PLAN=("short-context=12:00:00" "long-context=10:00:00")
+    LANE_PLAN=("full=16:00:00")
 fi
 
 # Lane ids are held in LANE_ID_<lane> rather than an associative array, and the
@@ -174,10 +176,10 @@ lane_id() {
     return 1
 }
 
-# A dependency names lanes rather than job ids: "afterok:@fp8-long-context".
+# A dependency names lanes rather than job ids: "afterok:@fp8-full".
 # Resolving it here, after the lane is known to be selected, is what lets --only
 # name a lane whose siblings are already in flight. Resolving eagerly in the
-# campaign file instead meant --only cyankiwi-short-context died on a dependency
+# campaign file instead meant --only cyankiwi-full died on a dependency
 # belonging to a lane it was skipping.
 resolve_dep() {
     local spec="$1" name id term out=() terms=()
