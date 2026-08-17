@@ -17,7 +17,7 @@ from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location(
-    "bake_harbor_sifs", ROOT / "scripts" / "bake_harbor_sifs.py"
+    "bake_harbor_sifs", ROOT / "eval" / "scripts" / "bake_harbor_sifs.py"
 )
 assert SPEC and SPEC.loader
 baker = importlib.util.module_from_spec(SPEC)
@@ -345,3 +345,65 @@ class TmuxGuaranteeTests(unittest.TestCase):
         body = baker.definition(self.PARSED)
         self.assertIn("echo build", body)
         self.assertIn("cd /app", body)
+
+
+class DigestPinningTests(unittest.TestCase):
+    """Official images, mutable tags.
+
+    scaleapi/SWE-bench_Pro-os names jefzda/sweap-images itself, so the provenance
+    is fine. What it does not give is immutability: every task references the
+    image by tag, the upstream project documents no digest pinning, and Docker
+    Hub tags move. The subset file pins which tasks run; nothing pinned the image
+    they run inside.
+    """
+
+    PARSED = {
+        "image": "jefzda/sweap-images:sometag",
+        "workdir": "/app",
+        "envs": [],
+        "runs": ["echo build"],
+    }
+
+    def test_the_definition_builds_from_the_digest_when_given_one(self) -> None:
+        body = baker.definition(self.PARSED, True, "jefzda/sweap-images@sha256:" + "a" * 64)
+        self.assertIn("From: jefzda/sweap-images@sha256:" + "a" * 64, body)
+        self.assertNotIn("sometag", body)
+
+    def test_it_falls_back_to_the_tag_when_unpinned(self) -> None:
+        body = baker.definition(self.PARSED, True, None)
+        self.assertIn("From: jefzda/sweap-images:sometag", body)
+
+    def test_a_registry_answer_without_a_digest_is_refused(self) -> None:
+        """A silent miss would bake from the tag while reporting it was pinned."""
+        class Response:
+            headers = {}
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b'{"token": "t"}'
+
+        with unittest.mock.patch.object(baker.json, "load", return_value={"token": "t"}), \
+             unittest.mock.patch.object(baker.urllib.request, "urlopen", return_value=Response()):
+            with self.assertRaises(baker.BakeError) as caught:
+                baker.resolve_digest("example/image:tag")
+        self.assertIn("no digest", str(caught.exception))
+
+    def test_a_bare_name_is_resolved_under_library(self) -> None:
+        """`python:3.12` lives at library/python on the registry."""
+        seen = {}
+
+        class Response:
+            headers = {"Docker-Content-Digest": "sha256:" + "b" * 64}
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b'{"token": "t"}'
+
+        def fake_urlopen(request, timeout=None):
+            url = request if isinstance(request, str) else request.full_url
+            seen.setdefault("urls", []).append(url)
+            return Response()
+
+        with unittest.mock.patch.object(baker.json, "load", return_value={"token": "t"}), \
+             unittest.mock.patch.object(baker.urllib.request, "urlopen", fake_urlopen):
+            digest = baker.resolve_digest("python:3.12")
+        self.assertEqual(digest, "sha256:" + "b" * 64)
+        self.assertTrue(any("library/python" in u for u in seen["urls"]))
