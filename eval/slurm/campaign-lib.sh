@@ -21,13 +21,20 @@
 #
 # And the campaign holds no more of the cluster than it was told it may.
 # `--gpu-quota` divided by `--gpus-per-lane` is how many lanes may run at once;
-# the lanes are dealt round-robin into that many slots, each slot is one slurm
-# job name, and every lane carries --dependency=singleton. Slurm runs at most one
-# job per (user, job name), so the quota holds without any lane depending on
-# another one succeeding. The previous answer was to chain every lane on afterok,
-# which serialises correctly and then propagates: one lane that overruns turns
-# every lane behind it into DependencyNeverSatisfied, which is how one timeout
-# once cost four jobs and left the allocation idle.
+# the lanes are dealt round-robin into that many slots, and each lane waits on
+# afterany of the previous lane in its slot. So the quota holds without any lane
+# depending on another one succeeding, and every job keeps a name that says what
+# it measures.
+#
+# Two earlier answers, and why neither survived. Chaining on afterok serialises
+# correctly and then propagates: one lane that overruns turns every lane behind
+# it into DependencyNeverSatisfied, which is how one timeout once cost four jobs
+# and left the allocation idle. Naming each slot and carrying
+# --dependency=singleton fixes that -- slurm runs one job per (user, job name)
+# regardless of outcome -- but singleton keys on the name and nothing else, so
+# the name has to be the slot, and a queue full of eval-...-a100-s0 says nothing
+# about what any of it is measuring. afterany gets the outcome-independence of
+# singleton while leaving the name free.
 
 RUN_BASE="${RUN_BASE:-/scratch/$USER/qwen38-27b-awq}"
 export RUN_BASE
@@ -203,11 +210,9 @@ resolve_dep() {
 # lane <quant> <batch|""> <walltime> <dependency|""> <KEY=VALUE>...
 #
 # The lane key -- what --only and dependencies refer to -- is "<quant>-<batch>".
-# The slurm job name is a slot, shared by every lane the quota puts behind the
-# same one, because --dependency=singleton keys on the name and nothing else. So
-# what a job is measuring is carried by its output file,
-#   <prefix>-<quant>-<suite version>-<arch>[-<batch>]-<jobid>.out
-# and by --comment, which squeue prints with %k.
+# The slurm job name says what the job measures:
+#   <prefix>-<quant>-<suite version>-<arch>[-<batch>]
+# which is the same string its log file carries.
 lane() {
     local quant="$1" batch="$2" walltime="$3" dep="$4"
     shift 4
@@ -221,17 +226,32 @@ lane() {
 
     local scheme="$CAMPAIGN_JOB_PREFIX-$quant-$CAMPAIGN_SUITE_VERSION-$CAMPAIGN_ARCH"
     scheme="$scheme${batch:+-$batch}"
-    local slot="$CAMPAIGN_JOB_PREFIX-$CAMPAIGN_ARCH-s$(( SUBMITTED % SLOTS ))"
+    # The quota is held by chaining each slot's lanes on afterany, not by giving
+    # them a shared name and a singleton. Both serialise; only one of them lets
+    # the job say what it measures, and a queue of identically named jobs is how
+    # a campaign gets lost track of.
+    #
+    # afterany rather than afterok, and the difference is the whole reason the
+    # slot names existed. Chaining on afterok propagates: one lane that overruns
+    # turns every lane behind it into DependencyNeverSatisfied, which once cost
+    # four jobs and left the allocation idle. afterany fires when the previous
+    # lane stops for any reason, so a failure costs that lane and nothing else.
+    # It is sound here because lanes in a slot share only the GPUs -- a lane that
+    # consumes another's results says so in its own afterok dependency, which is
+    # resolved separately above and survives this.
+    local slot_var slot_prev
+    slot_var="SLOT_LAST_$(( SUBMITTED % SLOTS ))"
     SUBMITTED=$(( SUBMITTED + 1 ))
-    dep="${dep:+$dep,}singleton"
+    slot_prev="${!slot_var:-}"
+    [[ -n "$slot_prev" ]] && dep="${dep:+$dep,}afterany:$slot_prev"
 
     local exports
     exports="$(IFS=,; echo "$*"),PAIRED_DP=$GPUS_PER_LANE"
     local args=(--commit "$COMMIT" --export "$exports"
                 --time "$walltime" --parsable
                 --output "slurm-logs/$scheme-%j.out" --comment "$key"
-                --job-name "$slot" --gres "gpu:$GPUS_PER_LANE"
-                --dependency "$dep")
+                --job-name "$scheme" --gres "gpu:$GPUS_PER_LANE")
+    [[ -n "$dep" ]] && args+=(--dependency "$dep")
     [[ -n "$CAMPAIGN_EXCLUDE" ]] && args+=(--exclude "$CAMPAIGN_EXCLUDE")
 
     # A dry run goes through submit-paired.sh too rather than printing what this
@@ -250,8 +270,11 @@ lane() {
         id="$(printf '%s\n' "$out" | grep -xE '[0-9]+' | tail -n1)"
     fi
     printf -v "$(lane_var "$key")" '%s' "$id"
+    # The next lane dealt to this slot waits on this one, which is what holds
+    # the campaign inside its share of the GPUs.
+    printf -v "$slot_var" '%s' "$id"
     printf 'lane %-28s %s  %-9s %s dep=%s\n' \
-        "$key" "$id" "$walltime" "$slot" "$dep" >&2
+        "$key" "$id" "$walltime" "$scheme" "${dep:-none}" >&2
 }
 
 campaign_summary() {

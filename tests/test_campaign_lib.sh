@@ -73,10 +73,9 @@ echo "== case 1: every lane submits when nothing is selected =="
 campaign
 check "exit 0" 0 "$rc"
 check "three lanes submitted" 3 "$(wc -l < "$SUBMIT_LOG" | tr -d ' ')"
-check "charlie waits on alpha's id" 1 "$(grep -c -- '--dependency afterok:1001,singleton' "$SUBMIT_LOG")"
+check "charlie waits on alpha's id" 1 "$(grep -c -- '--dependency afterok:1001' "$SUBMIT_LOG")"
 check "alpha carries its own walltime" 1 "$(grep -c -- '--time 01:00:00' "$SUBMIT_LOG")"
-# What a job is measuring is carried by its log name and its comment, because
-# the slurm name is a quota slot shared with whatever lane comes next.
+# The job name, the log name and the comment all say what is being measured.
 check "the output follows the scheme" 1 \
     "$(grep -c -- '--output slurm-logs/eval-qwen38-27b-alpha-v1-testarch-%j.out' "$SUBMIT_LOG")"
 check "and the comment carries the lane" 1 "$(grep -c -- '--comment alpha' "$SUBMIT_LOG")"
@@ -104,22 +103,29 @@ SUBMIT_LOG="$WORK/submitted.txt"; : > "$SUBMIT_LOG"; export SUBMIT_LOG
 out="$(RUN_BASE=/scratch/test DEP_ALPHA=98765 bash "$WORK/campaign.sh" \
     "${BASE_ARGS[@]}" --only charlie 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
-check "used the supplied id" 1 "$(grep -c -- '--dependency afterok:98765,singleton' "$SUBMIT_LOG")"
+check "used the supplied id" 1 "$(grep -c -- '--dependency afterok:98765' "$SUBMIT_LOG")"
 
 echo "== case 5: the quota decides how many lanes may run at once =="
-# Two lanes' worth of GPUs, three lanes: two slot names, dealt round-robin, and
-# every lane on singleton so slurm runs one job per name.
+# Two lanes' worth of GPUs, three lanes: dealt round-robin into two slots, and
+# each slot's second lane waits on afterany of its first. Every job keeps its own
+# name -- the quota is held by the dependency, not by collisions in the name.
 campaign
-check "three lanes, two slots" 2 \
+check "three lanes, three names" 3 \
     "$(grep -o -- '--job-name [^ ]*' "$SUBMIT_LOG" | sort -u | wc -l | tr -d ' ')"
-check "slot 0 twice" 2 "$(grep -c -- '--job-name eval-qwen38-27b-testarch-s0' "$SUBMIT_LOG")"
-check "slot 1 once" 1 "$(grep -c -- '--job-name eval-qwen38-27b-testarch-s1' "$SUBMIT_LOG")"
-check "every lane is a singleton" 3 "$(grep -c -- 'singleton' "$SUBMIT_LOG")"
+check "no lane is named for a slot" 0 "$(grep -c -- '--job-name .*-s[0-9]' "$SUBMIT_LOG")"
+check "nothing relies on singleton" 0 "$(grep -c -- 'singleton' "$SUBMIT_LOG")"
+# alpha and charlie share slot 0, bravo has slot 1 to itself and waits on nobody.
+# charlie is both dealt behind alpha and declared to consume it, so it carries
+# the scheduling gate and the data dependency on the same job.
+check "the third lane waits on the first" 1 \
+    "$(grep -c -- '--dependency afterok:1001,afterany:1001' "$SUBMIT_LOG")"
+check "the lanes first in their slot wait on nothing" 2 \
+    "$(grep -vc -- '--dependency' "$SUBMIT_LOG")"
 
 echo "== case 5b: one lane's worth of quota serialises the campaign =="
 campaign --gpu-quota 4
-check "one slot for everything" 1 \
-    "$(grep -o -- '--job-name [^ ]*' "$SUBMIT_LOG" | sort -u | wc -l | tr -d ' ')"
+check "each lane waits on the one before it" 2 "$(grep -c -- 'afterany:' "$SUBMIT_LOG")"
+check "only the first waits on nothing" 1 "$(grep -vc -- '--dependency' "$SUBMIT_LOG")"
 
 echo "== case 5c: a quota that cannot run a single lane is refused =="
 campaign --gpu-quota 2
@@ -160,7 +166,7 @@ out="$(RUN_BASE=/scratch/test DEP_EARLIER=done bash "$WORK/campaign.sh" \
     "${BASE_ARGS[@]}" 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
 check "the finished term is gone" 0 "$(grep -c 'afterok' "$SUBMIT_LOG")"
-check "the singleton survives" 1 "$(grep -c -- '--dependency singleton' "$SUBMIT_LOG")"
+check "and nothing is left to depend on" 1 "$(grep -vc -- '--dependency' "$SUBMIT_LOG")"
 
 echo "== case 8: the batch lands in the log name and in the lane key =="
 cat > "$WORK/campaign.sh" <<'CAMPAIGN'
@@ -178,7 +184,9 @@ check "quant and batch both in the log name" 1 \
 check "the long-context lane too" 1 \
     "$(grep -c -- '--output slurm-logs/eval-qwen38-27b-cyankiwi-v1-testarch-long-context-%j.out' "$SUBMIT_LOG")"
 # Dependencies refer to the lane key, never to the slurm name.
-check "dependency resolved through the key" 1 "$(grep -c -- '--dependency afterok:1001,singleton' "$SUBMIT_LOG")"
+check "dependency resolved through the key" 1 "$(grep -c -- '--dependency afterok:1001' "$SUBMIT_LOG")"
+# Two slots, one lane each, so neither carries a scheduling gate on top of it.
+check "and nothing else was added to it" 0 "$(grep -c -- 'afterany:' "$SUBMIT_LOG")"
 
 echo "== case 9: a campaign that says nothing about itself is refused =="
 SUBMIT_LOG="$WORK/submitted.txt"; : > "$SUBMIT_LOG"; export SUBMIT_LOG

@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
-# What is running, by what it measures.
+# What is running, with the columns that matter and none of the ones that don't.
 #
-# `squeue` shows the job name, and for a campaign the job name is a slot --
-# `<prefix>-<arch>-s<n>` -- not a description. That is forced:
-# `--dependency=singleton` serialises jobs that share a name and keys on
-# nothing else, so a quota of one lane means one name, and the name cannot also
-# say which checkpoint is being scored. Two lanes measuring different
-# checkpoints have to share it or they would run at once.
+# This existed because a campaign job's slurm name used to be a quota slot --
+# `<prefix>-<arch>-s<n>` -- and six identically named jobs is how you lose track
+# of a campaign. The quota is held by an afterany chain now, so the name says
+# what the job measures and squeue is readable on its own.
 #
-# So the lane travels in --comment, which squeue prints as %k and nobody passes.
-# This is that invocation, and it exists because reading a queue and seeing six
-# identical names is how you lose track of a campaign.
+# What is left is formatting: the lane key still travels in --comment, which
+# squeue prints as %k and nobody passes, and it is shorter than the job name.
 set -euo pipefail
 
 printf '%-8s %-3s %10s %10s  %-26s %s\n' JOBID ST ELAPSED LIMIT MEASURING WHERE
