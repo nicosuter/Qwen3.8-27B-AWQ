@@ -280,6 +280,19 @@ CONCURRENCY="${PAIRED_CONCURRENCY:-}"
 # it. A client-side number cannot tell a cheap request from an expensive one, so
 # any single value starves the short suites or thrashes the long ones. That
 # belongs to the scheduler, which knows both, and is now set there.
+#
+# What offering everything does cost is the per-request clock. --request-timeout
+# is measured client-side, so it counts the time a request spends queued as well
+# as generating, and contention therefore reads as slowness. LiveCodeBench is
+# the suite that shows it: fewer items (175) than its configured concurrency, so
+# the whole suite goes in flight at once alongside three saturating lanes. It
+# timed out on 0 of 175 items in every run under the old divisor and on 38 the
+# first time it ran undivided, with the completed items smeared right up against
+# the limit -- the slowest finished 21 seconds under it. A timed-out item scores
+# as a wrong answer, so this is a measurement hazard and not only a slow one.
+# suite_is_current refuses to reuse a suite whose timeout fired, which keeps the
+# contaminated rows out of a macro; PAIRED_TIMEOUT_SCALE is what buys the clock
+# back if a batch needs the suite rather than merely needing to not trust it.
 CONCURRENCY_SCALE="${PAIRED_CONCURRENCY_SCALE:-}"
 PYTHON="${EVAL_VENV:-$PROJECT_DIR/.venv}/bin/python"
 # One stamp for the whole job, so everything it supersedes or emits sorts
