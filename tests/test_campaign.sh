@@ -29,6 +29,9 @@ check() { # check <desc> <expected> <actual>
 mkdir -p "$WORK/eval/slurm" "$WORK/eval/scripts"
 cp "$ROOT/eval/slurm/campaign.sh" "$ROOT/eval/slurm/campaign-lib.sh" "$WORK/eval/slurm/"
 cp "$ROOT/eval/scripts/checkpoints.py" "$WORK/eval/scripts/"
+# The library asks eval_suite.py which suite version is current rather than
+# carrying a literal, so the fixture needs it too.
+cp "$ROOT/eval/scripts/eval_suite.py" "$WORK/eval/scripts/"
 cp "$ROOT/eval/checkpoints.json" "$WORK/eval/"
 cat > "$WORK/eval/slurm/submit-paired.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -48,7 +51,7 @@ campaign() { # campaign <args...>  -> sets $out $rc, writes $SUBMIT_LOG
     : > "$SUBMIT_LOG"
     export SUBMIT_LOG
     out="$(RUN_BASE="$RUN" EVAL_PYTHON=python3 bash "$WORK/eval/slurm/campaign.sh" \
-        --arch testarch --gpu-quota 8 --gpus-per-lane 4 "$@" 2>&1)"
+        --arch testarch --gpu-quota 8 --gpus-per-lane 4 --suite-version v1 "$@" 2>&1)"
     rc=$?
 }
 

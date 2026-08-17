@@ -61,6 +61,7 @@ campaign() { # campaign <args...>  -> sets $out $rc, writes $SUBMIT_LOG
 cat > "$WORK/campaign.sh" <<'CAMPAIGN'
 set -euo pipefail
 CAMPAIGN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CAMPAIGN_SUITE_VERSION=v1
 source "$CAMPAIGN_ROOT/eval/slurm/campaign-lib.sh"
 lane alpha "" 01:00:00 "" "K=1"
 lane bravo "" 02:00:00 "" "K=2"
@@ -150,6 +151,7 @@ echo "== case 7b: a dependency already finished is dropped, not resolved =="
 cat > "$WORK/campaign.sh" <<'CAMPAIGN'
 set -euo pipefail
 CAMPAIGN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CAMPAIGN_SUITE_VERSION=v1
 source "$CAMPAIGN_ROOT/eval/slurm/campaign-lib.sh"
 lane solo "" 01:00:00 "afterok:@earlier" "K=1"
 CAMPAIGN
@@ -164,6 +166,7 @@ echo "== case 8: the batch lands in the log name and in the lane key =="
 cat > "$WORK/campaign.sh" <<'CAMPAIGN'
 set -euo pipefail
 CAMPAIGN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CAMPAIGN_SUITE_VERSION=v1
 source "$CAMPAIGN_ROOT/eval/slurm/campaign-lib.sh"
 lane cyankiwi short-context 01:00:00 "" "K=1"
 lane cyankiwi long-context 02:00:00 "afterok:@cyankiwi-short-context" "K=2"

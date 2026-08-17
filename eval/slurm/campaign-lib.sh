@@ -55,9 +55,9 @@ CAMPAIGN_ARCH="${PAIRED_ARCH:-}"
 # same drift the suite file exists to stop, and it is worse in a job name
 # than in a config, because the name is what somebody reads off squeue
 # months later to decide what a result was.
-CAMPAIGN_SUITE_VERSION="${PAIRED_SUITE_VERSION:-$(
+CAMPAIGN_SUITE_VERSION="${CAMPAIGN_SUITE_VERSION:-${PAIRED_SUITE_VERSION:-$(
     python3 "$CAMPAIGN_ROOT/eval/scripts/eval_suite.py" --default-version
-)}"
+)}}"
 CAMPAIGN_JOB_PREFIX="${PAIRED_JOB_PREFIX:-eval-qwen38-27b}"
 CAMPAIGN_EXCLUDE="${PAIRED_EXCLUDE:-}"
 declare -a LANE_PLAN=()
