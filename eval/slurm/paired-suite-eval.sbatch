@@ -291,29 +291,28 @@ CAPABILITY_ARG=(${GPU_CAPABILITY:+--compute-capability "$GPU_CAPABILITY"})
 BASELINE_INFO="$("$PYTHON" eval/scripts/checkpoint_fingerprint.py "$BASELINE_DIR" --label baseline "${CAPABILITY_ARG[@]}")"
 CANDIDATE_INFO="$("$PYTHON" eval/scripts/checkpoint_fingerprint.py "$OUTPUT_DIR" --label candidate "${CAPABILITY_ARG[@]}")"
 mkdir -p "$RUN_DIR"
-printf '%s\n%s\n' "$BASELINE_INFO" "$CANDIDATE_INFO" > "$RUN_DIR/checkpoints.jsonl"
-echo "baseline-checkpoint=$BASELINE_INFO"
-echo "candidate-checkpoint=$CANDIDATE_INFO"
-# Reported, not refused. A tainted run is still a paired measurement of what
-# this hardware serves, and on the serving hardware it is the more relevant one;
-# what it is not is a measurement of the checkpoint as declared. That
-# distinction belongs to whoever reads the result, so it is stated here and
-# carried in every suite's metadata rather than being turned into an exit code.
-printf '%s\n%s\n' "$BASELINE_INFO" "$CANDIDATE_INFO" | "$PYTHON" -c '
+printf '%s\n%s\n' "$BASELINE_INFO" "$CANDIDATE_INFO" | "$PYTHON" -c "$(cat <<'PY'
 import json, sys
 
 for line in sys.stdin:
     info = json.loads(line)
     for taint in info.get("activation_taint") or []:
         print(
-            f"TAINT {info[\"label\"]}: {info[\"path\"].split(\"/\")[-1]} declares"
-            f" {taint[\"declared\"]} on {taint[\"group\"]}, and this device"
-            f" (capability {taint[\"capability\"]}, needs"
-            f" {taint[\"requires_capability\"]}) serves them as"
-            f" {taint[\"served_as\"]}. The run measures what is served.",
+            "TAINT {label}: {name} declares {declared} on {group}, and this"
+            " device (capability {capability}, needs {requires}) serves them as"
+            " {served}. The run measures what is served.".format(
+                label=info["label"],
+                name=info["path"].rsplit("/", 1)[-1],
+                declared=taint["declared"],
+                group=taint["group"],
+                capability=taint["capability"],
+                requires=taint["requires_capability"],
+                served=taint["served_as"],
+            ),
             file=sys.stderr,
         )
-'
+PY
+)"
 
 # The checkpoint is fingerprinted but the code that scored it was not, and this
 # harness decides lane structure, timeouts, reuse and the gate arithmetic. A
