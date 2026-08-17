@@ -667,71 +667,17 @@ fi
 
 report_failures
 
-# One file per checkpoint so the comparator sees every suite at once; it
-# requires identical keys on both sides and will say so if a suite is missing.
-# Everything on disk is swept, not just this job's $SUITES: a chained job scores
-# one suite and reuses the rest, and narrowing to $SUITES here would silently
-# drop them from the macro. Failed suites are the one exclusion.
-concat_variant() {
-    local variant="$1" path suite found=0
-    # Built to a temp and moved into place. Truncating first blanked the other
-    # arm's file whenever a job scored only one variant, and left a reader
-    # holding a half-written file even when it scored both.
-    local scratch="$RUN_DIR/.$variant-all.jsonl.$$"
-    : > "$scratch"
-    for path in "$RUN_DIR"/raw/"$variant"/*.jsonl; do
-        [[ -e "$path" ]] || continue
-        suite="$(basename "$path")"
-        suite="${suite%-r*}"
-        if suite_failed "$suite"; then
-            echo "excluding $(basename "$path") from the comparison" >&2
-            continue
-        fi
-        cat "$path" >> "$scratch"
-        found=1
-    done
-    if (( found )); then
-        mv -f "$scratch" "$RUN_DIR/$variant-all.jsonl"
-    else
-        rm -f "$scratch"
-        echo "no scored results for $variant; leaving $variant-all.jsonl as it was" >&2
-    fi
-}
-
-for variant in baseline candidate; do
-    concat_variant "$variant"
-done
-
-echo "=== paired comparison ==="
-# Every comparison is kept. A run directory is shared across jobs on purpose --
-# that is what makes an earlier baseline reusable -- but it also meant the last
-# job to finish silently replaced the verdict, and a chained job that rescores
-# two suites produces a genuinely different number. comparison.json stays as the
-# name everything else reads, now pointing at the newest.
-#
-# Floors sit at 95% of each suite's measured FP8 baseline, from v2/paired-2 and
-# v2/paired-fp8gdn. They alert rather than gate: a baseline that far below where
-# it has always landed means the harness broke for both arms, which is a reason
-# to go and look at the run and not a reason to fail a checkpoint. The three
-# suites with no paired run yet (livecodebench_v6, terminal_bench_2_1,
-# swebench_pro_1_0) get floors once they have a baseline worth taking 95% of;
-# declaring one now would be inventing the number it is supposed to check.
-mkdir -p "$RUN_DIR/comparisons"
-COMPARISON="$RUN_DIR/comparisons/$RUN_STAMP-job${SLURM_JOB_ID:-manual}.json"
-"$PYTHON" scripts/compare_eval_results.py \
-    --baseline "$RUN_DIR/baseline-all.jsonl" \
-    --candidate "$RUN_DIR/candidate-all.jsonl" \
-    --output "$COMPARISON" \
-    --baseline-floor bfcl_v4="${BFCL_FLOOR:-0.830}" \
-    --baseline-floor gpqa_diamond="${GPQA_FLOOR:-0.844}" \
-    --baseline-floor matharena_2026_06="${MATHARENA_FLOOR:-0.765}" \
-    --baseline-floor multimodal="${MULTIMODAL_FLOOR:-0.824}" \
-    --baseline-floor ruler="${RULER_FLOOR:-0.760}" \
-    --eval-suite "$EVAL_SUITE_VERSION" \
-    ${PAIRED_SUITES:+--allow-partial} ${PAIRED_BATCH:+--allow-partial} \
-    || true   # a failing gate is a result, not a job error
-if [[ -s "$COMPARISON" ]]; then
-    ln -sfn "comparisons/$(basename "$COMPARISON")" "$RUN_DIR/comparison.json"
-fi
+# The concatenation and the comparator call live in scripts/compare_run_dir.sh
+# so that a job with no GPU can also produce a comparison: LiveCodeBench defers
+# execution, and its verdict is produced later on a CPU node. Two copies of the
+# call would mean two copies of the baseline floors.
+COMPARISON="$(
+    RUN_DIR="$RUN_DIR" PYTHON="$PYTHON" \
+    EVAL_SUITE_VERSION="$EVAL_SUITE_VERSION" RUN_STAMP="$RUN_STAMP" \
+    COMPARISON_TAG="${SLURM_JOB_ID:-manual}" \
+    EXCLUDE_SUITES="${FAILED_SUITES[*]-}" \
+    ALLOW_PARTIAL="$( [[ -n "${PAIRED_SUITES:-}${PAIRED_BATCH:-}" ]] && echo 1 || echo 0 )" \
+    ./scripts/compare_run_dir.sh | tee /dev/stderr | sed -n 's/^comparison=//p'
+)"
 
 echo "paired-eval=complete results=$RUN_DIR comparison=$COMPARISON"

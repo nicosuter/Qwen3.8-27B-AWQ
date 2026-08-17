@@ -24,11 +24,20 @@ check() { # check <desc> <expected> <actual>
 awk '/^suite_is_current\(\) \{/,/^\}/' "$SBATCH" > "$WORK/fns.sh"
 awk '/^count_alive\(\) \{/,/^\}/'     "$SBATCH" >> "$WORK/fns.sh"
 for fn in suite_failed record_failure usable_suites report_failures require_usable_suites \
-          variant_requested concat_variant candidate_bind; do
+          variant_requested candidate_bind; do
     awk -v f="^${fn}\\\\(\\\\) \\\\{" '$0 ~ f, /^\}/' "$SBATCH" >> "$WORK/fns.sh"
 done
 awk '/^score_variant\(\) \{/,/^\}/'   "$SBATCH" >> "$WORK/fns.sh"
-grep -q "score_variant" "$WORK/fns.sh" || { echo "could not extract functions"; exit 1; }
+# concat_variant and its exclusion test live in the shared comparison script now,
+# so that a CPU-only job can rebuild a comparison too.
+ROOT="$(cd "$(dirname "$SBATCH")/.." && pwd)"
+for fn in excluded concat_variant; do
+    awk -v f="^${fn}\\\\(\\\\) \\\\{" '$0 ~ f, /^\}/' "$ROOT/scripts/compare_run_dir.sh" >> "$WORK/fns.sh"
+done
+# Checked per source file: an awk pattern that silently matched nothing let the
+# concat tests pass against an empty extraction.
+grep -q "score_variant"  "$WORK/fns.sh" || { echo "could not extract from the sbatch"; exit 1; }
+grep -q "concat_variant" "$WORK/fns.sh" || { echo "could not extract from compare_run_dir.sh"; exit 1; }
 
 cat > "$WORK/stub" <<'STUB'
 #!/usr/bin/env bash
@@ -79,6 +88,7 @@ JSON
     CANDIDATE_INFO='{"label":"candidate","fingerprint":"sha256:bbb"}'
     FAILURE_LOG="$RUN_DIR/logs/suite-failures.tsv"
     FAILED_SUITES=()
+    EXCLUDE_SUITES=""
 }
 
 max_overlap() {
@@ -304,9 +314,10 @@ setup
 mkdir -p "$RUN_DIR/raw/baseline"
 echo '{"id":"good"}' > "$RUN_DIR/raw/baseline/alpha-r0.jsonl"
 echo '{"id":"bad"}'  > "$RUN_DIR/raw/baseline/failsuite-r0.jsonl"
-record_failure baseline failsuite 0 3 /dev/null > /dev/null 2>&1
+EXCLUDE_SUITES=failsuite
 concat_variant baseline > /dev/null 2>&1
 check "failed suite excluded" '{"id":"good"}' "$(cat "$RUN_DIR/baseline-all.jsonl")"
+EXCLUDE_SUITES=""
 
 echo "== case 17: PAIRED_RUNNER picks which harness scores a lane =="
 setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
