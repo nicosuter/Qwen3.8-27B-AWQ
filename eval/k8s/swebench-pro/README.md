@@ -18,11 +18,12 @@ task pod can be denied the network completely and still be driven.
 
 ## Two pieces of configuration that do nothing
 
-**`network_mode`.** Harbor's task schema has `network_mode` with a `no-network`
-value and an `allowed_hosts` allowlist. Neither `gke.py` nor
-`singularity/singularity.py` reads it -- zero references in both. Setting it
-would read as a control while enforcing nothing. `10-networkpolicy.yaml` is the
-enforcement.
+**`network_mode` and `allow_internet`.** Harbor's task schema has
+`network_mode`, with a `no-network` value and an `allowed_hosts` allowlist, and
+`EnvironmentConfig` separately has `allow_internet`. Neither `gke.py` nor
+`singularity/singularity.py` reads either one -- zero references in both.
+Setting them would read as controls while enforcing nothing.
+`10-networkpolicy.yaml` is the enforcement.
 
 **`gke.py`'s builder.** It builds task images with Cloud Build, which does not
 exist on a self-hosted cluster. It skips building entirely when `task.toml`
@@ -77,10 +78,25 @@ codex, openhands, qwen_code, swe_agent, kimi -- are uploaded into the task
 container and handed `OPENAI_BASE_URL`, which would require opening egress on
 every task pod. Changing the agent means revisiting `10-networkpolicy.yaml`.
 
+## Where step 2 hangs
+
+`EnvironmentConfig` has no setup or pre-agent field, but it has `healthcheck`,
+documented as "runs a command repeatedly after environment start to verify
+readiness. All retries must pass before agent setup begins." That is a shell
+command in the container, gated ahead of the agent, so no patch to `gke.py` is
+needed:
+
+    [environment.healthcheck]
+    command = "/staging/swebenchpro_prepare_repo.sh /app <base_commit>"
+    timeout_sec = 300
+
+It is a readiness probe being used to mutate, which is why the script is
+repeat-safe: it marks the repository and returns early on any later pass. Without
+that, a retry firing after the agent had started would run `git clean -fd` over
+the agent's work and the run would grade a pristine tree.
+
 ## Still open
 
-- Whether Harbor exposes a hook for the step-2 exec, or whether it is a small
-  patch to the setup path in `gke.py`.
 - Image storage: 300 tasks at the 0.5-1.1 GB measured is roughly 150-350 GB
   across node container storage.
 - The harness needs the model. That is a firewall allow to the tunnel host and a

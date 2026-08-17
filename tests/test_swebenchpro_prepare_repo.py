@@ -108,5 +108,30 @@ class PrepareRepoTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
 
 
+
+class RepeatSafetyTests(PrepareRepoTests):
+    """The hook is a readiness probe, so the command runs more than once.
+
+    Harbor's healthcheck retries until it passes and every retry must pass. A
+    second pass that reached `git clean -fd` after the agent had started would
+    delete the agent's work and the run would score a pristine tree.
+    """
+
+    def test_a_second_pass_is_a_no_op(self) -> None:
+        self.assertEqual(self.prepare().returncode, 0)
+        again = self.prepare()
+        self.assertEqual(again.returncode, 0)
+        self.assertIn("already prepared", again.stdout)
+
+    def test_a_second_pass_does_not_discard_work_in_progress(self) -> None:
+        self.assertEqual(self.prepare().returncode, 0)
+        (self.repo / "agent_work.py").write_text("the agent's edit\n")
+        (self.repo / "file.txt").write_text("edited by the agent\n")
+        self.assertEqual(self.prepare().returncode, 0)
+        self.assertTrue((self.repo / "agent_work.py").is_file(),
+                        "an untracked file the agent created was cleaned away")
+        self.assertEqual((self.repo / "file.txt").read_text(), "edited by the agent\n")
+
+
 if __name__ == "__main__":
     unittest.main()

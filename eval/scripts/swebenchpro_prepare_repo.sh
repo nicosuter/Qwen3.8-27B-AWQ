@@ -28,6 +28,17 @@ BASE="${2:?usage: swebenchpro_prepare_repo.sh <repo dir> <base commit>}"
 
 cd "$REPO"
 
+# Repeat-safe, and not as a nicety. The hook this runs from is Harbor's
+# healthcheck, which is a readiness probe: it runs the command repeatedly and
+# every retry must pass before the agent starts. A second pass reaching
+# `git clean -fd` after the agent had begun would delete its work, so a prepared
+# repository says so and stops.
+MARKER=".git/.swebenchpro-prepared"
+if [ -f "$MARKER" ]; then
+    echo "already prepared at $(cat "$MARKER")"
+    exit 0
+fi
+
 # Detached first: refs/heads is deleted below, and a branch cannot be deleted
 # while it is checked out. Any local branch left pointing past the base commit
 # would keep the fix reachable on its own.
@@ -56,4 +67,5 @@ if [ "$reachable" != "$present" ]; then
     exit 1
 fi
 
+git rev-parse HEAD > "$MARKER"
 echo "prepared $REPO at $(git rev-parse --short HEAD): $reachable commits, no remotes, no tags"
