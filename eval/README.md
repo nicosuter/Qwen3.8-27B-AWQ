@@ -59,9 +59,13 @@ would starve the short suites. The telemetry says the opposite: the short suites
 are item-starved rather than cache-starved -- 43% of their wall clock runs under
 sixteen requests in flight at 4% cache -- and RULER is the complement, cache-
 hungry and item-poor, prefill-heavy where they are decode-heavy. Its hour fits
-inside their drain. Each suite still runs at the concurrency it was measured at:
-a lane's share is divided among the lanes of its own `kv_class`, so colocating
-does not quietly narrow the others.
+inside their drain. Each lane offers its suite's whole configured concurrency
+and vLLM decides how much of it to run, so colocating does not narrow anything.
+Dividing that number between lanes was a mistake twice over -- it starved a
+server that already schedules its own queue, and the divisor was fixed when the
+lane launched, so a long lane kept its share long after the lanes it was sharing
+with had finished. Offered width is scheduling, not measurement: results stay
+comparable across it, which is why the reuse check ignores it.
 
 ## Campaigns
 

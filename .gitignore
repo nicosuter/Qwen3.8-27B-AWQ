@@ -11,3 +11,8 @@ __pycache__/
 # Deployment topology, not protocol. See eval/k8s/swebench-pro/overlay/README.md
 eval/k8s/*/overlay/harness-egress.yaml
 eval/k8s/*/overlay/kustomization.yaml
+
+# Scored LiveCodeBench results pulled off the k8s volume. Measurements, not
+# source, and the only copy outside that volume -- kept here deliberately, not
+# committed.
+results/lcb-scores/

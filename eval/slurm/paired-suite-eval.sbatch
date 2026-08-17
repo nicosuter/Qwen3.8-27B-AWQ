@@ -214,46 +214,32 @@ ORDER_SEED="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['o
 ES_DATASETS="${PAIRED_ES_DATASETS:-$RUN_BASE/eval-materialized/evalscope}"
 ES_MAX_TOKENS="${PAIRED_ES_MAX_TOKENS:-131072}"
 ES_REQUEST_TIMEOUT="${PAIRED_ES_REQUEST_TIMEOUT:-5400}"
-# EvalScope's eval_batch_size defaults to 1, one request in flight. Divided
-# across lanes below, exactly as the adapter path divides its own concurrency.
 ES_CONCURRENCY="${PAIRED_ES_CONCURRENCY:-256}"
 PARALLEL="${PAIRED_PARALLEL:-0}"   # 0 means "as many lanes as there are jobs"
 CONCURRENCY="${PAIRED_CONCURRENCY:-}"
-# Default to scaling each suite's configured concurrency by how much of the
-# protocol's eight-replica server this job actually has. One absolute number
-# across suites is wrong: RULER holds about six percent of the KV pool per
-# request where a short prompt holds one.
-# Scaled by the GPUs the job holds, not by the replica count: the protocol's
-# concurrencies were written for an eight-GPU server, and moving those GPUs from
-# data-parallel replicas into one tensor-parallel replica does not change how
-# many requests they can carry. Keying this on DP alone would have quartered
-# every suite's concurrency the moment the default became TP=4, DP=1.
-CONCURRENCY_SCALE="${PAIRED_CONCURRENCY_SCALE:-$(python3 -c "print($TP*$DP/8)")}"
-# Which suites compete with which for the cache. A lane's concurrency is divided
-# among the lanes of its own class rather than among every lane in the job, so a
-# job that scores RULER alongside the short suites runs each of them at the width
-# it was measured at instead of at a sixth of it. Suites that predate the field
-# are short: every batch that existed then held one class, where dividing by the
-# class and dividing by the job are the same number.
-KV_CLASSES="$(python3 - "$CONFIG" <<'PY'
-import json, sys
-for suite in json.load(open(sys.argv[1]))["suites"]:
-    print(f"{suite['name']}\t{suite.get('kv_class', 'short')}")
-PY
-)"
-kv_class_of() { # kv_class_of <suite>  -> its class, "short" if it declares none
-    printf '%s\n' "$KV_CLASSES" |
-        awk -F'\t' -v want="$1" '$1 == want { print $2; hit = 1 }
-                                 END { if (!hit) print "short" }'
-}
-class_mates() { # class_mates <class> <suite:rep>...  -> how many are in <class>
-    local want="$1" job n=0
-    shift
-    for job in "$@"; do
-        [[ "$(kv_class_of "${job%%:*}")" == "$want" ]] && n=$(( n + 1 ))
-    done
-    echo "$n"
-}
+# Each lane offers its suite's configured concurrency, undivided.
+#
+# Every earlier version of this divided that number -- by the GPU count, then by
+# the lanes in the job, then by the lanes of the same kv_class -- on the theory
+# that the client had to ration the server's KV cache. It does not. vLLM
+# schedules: it admits what its KV pool can hold and leaves the rest in
+# `waiting`. A client-side cap cannot protect a queue that is already managed,
+# it can only starve it, and it did. A six-lane run measured 32 requests running
+# against an empty queue at 21% cache -- two lanes pinned at their 1/16 share
+# while the server idled -- and the divisor could not recover, because it is
+# fixed when the lane launches and four of the six had already finished.
+#
+# So the number to send is "more than the server will run", and the margin is
+# what keeps the queue non-empty. The configured concurrencies sum to ~1.6k
+# against a pool that holds ~150 requests of this shape, which is margin enough
+# to survive any lane finishing early.
+#
+# What this costs is queueing delay, which lands on --request-timeout: a request
+# at the back of ~1.5k waits about twenty minutes at the observed throughput,
+# against a 5400s timeout. That headroom is the reason a timeout can still be
+# read as model behavior, and _common.request_with_retries retries once before
+# it scores one, because under a deep queue it no longer always is.
+CONCURRENCY_SCALE="${PAIRED_CONCURRENCY_SCALE:-}"
 PYTHON="${EVAL_VENV:-$PROJECT_DIR/.venv}/bin/python"
 # One stamp for the whole job, so everything it supersedes or emits sorts
 # together and can be attributed to a single run.
@@ -670,25 +656,15 @@ score_variant() {
         rep="${job##*:}"
         label="$suite-r$rep"
         rm -f "$lane_dir/$label.rc"
-        # Divide the request budget among the lanes this one contends with, so
-        # the class holds the same number in flight as a job running that class
-        # alone would. The win from running lanes together comes from item supply
-        # keeping the batch full -- short suites spend 43% of their wall clock
-        # under sixteen requests in flight at 4% cache -- not from asking the
-        # server to carry more at once.
-        local mates
-        mates="$(class_mates "$(kv_class_of "$suite")" "${pending[@]}")"
-        (( mates > lanes )) && mates=$lanes
-        (( mates > 0 )) || mates=1
+        # Undivided: see the note on CONCURRENCY_SCALE. The lane offers what its
+        # suite was configured for and vLLM decides how much of it to run.
         local lane_conc="" lane_scale=""
         if [[ -n "$CONCURRENCY" ]]; then
-            lane_conc=$(( CONCURRENCY / mates ))
-            (( lane_conc > 0 )) || lane_conc=1
+            lane_conc="$CONCURRENCY"
         elif [[ -n "$CONCURRENCY_SCALE" ]]; then
-            lane_scale="$(python3 -c "print($CONCURRENCY_SCALE/$mates)")"
+            lane_scale="$CONCURRENCY_SCALE"
         fi
-        local es_lane_conc=$(( ${ES_CONCURRENCY:-256} / mates ))
-        (( es_lane_conc > 0 )) || es_lane_conc=1
+        local es_lane_conc="${ES_CONCURRENCY:-256}"
         # Hold at `lanes` running jobs. `wait -n` returns the exit status of
         # whichever finished, which is why each job records its own into a file.
         while (( $(count_alive "${lane_pids[@]}") >= lanes )); do wait -n || true; done

@@ -24,7 +24,7 @@ check() { # check <desc> <expected> <actual>
 awk '/^suite_is_current\(\) \{/,/^\}/' "$SBATCH" > "$WORK/fns.sh"
 awk '/^count_alive\(\) \{/,/^\}/'     "$SBATCH" >> "$WORK/fns.sh"
 for fn in suite_failed record_failure usable_suites report_failures require_usable_suites \
-          variant_requested candidate_bind stale_suites kv_class_of class_mates \
+          variant_requested candidate_bind stale_suites \
           require_materialized; do
     awk -v f="^${fn}\\\\(\\\\) \\\\{" '$0 ~ f, /^\}/' "$SBATCH" >> "$WORK/fns.sh"
 done
@@ -38,7 +38,7 @@ done
 # Checked per source file: an awk pattern that silently matched nothing let the
 # concat tests pass against an empty extraction.
 grep -q "score_variant"  "$WORK/fns.sh" || { echo "could not extract from the sbatch"; exit 1; }
-grep -q "class_mates"    "$WORK/fns.sh" || { echo "could not extract class_mates"; exit 1; }
+grep -q "score_variant"  "$WORK/fns.sh" || { echo "could not extract score_variant"; exit 1; }
 grep -q "concat_variant" "$WORK/fns.sh" || { echo "could not extract from compare_run_dir.sh"; exit 1; }
 
 cat > "$WORK/stub" <<'STUB'
@@ -130,7 +130,7 @@ setup; SUITES="alpha beta"; REPLICATES=2; PARALLEL=0
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
 check "four lanes announced" 1 "$(grep -c 'across 4 lane' <<<"$out")"
-check "scale split 4 ways" 4 "$(grep -c 'scale=0.125' <<<"$out")"
+check "every lane offers the full scale" 4 "$(grep -c 'scale=0.5' <<<"$out")"
 check "replicate 0 and 1 both run" 2 "$(grep -c 'rep=1' <<<"$out")"
 check "all four ran concurrently" 4 "$(max_overlap)"
 
@@ -139,14 +139,16 @@ setup; SUITES="alpha beta"; REPLICATES=2; PARALLEL=2
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
 check "two lanes announced" 1 "$(grep -c 'across 2 lane' <<<"$out")"
-check "scale split 2 ways" 4 "$(grep -c 'scale=0.25' <<<"$out")"
+check "capping lanes does not narrow them" 4 "$(grep -c 'scale=0.5' <<<"$out")"
 overlap="$(max_overlap)"
 check "never exceeded 2 concurrent" "yes" "$([[ "$overlap" -le 2 ]] && echo yes || echo "no($overlap)")"
 
-# Colocating a long-context suite with the short ones is a scheduling change, and
-# it stops being one the moment it also narrows the short lanes. Dividing by the
-# job would run all three at a third; dividing by class keeps each suite at the
-# width it was measured at, which is the whole reason the batches could merge.
+# Lanes do not ration the server between themselves. Two rounds of divisor --
+# by the job, then by a declared kv_class -- both starved it, because the client
+# cannot know what the server can hold and does not need to: vLLM admits what
+# fits and queues the rest. A lane offers its suite's whole configured width and
+# the scheduler decides. The fixture still declares classes so the tests can say
+# the field no longer narrows anything.
 mixed_classes() { # replace the fixture config with one that spans both classes
     cat > "$CONFIG" <<'JSON'
 {"suites":[
@@ -154,12 +156,6 @@ mixed_classes() { # replace the fixture config with one that spans both classes
   {"name":"beta","kv_class":"short","run":["x","run"]},
   {"name":"longsuite","kv_class":"long","run":["x","run"]}]}
 JSON
-    KV_CLASSES="$(python3 - "$CONFIG" <<'PY'
-import json, sys
-for suite in json.load(open(sys.argv[1]))["suites"]:
-    print(f"{suite['name']}\t{suite.get('kv_class', 'short')}")
-PY
-)"
 }
 
 # An inherited baseline is copied into a fresh run directory, and the copy used
@@ -193,23 +189,23 @@ rm -f "$RUN_DIR/materialized/alpha.jsonl"
 out="$(require_materialized alpha 2>&1)"; rc=$?
 check "a missing manifest is refused too" 1 "$rc"
 
-echo "== case 2b: a lane is divided by its own KV class, not by the job =="
+echo "== case 2b: no lane is narrowed, by class or by the job =="
 setup; mixed_classes
 SUITES="alpha beta longsuite"; REPLICATES=1; PARALLEL=0
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
 check "three lanes announced" 1 "$(grep -c 'across 3 lane' <<<"$out")"
-check "the two short lanes halve the budget" 2 "$(grep -c 'scale=0.25' <<<"$out")"
-check "the long lane keeps all of it" 1 "$(grep -c 'suite=longsuite .*scale=0.5' <<<"$out")"
-check "no lane was divided by the job" 0 "$(grep -c 'scale=0.16' <<<"$out")"
+check "all three offer the full scale" 3 "$(grep -c 'scale=0.5' <<<"$out")"
+check "not divided by the class" 0 "$(grep -c 'scale=0.25' <<<"$out")"
+check "not divided by the job" 0 "$(grep -c 'scale=0.16' <<<"$out")"
 
-echo "== case 2c: an absolute concurrency is split the same way =="
+echo "== case 2c: an absolute concurrency is not split either =="
 setup; mixed_classes; CONCURRENCY=120
 SUITES="alpha beta longsuite"; REPLICATES=1; PARALLEL=0
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
-check "short lanes get half each" 2 "$(grep -c 'conc=60' <<<"$out")"
-check "the long lane gets all of it" 1 "$(grep -c 'suite=longsuite .*conc=120' <<<"$out")"
+check "every lane gets all of it" 3 "$(grep -c 'conc=120' <<<"$out")"
+check "nothing was halved" 0 "$(grep -c 'conc=60' <<<"$out")"
 
 # The sbatch calls score_variant directly, so the failure ledger it builds has
 # to survive into the caller. Capturing through $(...) would run it in a subshell
