@@ -184,6 +184,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--batches", action="store_true", help="list the batch plan")
     parser.add_argument(
+        "--default-version", action="store_true",
+        help="print the current suite version, so a shell can label a job with it",
+    )
+    parser.add_argument(
         "--names", action="store_true",
         help="print the suite names, so a shell can filter what the protocol defines",
     )
@@ -191,6 +195,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.select:
         print(" ".join(select(args.select, args.version)))
+        return 0
+    if args.default_version:
+        print(DEFAULT_VERSION)
         return 0
     if args.names:
         print(" ".join(sorted(names(args.version))))

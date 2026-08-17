@@ -51,7 +51,13 @@ BASELINE_FROM="${PAIRED_BASELINE_FROM:-}"
 GPU_QUOTA="${PAIRED_GPU_QUOTA:-}"
 GPUS_PER_LANE="${PAIRED_GPUS_PER_LANE:-4}"
 CAMPAIGN_ARCH="${PAIRED_ARCH:-}"
-CAMPAIGN_SUITE_VERSION="${PAIRED_SUITE_VERSION:-v1}"
+# Derived, never written down twice. A job named v1 while scoring v2 is the
+# same drift the suite file exists to stop, and it is worse in a job name
+# than in a config, because the name is what somebody reads off squeue
+# months later to decide what a result was.
+CAMPAIGN_SUITE_VERSION="${PAIRED_SUITE_VERSION:-$(
+    python3 "$CAMPAIGN_ROOT/eval/scripts/eval_suite.py" --default-version
+)}"
 CAMPAIGN_JOB_PREFIX="${PAIRED_JOB_PREFIX:-eval-qwen38-27b}"
 CAMPAIGN_EXCLUDE="${PAIRED_EXCLUDE:-}"
 declare -a LANE_PLAN=()
@@ -71,7 +77,8 @@ usage: $(basename "$0") --candidates <name,...> --arch <name>
                        (short-context=12:00:00 long-context=10:00:00)
   --baseline-from DIR  inherit an already-scored baseline from a run directory
                        instead of scoring one in the first candidate's
-  --suite-version V    which suite version the job names carry (v1)
+  --suite-version V    which suite version the job names carry (defaults to
+                       the current one, from eval/scripts/eval_suite.py)
   --only a,b           submit just these lanes; the rest are reported skipped
   --dry-run            prepare the checkout and print the sbatch, submit nothing
 

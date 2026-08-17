@@ -269,6 +269,24 @@ class DefaultVersionTests(unittest.TestCase):
         "eval/scripts/compare_run_dir.sh",
     )
 
+    def test_no_shell_file_hardcodes_a_suite_version_as_a_fallback(self) -> None:
+        """A job named v1 while scoring v2 is drift somebody reads off squeue.
+
+        The campaign library labelled every job `${CAMPAIGN_SUITE_VERSION:-v1}`
+        and kept doing so after the protocol moved to v2, so a whole campaign
+        ran under the wrong name. The version is derived now; nothing may carry
+        a literal fallback again.
+        """
+        for name in (*self.SHELL, "eval/slurm/campaign-lib.sh"):
+            with self.subTest(entry=name):
+                text = (ROOT / name).read_text(encoding="utf-8")
+                stale = [
+                    version
+                    for version in re.findall(r":-(v\d+)\b", text)
+                    if version != eval_suite.DEFAULT_VERSION
+                ]
+                self.assertEqual(stale, [], f"{name} falls back to {stale}")
+
     def test_the_shell_defaults_match_the_python_default(self) -> None:
         want = eval_suite.DEFAULT_VERSION
         for name in self.SHELL:
