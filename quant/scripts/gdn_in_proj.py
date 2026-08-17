@@ -46,24 +46,24 @@ FOUR_BIT_TARGETS = (
     "re:.*self_attn\\.(q|k|v|o)_proj$",
     "re:.*linear_attn\\.out_proj$",
 )
-GDN_TARGETS = (
+GDN_IN_PROJ_TARGETS = (
     "re:.*linear_attn\\.in_proj_qkv$",
     "re:.*linear_attn\\.in_proj_z$",
 )
-GDN_PRECISIONS = ("source", "int4", "fp8-a16", "fp8")
-DEFAULT_GDN_PRECISION = "source"
+GDN_IN_PROJ_PRECISIONS = ("source", "int4", "fp8-a16", "fp8")
+DEFAULT_GDN_IN_PROJ_PRECISION = "source"
 
 
-def gdn_plan(precision: str) -> dict[str, Any]:
+def gdn_in_proj_plan(precision: str) -> dict[str, Any]:
     """Resolve a precision to what the recipe has to do differently.
 
     `four_bit` is appended to the four-bit group's targets, `ignore` to the
     ignore list, and `own_group` names a preset for a group of their own.
     `quantize_activations` only means anything when there is one.
     """
-    if precision not in GDN_PRECISIONS:
+    if precision not in GDN_IN_PROJ_PRECISIONS:
         raise ValueError(
-            f"GDN_PRECISION must be one of {', '.join(GDN_PRECISIONS)}; got {precision!r}"
+            f"GDN_IN_PROJ_PRECISION must be one of {', '.join(GDN_IN_PROJ_PRECISIONS)}; got {precision!r}"
         )
     plan: dict[str, Any] = {
         "four_bit": (),
@@ -72,7 +72,7 @@ def gdn_plan(precision: str) -> dict[str, Any]:
         "quantize_activations": False,
     }
     if precision == "source":
-        plan["ignore"] = GDN_TARGETS
+        plan["ignore"] = GDN_IN_PROJ_TARGETS
     elif precision == "int4":
         # AWQ's mappings do not cover these projections, so folding them in here
         # quantizes them without the activation-aware rescaling the MLP and
@@ -80,7 +80,7 @@ def gdn_plan(precision: str) -> dict[str, Any]:
         # that quantize them to four bits, so it is the same shape, not a
         # shortcut -- but it is the reason this mode is not simply "int4 like
         # everything else".
-        plan["four_bit"] = GDN_TARGETS
+        plan["four_bit"] = GDN_IN_PROJ_TARGETS
     else:
         plan["own_group"] = "FP8_BLOCK"
         plan["quantize_activations"] = precision == "fp8"
@@ -95,7 +95,7 @@ def output_suffix(precision: str, algorithm: str = "awq") -> str:
     checkpoint whose provenance is only in a job log is a checkpoint nobody can
     identify later.
     """
-    if precision not in GDN_PRECISIONS:
+    if precision not in GDN_IN_PROJ_PRECISIONS:
         raise ValueError(f"unknown GDN precision {precision!r}")
     suffix = {
         "source": "",
@@ -116,21 +116,21 @@ def main(argv: list[str] | None = None) -> int:
     a mode the job then rejects, an hour into a reservation.
     """
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("precision", nargs="?", default=DEFAULT_GDN_PRECISION)
+    parser.add_argument("precision", nargs="?", default=DEFAULT_GDN_IN_PROJ_PRECISION)
     parser.add_argument("--algorithm", default="awq")
     parser.add_argument("--suffix", action="store_true",
                         help="print the output directory suffix for this build")
     parser.add_argument("--modes", action="store_true", help="print the valid modes")
     args = parser.parse_args(argv)
     if args.modes:
-        print(" ".join(GDN_PRECISIONS))
+        print(" ".join(GDN_IN_PROJ_PRECISIONS))
         return 0
     # An unset flag arrives as an empty argument rather than as no argument, so
     # the default lives here too. Letting the caller substitute it would put a
     # second copy of the default in a shell script.
-    precision = args.precision or DEFAULT_GDN_PRECISION
+    precision = args.precision or DEFAULT_GDN_IN_PROJ_PRECISION
     try:
-        gdn_plan(precision)
+        gdn_in_proj_plan(precision)
     except ValueError as error:
         print(error, file=sys.stderr)
         return 2

@@ -2,8 +2,8 @@
 # Submit a quantization run.
 #
 #   bash quant/scripts/submit_quantize.sh 8
-#   bash quant/scripts/submit_quantize.sh 8 --gdn=int4
-#   bash quant/scripts/submit_quantize.sh 8 --gdn=fp8 --algorithm=awq+gptq
+#   bash quant/scripts/submit_quantize.sh 8 --gdn-in-proj=int4
+#   bash quant/scripts/submit_quantize.sh 8 --gdn-in-proj=fp8 --algorithm=awq+gptq
 #
 # --algorithm chooses how weights are rounded once AWQ has scaled activations.
 # awq rounds each weight to the nearest representable value on its own;
@@ -11,13 +11,16 @@
 # quantized, correcting the layer output instead. GPTQ costs roughly two to
 # three times the runtime and writes to its own directory so both survive.
 #
-# --gdn selects what happens to the Gated DeltaNet input projections,
-# in_proj_qkv and in_proj_z, which are 4.0B parameters and most of the
-# checkpoint's size. Everything else is W4A16 in every mode. It used to be a
+# --gdn-in-proj selects what happens to linear_attn.in_proj_qkv and in_proj_z,
+# two of the eight tensor families in a Gated DeltaNet block and 4.0B parameters
+# between them. The rest of the block -- in_proj_a, in_proj_b, the conv1d, the
+# norm and the decay parameters -- is in source precision in every mode, and
+# out_proj is four-bit in every mode, so this flag is about the input to the
+# state update and not about the block. It used to be a
 # --fp8-gdn boolean, which could only express the two ends of what turned out to
 # be a four-way choice: the useful modes are int4, which is what the third-party
 # releases that quantize this path at all use, and fp8-a16, which is what the
-# serving hardware executes when handed the fp8 build. See gdn_precision.py.
+# serving hardware executes when handed the fp8 build. See gdn_in_proj.py.
 #
 # Every build writes to its own directory so they can all exist while they are
 # being compared, which is the only way to attribute a difference to one of
@@ -29,15 +32,15 @@ set -euo pipefail
 # disagree about what a mode means or where it lands. A shell script repeating
 # the list is one that accepts a mode the job then rejects, an hour into a
 # reservation.
-GDN_MODULE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gdn_precision.py"
+GDN_MODULE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gdn_in_proj.py"
 gdn() { python3 "$GDN_MODULE" "$@"; }
 
 usage() {
-    echo "usage: bash quant/scripts/submit_quantize.sh NGPUS [--gdn=MODE] [--output-dir=PATH]" >&2
+    echo "usage: bash quant/scripts/submit_quantize.sh NGPUS [--gdn-in-proj=MODE] [--output-dir=PATH]" >&2
     echo "                                      [--algorithm=awq|awq+gptq]" >&2
-    echo "  --gdn  what the Gated DeltaNet input projections are built at:" >&2
+    echo "  --gdn-in-proj  what linear_attn.in_proj_qkv and in_proj_z are built at:" >&2
     echo "         $(gdn --modes) (default source)" >&2
-    echo "         quant/scripts/gdn_precision.py says what each one means" >&2
+    echo "         quant/scripts/gdn_in_proj.py says what each one means" >&2
     echo "                                      [--dependency=SPEC] [--time=HH:MM:SS]" >&2
     exit 2
 }
@@ -49,7 +52,7 @@ case "$NGPUS" in
     *[!0-9]* | 0) echo "NGPUS must be a positive integer, got: $NGPUS" >&2; exit 2 ;;
 esac
 
-GDN_PRECISION=""
+GDN_IN_PROJ_PRECISION=""
 ALGORITHM=awq
 OUTPUT_DIR=""
 DEPENDENCY=""
@@ -61,7 +64,7 @@ for arg in "$@"; do
     case "$arg" in
         --dependency=*) DEPENDENCY="${arg#*=}" ;;
         --time=*) TIME_LIMIT="${arg#*=}" ;;
-        --gdn=*) GDN_PRECISION="${arg#*=}" ;;
+        --gdn-in-proj=*) GDN_IN_PROJ_PRECISION="${arg#*=}" ;;
         --algorithm=*)
             ALGORITHM="${arg#*=}"
             case "$ALGORITHM" in
@@ -78,8 +81,8 @@ done
 # Rejected here rather than in the job: an invalid mode should cost a shell
 # prompt, not a queued reservation. The suffix comes from the same call, so the
 # algorithm and the mode cannot both claim the same directory.
-GDN_PRECISION="$(gdn "$GDN_PRECISION")" || exit 2
-DEFAULT_SUFFIX="$(gdn "$GDN_PRECISION" --algorithm "$ALGORITHM" --suffix)"
+GDN_IN_PROJ_PRECISION="$(gdn "$GDN_IN_PROJ_PRECISION")" || exit 2
+DEFAULT_SUFFIX="$(gdn "$GDN_IN_PROJ_PRECISION" --algorithm "$ALGORITHM" --suffix)"
 
 # Resolve the default output directory the same way the job would, so the two
 # variants cannot overwrite each other by accident.
@@ -95,7 +98,7 @@ if [[ -e "$OUTPUT_DIR/config.json" ]]; then
 fi
 
 echo "gpus           : $NGPUS"
-echo "gdn projections: $GDN_PRECISION"
+echo "gdn in_proj    : $GDN_IN_PROJ_PRECISION"
 echo "algorithm      : $ALGORITHM"
 echo "output         : $OUTPUT_DIR"
 [[ -n "$DEPENDENCY" ]] && echo "dependency     : $DEPENDENCY"
@@ -105,5 +108,5 @@ exec sbatch \
     --gres="gpu:$NGPUS" \
     ${DEPENDENCY:+--dependency="$DEPENDENCY"} \
     ${TIME_LIMIT:+--time="$TIME_LIMIT"} \
-    --export="ALL,GDN_PRECISION=$GDN_PRECISION,QUANT_ALGORITHM=$ALGORITHM,OUTPUT_DIR=$OUTPUT_DIR" \
+    --export="ALL,GDN_IN_PROJ_PRECISION=$GDN_IN_PROJ_PRECISION,QUANT_ALGORITHM=$ALGORITHM,OUTPUT_DIR=$OUTPUT_DIR" \
     quant/slurm/quantize.sbatch

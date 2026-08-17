@@ -11,27 +11,27 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from quant.scripts.gdn_precision import (
-    DEFAULT_GDN_PRECISION,
+from quant.scripts.gdn_in_proj import (
+    DEFAULT_GDN_IN_PROJ_PRECISION,
     FOUR_BIT_TARGETS,
-    GDN_PRECISIONS,
-    GDN_TARGETS,
-    gdn_plan,
+    GDN_IN_PROJ_PRECISIONS,
+    GDN_IN_PROJ_TARGETS,
+    gdn_in_proj_plan,
     output_suffix,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-MODULE = ROOT / "quant" / "scripts" / "gdn_precision.py"
+MODULE = ROOT / "quant" / "scripts" / "gdn_in_proj.py"
 SUBMIT = ROOT / "quant" / "scripts" / "submit_quantize.sh"
 
 
 class PlacementTests(unittest.TestCase):
     def test_every_projection_lands_in_exactly_one_place(self) -> None:
         """Quantized twice would fight; quantized nowhere is a silent BF16 leak."""
-        for precision in GDN_PRECISIONS:
+        for precision in GDN_IN_PROJ_PRECISIONS:
             with self.subTest(precision=precision):
-                plan = gdn_plan(precision)
-                for target in GDN_TARGETS:
+                plan = gdn_in_proj_plan(precision)
+                for target in GDN_IN_PROJ_TARGETS:
                     places = [
                         target in plan["four_bit"],
                         target in plan["ignore"],
@@ -40,15 +40,15 @@ class PlacementTests(unittest.TestCase):
                     self.assertEqual(sum(places), 1, f"{target} in {sum(places)} places")
 
     def test_source_leaves_them_alone(self) -> None:
-        plan = gdn_plan("source")
-        self.assertEqual(tuple(plan["ignore"]), GDN_TARGETS)
+        plan = gdn_in_proj_plan("source")
+        self.assertEqual(tuple(plan["ignore"]), GDN_IN_PROJ_TARGETS)
         self.assertEqual(tuple(plan["four_bit"]), ())
         self.assertIsNone(plan["own_group"])
 
     def test_int4_folds_them_into_the_four_bit_group(self) -> None:
         """philbert440's shape, which measures less verbose than our FP8 build."""
-        plan = gdn_plan("int4")
-        self.assertEqual(tuple(plan["four_bit"]), GDN_TARGETS)
+        plan = gdn_in_proj_plan("int4")
+        self.assertEqual(tuple(plan["four_bit"]), GDN_IN_PROJ_TARGETS)
         self.assertEqual(tuple(plan["ignore"]), ())
         self.assertIsNone(plan["own_group"])
 
@@ -58,9 +58,9 @@ class PlacementTests(unittest.TestCase):
         On sm_86 it is also silently identical to fp8-a16 at run time, so the
         two must stay distinguishable everywhere else.
         """
-        self.assertTrue(gdn_plan("fp8")["quantize_activations"])
-        self.assertFalse(gdn_plan("fp8-a16")["quantize_activations"])
-        self.assertEqual(gdn_plan("fp8")["own_group"], gdn_plan("fp8-a16")["own_group"])
+        self.assertTrue(gdn_in_proj_plan("fp8")["quantize_activations"])
+        self.assertFalse(gdn_in_proj_plan("fp8-a16")["quantize_activations"])
+        self.assertEqual(gdn_in_proj_plan("fp8")["own_group"], gdn_in_proj_plan("fp8-a16")["own_group"])
 
     def test_out_proj_is_never_a_gdn_target(self) -> None:
         """It is the readout into the residual stream, not the state update.
@@ -68,21 +68,21 @@ class PlacementTests(unittest.TestCase):
         It stays four-bit in every mode, which is what makes these modes a test
         of the input path rather than of the block.
         """
-        self.assertNotIn("out_proj", " ".join(GDN_TARGETS))
+        self.assertNotIn("out_proj", " ".join(GDN_IN_PROJ_TARGETS))
         self.assertIn("out_proj", " ".join(FOUR_BIT_TARGETS))
-        for precision in GDN_PRECISIONS:
+        for precision in GDN_IN_PROJ_PRECISIONS:
             with self.subTest(precision=precision):
-                plan = gdn_plan(precision)
+                plan = gdn_in_proj_plan(precision)
                 self.assertNotIn("out_proj", " ".join(plan["ignore"]))
 
     def test_an_unknown_mode_is_refused(self) -> None:
         """It used to select FP8, so a typo shipped the most aggressive mode."""
         with self.assertRaises(ValueError) as caught:
-            gdn_plan("fp16")
+            gdn_in_proj_plan("fp16")
         self.assertIn("fp16", str(caught.exception))
 
     def test_the_default_is_a_real_mode(self) -> None:
-        self.assertIn(DEFAULT_GDN_PRECISION, GDN_PRECISIONS)
+        self.assertIn(DEFAULT_GDN_IN_PROJ_PRECISION, GDN_IN_PROJ_PRECISIONS)
 
 
 class OutputDirectoryTests(unittest.TestCase):
@@ -91,7 +91,7 @@ class OutputDirectoryTests(unittest.TestCase):
     def test_no_two_builds_share_a_suffix(self) -> None:
         suffixes = [
             output_suffix(precision, algorithm)
-            for precision in GDN_PRECISIONS
+            for precision in GDN_IN_PROJ_PRECISIONS
             for algorithm in ("awq", "awq+gptq")
         ]
         self.assertEqual(len(suffixes), len(set(suffixes)))
@@ -121,13 +121,13 @@ class SubmitterAgreementTests(unittest.TestCase):
     def test_the_cli_reports_the_same_modes(self) -> None:
         result = self.run_module("--modes")
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout.split(), list(GDN_PRECISIONS))
+        self.assertEqual(result.stdout.split(), list(GDN_IN_PROJ_PRECISIONS))
 
     def test_an_empty_argument_means_the_default(self) -> None:
         """An unset shell flag arrives as an empty string, not as no argument."""
         result = self.run_module("")
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout.strip(), DEFAULT_GDN_PRECISION)
+        self.assertEqual(result.stdout.strip(), DEFAULT_GDN_IN_PROJ_PRECISION)
 
     def test_the_cli_refuses_an_unknown_mode_nonzero(self) -> None:
         result = self.run_module("fp16", "--suffix")
@@ -141,8 +141,8 @@ class SubmitterAgreementTests(unittest.TestCase):
         # that drifts.
         self.assertNotIn("--fp8-gdn=*)", text, "the boolean flag outlived the boolean")
         self.assertNotIn("fp8-a16 | fp8", text, "the mode list has a second copy")
-        self.assertIn("--gdn=*)", text)
-        self.assertIn("gdn_precision.py", text)
+        self.assertIn("--gdn-in-proj=*)", text)
+        self.assertIn("gdn_in_proj.py", text)
 
 class ActivationTaintTests(unittest.TestCase):
     """Declared activation quantization the serving device will not perform.

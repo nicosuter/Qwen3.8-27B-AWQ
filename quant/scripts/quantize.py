@@ -24,12 +24,12 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
 from distributed_lifecycle import run_rank0_after_group_teardown
-from gdn_precision import (
-    DEFAULT_GDN_PRECISION,
+from gdn_in_proj import (
+    DEFAULT_GDN_IN_PROJ_PRECISION,
     FOUR_BIT_TARGETS,
-    GDN_PRECISIONS,
-    GDN_TARGETS,
-    gdn_plan,
+    GDN_IN_PROJ_PRECISIONS,
+    GDN_IN_PROJ_TARGETS,
+    gdn_in_proj_plan,
 )
 from preserve_mtp import (
     QWEN38_MTP_KEYS,
@@ -49,15 +49,15 @@ OUTPUT_DIR = Path(
     os.environ.get("OUTPUT_DIR", "artifacts/Qwen3.8-27B-AWQ")
 ).resolve()
 MAX_LENGTH = int(os.environ.get("MAX_SEQ_LENGTH", "4096"))
-# What the Gated DeltaNet input projections are built at; see gdn_precision.py
+# What the Gated DeltaNet input projections are built at; see gdn_in_proj.py
 # for what each mode means and why the set is four rather than a boolean.
 # Validated here rather than at first use: until this check existed, any value
 # that was not "source" selected FP8, so a typo shipped the most aggressive mode
 # in the set and recorded itself in run-metadata as whatever was misspelled.
-GDN_PRECISION = os.environ.get("GDN_PRECISION", DEFAULT_GDN_PRECISION)
-if GDN_PRECISION not in GDN_PRECISIONS:
+GDN_IN_PROJ_PRECISION = os.environ.get("GDN_IN_PROJ_PRECISION", DEFAULT_GDN_IN_PROJ_PRECISION)
+if GDN_IN_PROJ_PRECISION not in GDN_IN_PROJ_PRECISIONS:
     raise SystemExit(
-        f"GDN_PRECISION must be one of {', '.join(GDN_PRECISIONS)}; got {GDN_PRECISION!r}"
+        f"GDN_IN_PROJ_PRECISION must be one of {', '.join(GDN_IN_PROJ_PRECISIONS)}; got {GDN_IN_PROJ_PRECISION!r}"
     )
 # "awq" scales activations, then rounds each weight to the nearest representable
 # value independently. "awq+gptq" keeps the scaling and replaces the rounding
@@ -396,7 +396,7 @@ def main() -> None:
         "re:.*linear_attn.in_proj_a$",
         "re:.*linear_attn.in_proj_b$",
     ]
-    plan = gdn_plan(GDN_PRECISION)
+    plan = gdn_in_proj_plan(GDN_IN_PROJ_PRECISION)
     ignores.extend(plan["ignore"])
     config_groups = {
         "group_0": preset_name_to_scheme(
@@ -407,7 +407,7 @@ def main() -> None:
         # FP8_BLOCK is what Qwen's own FP8 release applies to these projections:
         # e4m3, 128x128 blocks, dynamic activations. Dropping the activations
         # leaves W8A16-FP8, which is what the serving hardware runs either way.
-        scheme = preset_name_to_scheme(plan["own_group"], list(GDN_TARGETS))
+        scheme = preset_name_to_scheme(plan["own_group"], list(GDN_IN_PROJ_TARGETS))
         if not plan["quantize_activations"]:
             scheme = scheme.model_copy(update={"input_activations": None})
         config_groups["group_1"] = scheme
@@ -521,7 +521,7 @@ def main() -> None:
             "world_size": world_size,
             "loading_strategy": "one BF16 model replica per H200; no offload wrapper",
             "ignored_modules": ignores,
-            "gdn_precision": GDN_PRECISION,
+            "gdn_in_proj": GDN_IN_PROJ_PRECISION,
             # config.json is identical for both algorithms, so without this the
             # only thing separating an AWQ checkpoint from an AWQ+GPTQ one is
             # the weights themselves.
