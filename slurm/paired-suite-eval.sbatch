@@ -620,12 +620,35 @@ else
     require_usable_suites
 fi
 
+# Somebody else's quantization arrives through the Hugging Face cache, and a
+# snapshot directory there is a farm of relative symlinks into ../../blobs.
+# Binding the snapshot alone leaves every one of them dangling inside the
+# container, config.json included, which vLLM reports as "Invalid repository ID
+# or local directory" rather than as a broken mount -- an error that sends you
+# looking at the pin instead of the bind. The baseline has always been bound
+# through its repository root for this reason; a candidate needs the same
+# treatment. A checkpoint we produced ourselves is a real directory and is bound
+# as it is.
+candidate_bind() {
+    CANDIDATE_BIND="$1"
+    CANDIDATE_MOUNT="/mnt/model"
+    case "$1" in
+        */snapshots/*)
+            CANDIDATE_BIND="${1%/snapshots/*}"
+            CANDIDATE_MOUNT="/mnt/model/snapshots/${1##*/snapshots/}"
+            ;;
+    esac
+}
+candidate_bind "$OUTPUT_DIR"
+[[ "$CANDIDATE_MOUNT" == "/mnt/model" ]] ||
+    echo "candidate is a cache snapshot; binding $CANDIDATE_BIND at /mnt/model"
+
 if ! variant_requested candidate; then
     echo "candidate not requested by PAIRED_VARIANTS=$VARIANTS; skipping"
 elif [[ "${PAIRED_FORCE:-0}" != "1" ]] && variant_is_scored candidate; then
     echo "candidate already scored in $RUN_DIR/raw/candidate; skipping"
 else
-    start_server candidate "$OUTPUT_DIR" "/mnt/model"
+    start_server candidate "$CANDIDATE_BIND" "$CANDIDATE_MOUNT"
     score_variant candidate
     stop_server
     require_usable_suites

@@ -24,7 +24,7 @@ check() { # check <desc> <expected> <actual>
 awk '/^suite_is_current\(\) \{/,/^\}/' "$SBATCH" > "$WORK/fns.sh"
 awk '/^count_alive\(\) \{/,/^\}/'     "$SBATCH" >> "$WORK/fns.sh"
 for fn in suite_failed record_failure usable_suites report_failures require_usable_suites \
-          variant_requested concat_variant; do
+          variant_requested concat_variant candidate_bind; do
     awk -v f="^${fn}\\\\(\\\\) \\\\{" '$0 ~ f, /^\}/' "$SBATCH" >> "$WORK/fns.sh"
 done
 awk '/^score_variant\(\) \{/,/^\}/'   "$SBATCH" >> "$WORK/fns.sh"
@@ -322,6 +322,29 @@ setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
 out="$(score_variant baseline 2>&1)"; rc=$?
 check "adapter runner still used by default" 1 "$(grep -c 'script=run_adapter_suite.py' <<<"$out")"
 unset RUNNER
+
+echo "== case 18: a candidate in the HF cache is bound through its repository root =="
+# The snapshot directory is relative symlinks into ../../blobs. Bound on its own
+# every file in it dangles, config.json included, and vLLM calls that an invalid
+# model directory rather than a broken mount -- which sends you to check the pin.
+HUB=/scratch/u/hf/hub/models--vendor--Qwen3.8-27B-AWQ
+candidate_bind "$HUB/snapshots/63768c10df38c0395e12ef49edac1bd539eaeeea"
+check "binds the repository root" "$HUB" "$CANDIDATE_BIND"
+check "addresses the snapshot through it" \
+    "/mnt/model/snapshots/63768c10df38c0395e12ef49edac1bd539eaeeea" "$CANDIDATE_MOUNT"
+
+# The checkpoints we quantize ourselves are real directories, and rewriting
+# those would break every run that works today.
+candidate_bind /scratch/u/qwen38/v2/model-fp8gdn
+check "a plain directory is bound as it is" "/scratch/u/qwen38/v2/model-fp8gdn" "$CANDIDATE_BIND"
+check "and mounted at /mnt/model" "/mnt/model" "$CANDIDATE_MOUNT"
+
+# Same shape as the baseline, which has always been bound this way. Reading the
+# revision off the end rather than assuming one path depth is what keeps the two
+# in agreement.
+candidate_bind /a/models--x--y/snapshots/deadbeef/
+check "a trailing slash does not change the root" "/a/models--x--y" "$CANDIDATE_BIND"
+check "nor the revision" "/mnt/model/snapshots/deadbeef/" "$CANDIDATE_MOUNT"
 
 echo
 echo "passed $PASS, failed $FAIL"

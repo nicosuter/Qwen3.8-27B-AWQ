@@ -31,10 +31,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_BASE="${RUN_BASE:-/scratch/$USER/qwen38-27b-awq}"
 export RUN_BASE
 
-# The commit every lane runs. It is pinned rather than defaulted to HEAD because
-# a baseline arm and a candidate arm scored by different harness code are not a
-# paired measurement, and the baseline half of this campaign is already running.
-COMMIT="${PAIRED_COMMIT:-b63a306}"
+# The commit every lane runs, which is the commit this campaign file came from.
+# Naming a fixed sha here reads as safer and is not: the pin goes stale the
+# moment the harness is fixed, and a campaign that keeps launching the version
+# with the bug in it is worse than one that moves. Override to re-run an old
+# campaign against the code that produced it.
+COMMIT="${PAIRED_COMMIT:-$(git -C "$HERE/.." rev-parse HEAD)}"
 
 HUB="$RUN_BASE/huggingface/hub"
 BASELINE_REPO="$HUB/models--Qwen--Qwen3.8-27B-FP8"
