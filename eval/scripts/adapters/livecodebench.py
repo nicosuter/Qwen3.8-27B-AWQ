@@ -561,26 +561,14 @@ def run_item(
         item_id, payload, base_url=base_url, api_key=api_key,
         timeout=args.request_timeout, retries=args.retries, client=client,
     )
-    if response is None:
-        row = _timeout_row(SUITE, item_id, replicate)
-        row.update(
-            {
-                "execution_status": "not_run",
-                "deferred": bool(getattr(args, "defer_execution", False)),
-                "category": f"{entry.get('platform')}/{entry.get('difficulty')}",
-                "platform": entry.get("platform"),
-                "difficulty": entry.get("difficulty"),
-            }
-        )
-    else:
-        row = score_response(
-            item_id, response, entry=entry, replicate=replicate,
-            thinking=bool(generation["enable_thinking"]), args=args,
-            execute=not getattr(args, "defer_execution", False),
-        )
-        path = raw_response_path(run_dir, variant, replicate, item_id)
-        write_json(path, response)
-        row["raw_response"] = str(path)
+    row = score_response(
+        item_id, response, entry=entry, replicate=replicate,
+        thinking=bool(generation["enable_thinking"]), args=args,
+        execute=not getattr(args, "defer_execution", False),
+    )
+    path = raw_response_path(run_dir, variant, replicate, item_id)
+    write_json(path, response)
+    row["raw_response"] = str(path)
     row.update(timing(started_wall, started))
     row["attempts"] = attempts
     return row

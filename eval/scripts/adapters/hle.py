@@ -76,7 +76,6 @@ try:
         request_with_retries,
         require_pin,
         split_reasoning,
-        timeout_row as _timeout_row,
         timing,
         unpack_choice,
         write_json,
@@ -101,7 +100,6 @@ except ModuleNotFoundError:  # loading by file spec puts the repo root on sys.pa
         request_with_retries,
         require_pin,
         split_reasoning,
-        timeout_row as _timeout_row,
         timing,
         unpack_choice,
         write_json,
@@ -507,13 +505,17 @@ class Judge:
             self.hits += 1
             return dict(cached, cached=True)
 
-        response, _ = request_with_retries(
-            item_id, self.payload(question, reference, submitted),
-            base_url=self.base_url, api_key=self.api_key,
-            timeout=self.timeout, retries=self.retries, client=self.client,
-        )
-        if response is None:
-            raise JudgeError(f"{item_id}: judge timed out after {self.retries} retries")
+        try:
+            response, _ = request_with_retries(
+                item_id, self.payload(question, reference, submitted),
+                base_url=self.base_url, api_key=self.api_key,
+                timeout=self.timeout, retries=self.retries, client=self.client,
+            )
+        except AdapterError as error:
+            # The judge's faults are the judge's, not the model's. Keeping them
+            # in their own class is what stops an unreachable grader from being
+            # recorded as an item the model got wrong.
+            raise JudgeError(f"{item_id}: judge unreachable: {error}") from error
 
         content, raw_reasoning, _, _ = unpack_choice(item_id, response)
         _, text = split_reasoning(content, raw_reasoning)
@@ -671,26 +673,13 @@ def run_item(
         item_id, payload, base_url=base_url, api_key=api_key,
         timeout=args.request_timeout, retries=args.retries, client=client,
     )
-    if response is None:
-        row = _timeout_row(SUITE, item_id, replicate)
-        row.update(
-            {
-                "category": entry["category"],
-                "answer_type": entry["answer_type"],
-                "has_image": entry["image"] is not None,
-                "graded_by": "timeout",
-                "judge_cached": False,
-                "deferred": False,
-            }
-        )
-    else:
-        row = score_response(
-            item_id, response, entry=entry, replicate=replicate,
-            thinking=bool(generation["enable_thinking"]), judge=judge, defer=defer,
-        )
-        path = raw_response_path(run_dir, variant, replicate, item_id)
-        write_json(path, response)
-        row["raw_response"] = str(path)
+    row = score_response(
+        item_id, response, entry=entry, replicate=replicate,
+        thinking=bool(generation["enable_thinking"]), judge=judge, defer=defer,
+    )
+    path = raw_response_path(run_dir, variant, replicate, item_id)
+    write_json(path, response)
+    row["raw_response"] = str(path)
     row.update(timing(started_wall, started))
     row["attempts"] = attempts
     return row

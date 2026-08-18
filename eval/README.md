@@ -375,16 +375,38 @@ use:
 }
 ```
 
-Size `--concurrency` from KV cache, not intuition. Measured on one H200 serving
-this checkpoint: a short-prompt request occupies about 1.2% of the KV pool and a
-128K request about 6%, so a replica comfortably holds roughly 48 short requests
-or a dozen long ones. Adapter concurrency is total in-flight across the whole
-endpoint, so multiply by the number of data-parallel replicas: at `DP=8` that is
-about 384 for the short suites and 96 for RULER. At 8 in flight on one GPU the
-server generated 480 tokens/s in total, about 60 per stream, which is roughly
-single-stream speed with the GPU idle between tokens.
+`--concurrency` is the width of a lane's thread pool, not a throttle. What
+bounds the cache is `eval/scripts/admission_broker.py`, one budget per server
+shared by every lane over a unix socket, and each request reserves its own KV
+footprint against it before it is sent.
 
-Keep the number identical for both checkpoints. Batch composition changes
+It has to work that way because a request count cannot express the cost. Across
+the six scored suites the p90 footprint runs from 2,066 tokens (bfcl) to 134,244
+(RULER at 128k), a 65x spread, so a single number is wrong at one end whatever
+it is set to. Offering the configured counts at once demands 64M tokens of a
+3.7M pool -- 17x oversubscribed -- and the telemetry shows what that buys: 7x
+the sequences in flight for 1.15-1.4x the throughput, with 8-9k preemptions an
+hour absorbing the difference.
+
+The server cannot do this itself. It admits on the size a request has now, not
+the size it will reach: a GPQA item enters at 275 prompt tokens and grows to
+52k, so 280 of them are each individually admissible and collectively will not
+fit. Only the client knows the eventual size, from
+`eval/token-priors.json` -- per-suite medians measured by
+`eval/scripts/build_token_priors.py` from runs on disk. Rebuild it when a
+checkpoint changes how long it reasons.
+
+The reservation is a median, so it is wrong on the tail by construction. The
+broker corrects for that from the one signal that distinguishes a working cache
+from a thrashing one, vLLM's preemption counter: multiplicative backoff on any
+new preemption, additive growth while a queue stands and the cache copes. The
+ceiling is 80% of the pool vLLM reports at startup (`GPU KV cache size: N
+tokens`), read from the server log rather than computed.
+
+Set `PAIRED_ADMISSION=0` to run without any of it, which is what every result
+before this did.
+
+Keep both checkpoints under the same arrangement. Batch composition changes
 reduction order, so the same seed does not produce the same tokens at a
 different concurrency, and a run at 8 is not comparable to a run at 384.
 

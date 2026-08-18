@@ -469,18 +469,24 @@ class RunTests(unittest.TestCase):
         self.assertEqual(metadata["accuracy_by_length"], {"4k": 1.0})
         self.assertEqual(metadata["context_failures_by_length"], {"4k": 0})
 
-    def test_timeout_rows_keep_their_length_label(self) -> None:
+    def test_a_persistent_timeout_is_retried_then_fails_the_suite(self) -> None:
+        """RULER is where scoring timeouts did the most damage.
+
+        Under an oversubscribed cache 36 of its 105 items timed out and scored
+        zero, reading as a 15-point recovery loss. On the items that were
+        allowed to finish the two arms differed by 0.65 points. A timeout is
+        the client giving up on a queue, so it is retried, and a suite that
+        genuinely cannot complete fails instead of reporting a regression.
+        """
         def client(base_url, api_key, payload, timeout):
             raise socket.timeout("timed out")
 
-        adapter.command_run(self.args(), client=client)
-        rows = protocol.read_jsonl(self.results_path)
-        self.assertTrue(all(row["timeout"] and row["length"] == "4k" for row in rows))
-        protocol.validate_results(
-            self.results_path,
-            adapter.SUITE,
-            0,
-            set(protocol.validate_prompts(self.prompts_path, adapter.SUITE)),
+        with unittest.mock.patch("time.sleep"):
+            with self.assertRaises(adapter.AdapterError):
+                adapter.command_run(self.args(retries=2), client=client)
+        self.assertFalse(
+            self.results_path.exists() and protocol.read_jsonl(self.results_path),
+            "a suite that could not run must not leave scored rows behind",
         )
 
     def test_rejected_request_aborts_without_retrying(self) -> None:

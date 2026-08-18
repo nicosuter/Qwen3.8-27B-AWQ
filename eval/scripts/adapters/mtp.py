@@ -173,12 +173,6 @@ def run_request(
         timeout=args.request_timeout, retries=args.retries, client=client,
     )
     elapsed = max(time.monotonic() - started, 1e-6)
-    if response is None:
-        return {
-            "id": item_id, "score": 0.0, "failed": True,
-            "elapsed_seconds": round(elapsed, 6), "output_tokens": 0,
-            "finish_reason": "timeout",
-        }
     content, _, finish_reason, usage = unpack_choice(item_id, response)
     tokens = usage.get("completion_tokens")
     return {

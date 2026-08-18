@@ -468,22 +468,28 @@ class RunTests(unittest.TestCase):
         self.assertEqual(metadata["accuracy"], 1.0)
         self.assertEqual(metadata["adapter"], adapter.self_pin())
 
-    def test_timeout_is_recorded_not_retried(self) -> None:
+    def test_a_persistent_timeout_is_retried_then_fails_the_suite(self) -> None:
+        """It used to score every item zero and call that a result.
+
+        The server returns when it hits the context limit, so a socket timeout
+        only ever means the client gave up on a queue. Scoring that as the
+        model's answer is what turned an admission-control mistake into a
+        15-point RULER regression that was not real.
+        """
         attempts = []
 
         def client(base_url, api_key, payload, timeout):
             attempts.append(payload)
             raise socket.timeout("timed out")
 
-        adapter.command_run(self.args(), client=client)
-        self.assertEqual(len(attempts), len(self.order))
-        rows = protocol.read_jsonl(self.results_path)
-        self.assertTrue(all(row["timeout"] and row["score"] == 0.0 for row in rows))
-        protocol.validate_results(
-            self.results_path,
-            adapter.SUITE,
-            0,
-            set(protocol.validate_prompts(self.prompts_path, adapter.SUITE)),
+        with unittest.mock.patch("time.sleep"):
+            with self.assertRaises(adapter.AdapterError) as caught:
+                adapter.command_run(self.args(retries=2), client=client)
+        self.assertIn("timed out", str(caught.exception).lower())
+        self.assertGreaterEqual(len(attempts), 3, "the timeout should have been retried")
+        self.assertFalse(
+            self.results_path.exists() and protocol.read_jsonl(self.results_path),
+            "a suite that could not run must not leave scored rows behind",
         )
 
     def test_rejected_request_aborts_without_retrying(self) -> None:

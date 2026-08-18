@@ -1,0 +1,37 @@
+{
+  "suites": {
+    "bfcl_v4": {
+      "prompt": 671,
+      "output": 219
+    },
+    "gpqa_diamond": {
+      "prompt": 272,
+      "output": 7594
+    },
+    "livecodebench_v6": {
+      "prompt": 580,
+      "output": 18685
+    },
+    "matharena_2026_06": {
+      "prompt": 228,
+      "output": 51617
+    },
+    "mmmu_pro": {
+      "prompt": 491,
+      "output": 2213
+    },
+    "multimodal": {
+      "prompt": 869,
+      "output": 89
+    },
+    "ruler": {
+      "prompt": 32597,
+      "output": 552
+    }
+  },
+  "default": {
+    "prompt": 2048,
+    "output": 4096
+  },
+  "note": "Median prompt and output tokens per suite, measured by eval/scripts/build_token_priors.py. Admission control reserves max(prompt estimate, prompt) + output. Rebuild after a checkpoint changes how long it reasons, or after a suite changes what it sends."
+}

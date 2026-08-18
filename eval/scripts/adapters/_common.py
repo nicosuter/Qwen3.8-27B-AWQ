@@ -21,7 +21,6 @@ import hashlib
 import json
 import os
 import re
-import socket
 import time
 import urllib.error
 import urllib.request
@@ -54,6 +53,66 @@ UNSAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 class AdapterError(RuntimeError):
     pass
+
+
+def _load_admission() -> Any:
+    """Load the sibling module by path, however this adapter was launched.
+
+    Adapters are run as scripts, imported by the test suite through a spec, and
+    exec'd inside the sbatch's inline Python. Only a path-based load works in
+    all three.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_common_admission", Path(__file__).resolve().parent / "_admission.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+admission = _load_admission()
+
+# Resolved once from the environment, or set outright by a test. Held here
+# rather than passed through every adapter so that the fourteen of them cannot
+# drift apart on a policy that has to be identical across both arms.
+_ADMISSION: dict[str, Any] = {"budget": None, "priors": None, "suite": "", "resolved": False}
+
+
+def configure_admission(*, budget: Any = None, priors: Any = None, suite: str = "") -> None:
+    _ADMISSION.update(budget=budget, priors=priors, suite=suite, resolved=True)
+
+
+def admission_settings() -> dict[str, Any]:
+    if not _ADMISSION["resolved"]:
+        priors_path = os.environ.get("EVAL_ADMISSION_PRIORS", "").strip()
+        configure_admission(
+            budget=admission.from_environment(dict(os.environ)),
+            priors=admission.load_priors(Path(priors_path)) if priors_path else None,
+            suite=os.environ.get("EVAL_SUITE", ""),
+        )
+    return _ADMISSION
+
+
+def payload_text(payload: dict[str, Any]) -> str:
+    """The text a payload carries, for sizing its prompt.
+
+    Multi-part content is where the images live. Their base64 is deliberately
+    not counted: it is an order of magnitude longer than the tokens it becomes,
+    so counting it would reserve the pool for one picture. The suite's measured
+    prompt length covers them instead.
+    """
+    parts: list[str] = []
+    for message in payload.get("messages") or []:
+        content = message.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            for piece in content:
+                if isinstance(piece, dict) and isinstance(piece.get("text"), str):
+                    parts.append(piece["text"])
+    return "\n".join(parts)
 
 
 def env_str(name: str) -> str:
@@ -192,14 +251,6 @@ def post_chat(
         return json.load(response)
 
 
-def is_timeout(error: BaseException) -> bool:
-    if isinstance(error, (socket.timeout, TimeoutError)):
-        return True
-    if isinstance(error, urllib.error.URLError):
-        return is_timeout(error.reason) if isinstance(error.reason, BaseException) else False
-    return False
-
-
 def is_permanent_rejection(error: BaseException) -> bool:
     """A 4xx other than 429 will not change on retry; a rejected policy field is one."""
     return (
@@ -226,29 +277,82 @@ def request_with_retries(
     timeout: float,
     retries: int,
     client: Callable[..., dict[str, Any]],
-) -> tuple[dict[str, Any] | None, int]:
-    """Return (response, attempts), or (None, attempts) when the request timed out.
+    # Resolved at call time, not bound as a default, so a test can patch
+    # time.sleep instead of every caller having to thread a stub through.
+    sleep: Callable[[float], None] | None = None,
+) -> tuple[dict[str, Any], int]:
+    """Return (response, attempts), or raise once the attempts are spent.
 
-    Timeouts are model behavior and become scored failures. A 4xx other than 429
-    aborts at once, and other transport faults abort after `retries`, so
-    infrastructure noise never enters the score as a zero.
+    A timeout is retried like any other transport fault, and is never scored.
+    It used to be treated as model behavior, which was wrong in a way that took
+    a campaign to see: the server returns when it reaches the context limit --
+    `finish_reason` is `length` -- so the only way to reach a socket timeout is
+    for the client to give up while the request sat in a queue. Charging an
+    item for contention turned an admission-control mistake into a 15-point
+    RULER regression that did not exist.
+
+    A 4xx other than 429 still aborts at once; it will answer the same however
+    many times it is asked.
+
+    The request holds a KV reservation for as long as it is in flight, retries
+    included, so a retry cannot be what overfills the cache.
     """
+    settings = admission_settings()
+    budget = settings["budget"]
+    if budget is None:
+        return _attempt(
+            item_id, payload, base_url=base_url, api_key=api_key,
+            timeout=timeout, retries=retries, client=client, sleep=sleep,
+        )
+    tokens = admission.reservation(
+        payload_text(payload),
+        settings["suite"],
+        settings["priors"] or {"suites": {}, "default": {"prompt": 2048, "output": 4096}},
+        max_tokens=int(payload.get("max_tokens") or 0),
+    )
+    budget.acquire(item_id, tokens)
+    try:
+        return _attempt(
+            item_id, payload, base_url=base_url, api_key=api_key,
+            timeout=timeout, retries=retries, client=client, sleep=sleep,
+        )
+    finally:
+        # Released on the failure path too. A leak here ratchets the budget down
+        # over a long suite until the run stalls with the server idle.
+        budget.release(item_id)
+
+
+def _attempt(
+    item_id: str,
+    payload: dict[str, Any],
+    *,
+    base_url: str,
+    api_key: str,
+    timeout: float,
+    retries: int,
+    client: Callable[..., dict[str, Any]],
+    sleep: Callable[[float], None] | None = None,
+) -> tuple[dict[str, Any], int]:
     attempt = 0
     while True:
         try:
             return client(base_url, api_key, payload, timeout), attempt + 1
         except Exception as error:  # noqa: BLE001 - classified immediately below
-            if is_timeout(error):
-                return None, attempt + 1
             if is_permanent_rejection(error):
                 raise AdapterError(
                     f"{item_id}: server rejected the request, "
                     f"{describe_http_error(error)}"
                 ) from error
             if attempt >= retries:
-                raise AdapterError(f"{item_id}: request failed: {error}") from error
+                # Failing the suite is the point. A run whose requests will not
+                # complete has not measured the checkpoint, and the harness
+                # already knows how to exclude a failed suite from the macro --
+                # which is strictly better than contributing zeros to it.
+                raise AdapterError(
+                    f"{item_id}: request failed after {attempt + 1} attempts: {error}"
+                ) from error
             attempt += 1
-            time.sleep(min(2**attempt, 30))
+            (sleep or time.sleep)(min(2**attempt, 30))
 
 
 def execute_order(

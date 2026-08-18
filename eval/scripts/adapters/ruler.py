@@ -39,7 +39,6 @@ try:
         reasoning_tokens,
         request_with_retries,
         require_pin,
-        timeout_row as _timeout_row,
         timing,
         unpack_choice,
         write_json,
@@ -64,7 +63,6 @@ except ModuleNotFoundError:  # loading by file spec puts the repo root on sys.pa
         reasoning_tokens,
         request_with_retries,
         require_pin,
-        timeout_row as _timeout_row,
         timing,
         unpack_choice,
         write_json,
@@ -680,25 +678,13 @@ def run_item(
         retries=args.retries,
         client=client,
     )
-    if response is None:
-        row = _timeout_row(SUITE, item_id, replicate)
-        row.update(
-            {
-                "task": entry["task"],
-                "length": entry["length"],
-                "category": f"{entry['length']}/{entry['task']}",
-                "nominal_tokens": entry["nominal_tokens"],
-                "achieved_tokens": entry["achieved_tokens"],
-            }
-        )
-    else:
-        row = score_response(
-            item_id, response, entry=entry, replicate=replicate,
-            thinking=bool(generation["enable_thinking"]),
-        )
-        path = raw_response_path(run_dir, variant, replicate, item_id)
-        write_json(path, response)
-        row["raw_response"] = str(path)
+    row = score_response(
+        item_id, response, entry=entry, replicate=replicate,
+        thinking=bool(generation["enable_thinking"]),
+    )
+    path = raw_response_path(run_dir, variant, replicate, item_id)
+    write_json(path, response)
+    row["raw_response"] = str(path)
     row.update(timing(started_wall, started))
     row["attempts"] = attempts
     return row

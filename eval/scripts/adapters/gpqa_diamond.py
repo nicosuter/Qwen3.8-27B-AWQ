@@ -39,7 +39,6 @@ try:
         reasoning_tokens,
         request_with_retries,
         require_pin,
-        timeout_row as _timeout_row,
         timing,
         unpack_choice,
         write_json,
@@ -66,7 +65,6 @@ except ModuleNotFoundError:  # loading by file spec puts the repo root on sys.pa
         reasoning_tokens,
         request_with_retries,
         require_pin,
-        timeout_row as _timeout_row,
         timing,
         unpack_choice,
         write_json,
@@ -183,12 +181,6 @@ def self_pin() -> str:
 
 def raw_response_path(run_dir: Path, variant: str, replicate: int, item_id: str) -> Path:
     return _raw_response_path(run_dir, SUITE, variant, replicate, item_id)
-
-
-def timeout_row(item_id: str, expected: str, replicate: int) -> dict[str, Any]:
-    row = _timeout_row(SUITE, item_id, replicate)
-    row.update({"predicted": None, "expected": expected, "reasoning_tokens": 0})
-    return row
 
 
 def validate_pins(pins: dict[str, str]) -> None:
@@ -398,16 +390,13 @@ def run_item(
         retries=args.retries,
         client=client,
     )
-    if response is None:
-        row = timeout_row(item_id, expected, replicate)
-    else:
-        row = score_response(
-            item_id, response, expected=expected, replicate=replicate,
-            thinking=bool(generation["enable_thinking"]),
-        )
-        path = raw_response_path(run_dir, variant, replicate, item_id)
-        write_json(path, response)
-        row["raw_response"] = str(path)
+    row = score_response(
+        item_id, response, expected=expected, replicate=replicate,
+        thinking=bool(generation["enable_thinking"]),
+    )
+    path = raw_response_path(run_dir, variant, replicate, item_id)
+    write_json(path, response)
+    row["raw_response"] = str(path)
     row.update(timing(started_wall, started))
     row["attempts"] = attempts
     return row

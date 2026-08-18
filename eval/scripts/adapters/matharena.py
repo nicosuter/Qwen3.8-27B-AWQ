@@ -40,7 +40,6 @@ try:
         request_with_retries,
         require_pin,
         split_reasoning,
-        timeout_row as _timeout_row,
         timing,
         unpack_choice,
         write_json,
@@ -65,7 +64,6 @@ except ModuleNotFoundError:  # loading by file spec puts the repo root on sys.pa
         request_with_retries,
         require_pin,
         split_reasoning,
-        timeout_row as _timeout_row,
         timing,
         unpack_choice,
         write_json,
@@ -319,18 +317,13 @@ def run_item(
         item_id, payload, base_url=base_url, api_key=api_key,
         timeout=args.request_timeout, retries=args.retries, client=client,
     )
-    if response is None:
-        row = _timeout_row(SUITE, item_id, replicate)
-        row.update({"category": entry["category"], "source": entry["source"],
-                    "expected": entry["answer"], "predicted": None})
-    else:
-        row = score_response(
-            item_id, response, entry=entry, replicate=replicate,
-            thinking=bool(generation["enable_thinking"]),
-        )
-        path = raw_response_path(run_dir, variant, replicate, item_id)
-        write_json(path, response)
-        row["raw_response"] = str(path)
+    row = score_response(
+        item_id, response, entry=entry, replicate=replicate,
+        thinking=bool(generation["enable_thinking"]),
+    )
+    path = raw_response_path(run_dir, variant, replicate, item_id)
+    write_json(path, response)
+    row["raw_response"] = str(path)
     row.update(timing(started_wall, started))
     row["attempts"] = attempts
     return row

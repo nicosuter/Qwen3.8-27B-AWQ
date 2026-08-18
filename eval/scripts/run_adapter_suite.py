@@ -169,6 +169,23 @@ def describe_hardware() -> dict[str, Any]:
     return {"gpus": len(names), "gpu": names[0] if names else None}
 
 
+def admission_record(env: dict[str, str]) -> dict[str, Any]:
+    """What bounded this run's requests, recorded so two arms can be compared.
+
+    Says "none" rather than staying absent when nothing bounded them: an absent
+    field is indistinguishable from a run predating this, and an unthrottled arm
+    is exactly what must not be paired against a throttled one.
+    """
+    socket_path = (env.get("EVAL_ADMISSION_SOCKET") or "").strip()
+    priors = (env.get("EVAL_ADMISSION_PRIORS") or "").strip() or None
+    if socket_path:
+        return {"mode": "broker", "socket": socket_path, "priors": priors}
+    tokens = (env.get("EVAL_ADMISSION_TOKENS") or "").strip()
+    if tokens:
+        return {"mode": "local", "capacity_tokens": int(tokens), "priors": priors}
+    return {"mode": "none", "priors": priors}
+
+
 def annotate_metadata(
     run_dir: Path, suite: str, variant: str, replicate: int, extra: dict[str, Any]
 ) -> None:
@@ -265,6 +282,7 @@ def do_run(config: dict[str, Any], suite: str, run_dir: Path, args: argparse.Nam
             "hardware": describe_hardware(),
             "request_timeout_scale": args.request_timeout_scale,
             "concurrency_scale": args.concurrency_scale,
+            "admission": admission_record(env),
             # Surfaced next to the hardware because together they say whether a
             # zero was the model's answer or the wall clock's.
             "timeouts": sum(1 for row in rows if row.get("timeout")),

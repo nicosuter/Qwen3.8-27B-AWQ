@@ -281,19 +281,33 @@ CONCURRENCY="${PAIRED_CONCURRENCY:-}"
 # any single value starves the short suites or thrashes the long ones. That
 # belongs to the scheduler, which knows both, and is now set there.
 #
-# What offering everything does cost is the per-request clock. --request-timeout
-# is measured client-side, so it counts the time a request spends queued as well
-# as generating, and contention therefore reads as slowness. LiveCodeBench is
-# the suite that shows it: fewer items (175) than its configured concurrency, so
-# the whole suite goes in flight at once alongside three saturating lanes. It
-# timed out on 0 of 175 items in every run under the old divisor and on 38 the
-# first time it ran undivided, with the completed items smeared right up against
-# the limit -- the slowest finished 21 seconds under it. A timed-out item scores
-# as a wrong answer, so this is a measurement hazard and not only a slow one.
-# suite_is_current refuses to reuse a suite whose timeout fired, which keeps the
-# contaminated rows out of a macro; PAIRED_TIMEOUT_SCALE is what buys the clock
-# back if a batch needs the suite rather than merely needing to not trust it.
+# What offering everything cost was the per-request clock, and then the score.
+# LiveCodeBench timed out on 0 of 175 items under the old divisor and on 38 the
+# first time it ran undivided; the int8 run then timed out across four suites at
+# once, reading as a 15-point RULER regression that was not there -- on the items
+# both arms finished, they differed by 0.65. Two separate faults produced that:
+#
+#   1. A timeout was scored as the model's answer. It is not: the server returns
+#      when it reaches the context limit, so a socket timeout only ever means
+#      the client gave up on a queue. Adapters now retry it and fail the suite
+#      if it will not clear, so contention cannot become a quality number.
+#   2. Nothing bounded the cache. Request counts cannot: a request costs between
+#      2k tokens (bfcl) and 134k (RULER at 128k), so one number is 65x wrong at
+#      one end. Offering the configured counts at once demands 64M tokens of a
+#      3.7M pool, and the telemetry shows what that buys -- 7x the sequences in
+#      flight for 1.15-1.4x the throughput, the difference going to 8-9k
+#      preemptions an hour.
+#
+# So admission is by KV footprint now, held by eval/scripts/admission_broker.py
+# over a unix socket that every lane on this server shares. Concurrency is what
+# it always should have been: the width of a lane's thread pool, an upper bound
+# on sockets rather than a throttle. See ADMISSION_* below.
 CONCURRENCY_SCALE="${PAIRED_CONCURRENCY_SCALE:-}"
+# The broker holds one budget for the whole server and resizes it from vLLM's
+# own preemption counter. Set PAIRED_ADMISSION=0 to run without it, which is
+# what every result before this did.
+ADMISSION="${PAIRED_ADMISSION:-1}"
+ADMISSION_PRIORS="${PAIRED_ADMISSION_PRIORS:-$PROJECT_DIR/eval/token-priors.json}"
 PYTHON="${EVAL_VENV:-$PROJECT_DIR/.venv}/bin/python"
 # One stamp for the whole job, so everything it supersedes or emits sorts
 # together and can be attributed to a single run.
@@ -506,6 +520,7 @@ require_materialized $SUITES || exit 1
 
 SERVER_PID=""
 SAMPLER_PID=""
+BROKER_PID=""
 stop_sampler() {
     if [[ -n "${SAMPLER_PID:-}" ]] && kill -0 "$SAMPLER_PID" 2>/dev/null; then
         kill "$SAMPLER_PID" 2>/dev/null || true
@@ -513,7 +528,18 @@ stop_sampler() {
     fi
     SAMPLER_PID=""
 }
+stop_broker() {
+    # Stopped with the server it was sized against. A budget derived from one
+    # checkpoint's KV pool is not the budget for the next one.
+    if [[ -n "${BROKER_PID:-}" ]] && kill -0 "$BROKER_PID" 2>/dev/null; then
+        kill "$BROKER_PID" 2>/dev/null || true
+        wait "$BROKER_PID" 2>/dev/null || true
+    fi
+    BROKER_PID=""
+    unset EVAL_ADMISSION_SOCKET
+}
 stop_server() {
+    stop_broker
     stop_sampler
     if [[ -n "${SERVER_PID:-}" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
         kill "$SERVER_PID" 2>/dev/null || true
@@ -567,6 +593,48 @@ start_server() {
         --output "$RUN_DIR/telemetry/$variant-${SLURM_JOB_ID:-manual}.jsonl" \
         --interval 10 &
     SAMPLER_PID=$!
+
+    if [[ "$ADMISSION" == "1" ]]; then
+        # The pool is read out of the server's own startup line rather than
+        # computed: vLLM prints "GPU KV cache size: N tokens" after it has
+        # actually allocated the cache, and every other route to that number
+        # involves multiplying out a config and hoping. Started per variant,
+        # because the two checkpoints do not leave the same cache behind.
+        local sock="$RUN_DIR/admission-$variant.sock"
+        "$PYTHON" eval/scripts/admission_broker.py \
+            --socket "$sock" \
+            --metrics-url "http://127.0.0.1:$PORT/metrics" \
+            --server-log "$log" \
+            --status "$RUN_DIR/telemetry/admission-$variant-${SLURM_JOB_ID:-manual}.jsonl" \
+            --interval 10 &
+        BROKER_PID=$!
+        # Lanes are children of this shell, so exporting here is what reaches
+        # them. An adapter with neither variable set runs unthrottled, which is
+        # the right behavior for a hand-run adapter and the wrong one here.
+        # A run directory deep enough to exceed sun_path (104 bytes) gets a
+        # short stand-in, so what to wait on is not necessarily what was asked
+        # for. Lanes apply the same rule to the exported path and still meet it.
+        local bound
+        bound="$("$PYTHON" -c 'import importlib.util,sys
+spec=importlib.util.spec_from_file_location("a","eval/scripts/adapters/_admission.py")
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(m.socket_path(sys.argv[1]))' "$sock")"
+        local waited=0
+        until [[ -S "$bound" ]]; do
+            if ! kill -0 "$BROKER_PID" 2>/dev/null || (( waited > 60 )); then
+                echo "admission broker did not come up; scoring unthrottled" >&2
+                BROKER_PID=""
+                break
+            fi
+            sleep 1
+            waited=$(( waited + 1 ))
+        done
+        if [[ -n "$BROKER_PID" ]]; then
+            export EVAL_ADMISSION_SOCKET="$sock"
+            export EVAL_ADMISSION_PRIORS="$ADMISSION_PRIORS"
+            echo "admission=broker socket=$sock priors=$ADMISSION_PRIORS"
+        fi
+    fi
 }
 
 variant_is_scored() {
@@ -637,35 +705,23 @@ if "--max-tokens" in run:
         print(f"{suite}: --max-tokens config {want}, recorded {have}", file=sys.stderr)
         sys.exit(1)
 
-# The timeout only decides what was measured when it actually fired. A run under
-# a shorter timeout that never hit it produced exactly the results a longer one
-# would have, so it stays reusable; a run that timed out did not.
-if "--request-timeout" in run:
-    want = float(run[run.index("--request-timeout") + 1]) * float(timeout_scale)
-    have = recorded.get("request_timeout_seconds")
-    fired = recorded.get("timeouts")
-    # Not recording the threshold is not the same as having failed it. Only two
-    # adapters write request_timeout_seconds, so `have is None` rejected the
-    # other four permanently: they were rescored on every job that touched the
-    # run directory, and -- because stale_suites feeds the same predicate into
-    # EXCLUDE_SUITES -- dropped from every comparison ever produced here. Both
-    # clusters' macros had been running over gpqa and ruler alone, the two that
-    # pass for unrelated reasons: one records the field, the other declares no
-    # --request-timeout at all so this block never runs.
-    #
-    # The rule above already says a timeout matters only when it fired. Applied
-    # to an unrecorded threshold: zero timeouts means it did not bind, whatever
-    # it was, so the result is the one a longer timeout would have produced. A
-    # threshold that did fire still has to be known to be ruled reusable, and a
-    # run that did not record the count either establishes nothing.
-    long_enough = have is not None and float(have) >= want
-    if not long_enough and fired != 0:
-        print(
-            f"{suite}: --request-timeout wants {want:.0f}s, recorded {have}"
-            f" with timeouts={fired}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+# A timeout is not a result, so a run that recorded one has rows whose zeros
+# were never the model's answer. This used to be conditional -- a timeout under
+# a clock at least as generous as the config asked for was treated as a real
+# observation and kept. That was defensible only while a timeout could be
+# scored at all; the adapters now retry it and fail the suite if it will not
+# clear, so any recorded timeout is contamination from the old contract.
+#
+# Missing is not zero: a run that did not record the count establishes nothing.
+fired = recorded.get("timeouts")
+if fired != 0:
+    print(
+        f"{suite}: recorded timeouts={fired}; a timed-out item is not a score, "
+        "so these rows cannot be reused",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
 sys.exit(0)
 PY
 }
