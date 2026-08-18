@@ -48,9 +48,30 @@ POOL_FRACTION = 0.8
 POOL_RE = re.compile(r"GPU KV cache size:\s*([0-9,]+)\s*tokens")
 
 
-def pool_from_log(text: str) -> int | None:
-    match = POOL_RE.search(text)
-    return int(match.group(1).replace(",", "")) if match else None
+def pool_from_log(text: str, engines: int = 1) -> int | None:
+    """Total KV tokens across the endpoint, not across one engine.
+
+    Data parallelism runs `engines` engines, each allocating and reporting its
+    own cache, and a request is served entirely by one of them. Reading the
+    first line and stopping sized the budget at 40% of a DP=2 endpoint instead
+    of 80%: the budget booked solid at 2.83M while the server reported the
+    cache 35% full.
+
+    Summing assumes the load balancer spreads requests evenly, which is what
+    makes an endpoint-wide budget meaningful. It will not be exactly even, and
+    the controller is what covers that -- an engine pushed over its own share
+    preempts, and preemption is already the signal to back off.
+    """
+    found = [int(value.replace(",", "")) for value in POOL_RE.findall(text)]
+    if not found:
+        return None
+    if len(found) >= engines:
+        # The last `engines` lines, so a log holding an earlier startup as well
+        # describes the server running now rather than every one it has had.
+        return sum(found[-engines:])
+    # Fewer lines than engines: one flushed before its siblings. They are
+    # configured identically, and under-sizing is the fault being fixed.
+    return found[-1] * engines
 
 
 def ceiling_from_pool(pool_tokens: int) -> int:
@@ -98,6 +119,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         help="KV pool size, when the log is not available to read it from",
     )
+    parser.add_argument(
+        "--data-parallel",
+        type=int,
+        default=1,
+        help="engines behind this endpoint; each reports its own KV pool and "
+             "the budget is their sum",
+    )
     parser.add_argument("--interval", type=float, default=10.0)
     parser.add_argument(
         "--status",
@@ -109,7 +137,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def resolve_pool(args: argparse.Namespace) -> int:
     if args.server_log and args.server_log.is_file():
-        found = pool_from_log(args.server_log.read_text(encoding="utf-8", errors="replace"))
+        found = pool_from_log(
+            args.server_log.read_text(encoding="utf-8", errors="replace"),
+            engines=max(1, args.data_parallel),
+        )
         if found:
             return found
     if args.pool_tokens:
@@ -131,7 +162,11 @@ def main(argv: list[str] | None = None) -> int:
     if bound.exists():
         bound.unlink()
     broker = admission.serve(args.socket, capacity=ceiling)
-    print(f"admission broker on {bound} ceiling={ceiling} tokens", flush=True)
+    print(
+        f"admission broker on {bound} ceiling={ceiling} tokens "
+        f"({args.data_parallel} engine(s))",
+        flush=True,
+    )
 
     running = {"go": True}
 

@@ -82,6 +82,30 @@ class CeilingTests(unittest.TestCase):
         line = "INFO 08-17 22:23 [kv_cache_utils.py:1229] GPU KV cache size: 3,708,453 tokens"
         self.assertEqual(broker_main.pool_from_log(line), 3_708_453)
 
+    def test_every_data_parallel_engine_counts_toward_the_pool(self):
+        """Each engine allocates and reports its own cache. Reading the first
+        line and stopping sized the budget at 40% of the endpoint rather than
+        80%, which booked the budget solid while the cache sat at 35%."""
+        log = (
+            "GPU KV cache size: 3,540,097 tokens\n"
+            "GPU KV cache size: 3,543,172 tokens\n"
+        )
+        self.assertEqual(broker_main.pool_from_log(log, engines=2), 3_540_097 + 3_543_172)
+
+    def test_an_engine_that_has_not_logged_yet_is_scaled_not_dropped(self):
+        """Engines are configured identically, so one line understates the pool
+        by exactly the number that have not flushed. Under-sizing is the failure
+        being fixed, so scale rather than take what is there."""
+        log = "GPU KV cache size: 3,540,097 tokens\n"
+        self.assertEqual(broker_main.pool_from_log(log, engines=2), 3_540_097 * 2)
+
+    def test_a_restarted_server_does_not_double_count(self):
+        """A log holding two startups has four lines for two engines; the budget
+        is the current server's, not the sum of every one it has ever had."""
+        log = "\n".join(f"GPU KV cache size: {n} tokens" for n in
+                        ("3,000,000", "3,000,000", "3,540,097", "3,543,172"))
+        self.assertEqual(broker_main.pool_from_log(log, engines=2), 3_540_097 + 3_543_172)
+
     def test_a_log_without_the_line_yields_nothing_rather_than_a_guess(self):
         self.assertIsNone(broker_main.pool_from_log("nothing to see here"))
 

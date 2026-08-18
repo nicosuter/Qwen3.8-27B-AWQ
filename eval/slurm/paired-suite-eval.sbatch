@@ -600,11 +600,17 @@ start_server() {
         # actually allocated the cache, and every other route to that number
         # involves multiplying out a config and hoping. Started per variant,
         # because the two checkpoints do not leave the same cache behind.
+        #
+        # --data-parallel because each engine prints its own pool and a budget
+        # for the endpoint is their sum. Reading one line sized a DP=2 budget at
+        # 40% of the cache: it booked solid at 2.83M tokens while the server
+        # reported the cache 35% full, with nothing queued and nothing preempted.
         local sock="$RUN_DIR/admission-$variant.sock"
         "$PYTHON" eval/scripts/admission_broker.py \
             --socket "$sock" \
             --metrics-url "http://127.0.0.1:$PORT/metrics" \
             --server-log "$log" \
+            --data-parallel "$DP" \
             --status "$RUN_DIR/telemetry/admission-$variant-${SLURM_JOB_ID:-manual}.jsonl" \
             --interval 10 &
         BROKER_PID=$!
