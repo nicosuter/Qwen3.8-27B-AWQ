@@ -1,6 +1,6 @@
 # Qwen3.8 support may initially require current upstream revisions. bootstrap.sh
 # records the resolved commits and pip freeze in the output metadata.
-torch==2.10.0
+torch==2.13.0
 torchvision==0.25.0
 kernels==0.16.0
 git+https://github.com/huggingface/transformers.git@a597f974857b3d92939971296bc0deb93d33d780
