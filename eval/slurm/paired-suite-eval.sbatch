@@ -606,12 +606,19 @@ start_server() {
         # 40% of the cache: it booked solid at 2.83M tokens while the server
         # reported the cache 35% full, with nothing queued and nothing preempted.
         local sock="$RUN_DIR/admission-$variant.sock"
+        # Twice the longest request a lane can make. A reservation is taken per
+        # attempt, so nothing legitimate holds one longer than a single timeout;
+        # past that the holder is a request the server has stopped answering,
+        # and its tokens are a deduction from the budget that nothing returns.
+        local max_hold
+        max_hold="$(python3 -c "print(2*${ES_REQUEST_TIMEOUT:-5400}*$TIMEOUT_SCALE)")"
         "$PYTHON" eval/scripts/admission_broker.py \
             --socket "$sock" \
             --metrics-url "http://127.0.0.1:$PORT/metrics" \
             --server-log "$log" \
             --data-parallel "$DP" \
             --status "$RUN_DIR/telemetry/admission-$variant-${SLURM_JOB_ID:-manual}.jsonl" \
+            --max-hold-seconds "$max_hold" \
             --interval 10 &
         BROKER_PID=$!
         # Lanes are children of this shell, so exporting here is what reaches

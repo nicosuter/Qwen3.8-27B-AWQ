@@ -106,6 +106,37 @@ class ControllerTests(unittest.TestCase):
             after = admission.next_capacity(after, preempted=1, waiting=0, ceiling=4_000_000)
         self.assertGreaterEqual(after, admission.FLOOR_TOKENS)
 
+    def test_backoff_stops_at_what_is_already_held(self):
+        """Cutting below the held total buys nothing and has to be repaid.
+
+        Once capacity is down to what is outstanding, admission is already shut:
+        a resize cannot un-admit anybody. Every further cut only deepens an
+        overdraft that completions alone can clear, which is how one run spent
+        three hours at a 262k budget against 4.6M of held reservations.
+        """
+        after = admission.next_capacity(
+            4_700_000, preempted=9, waiting=0, ceiling=5_878_175, held=4_600_000
+        )
+        self.assertEqual(after, 4_600_000)
+
+    def test_backoff_follows_the_drain_instead_of_plunging_past_it(self):
+        """Sustained preemption tracks the held total down, not the floor."""
+        capacity, held = 5_878_175, 4_600_000
+        for _ in range(50):
+            capacity = admission.next_capacity(
+                capacity, preempted=9, waiting=0, ceiling=5_878_175, held=held
+            )
+        self.assertEqual(capacity, held)
+
+    def test_an_unheld_budget_still_backs_off_to_the_floor(self):
+        """The held total bounds the cut; it does not abolish it."""
+        capacity = 4_000_000
+        for _ in range(50):
+            capacity = admission.next_capacity(
+                capacity, preempted=1, waiting=0, ceiling=4_000_000, held=0
+            )
+        self.assertEqual(capacity, admission.FLOOR_TOKENS)
+
     def test_shrinking_below_what_is_held_admits_nobody_until_it_drains(self):
         """A resize is not a revocation: holders keep what they were granted."""
         budget = admission.TokenBudget(1000)
@@ -123,6 +154,86 @@ class ControllerTests(unittest.TestCase):
         budget.release("a")
         self.assertTrue(admitted.wait(timeout=2.0))
         thread.join(timeout=2.0)
+
+    def test_a_waiter_is_not_stranded_by_a_resize_while_it_waits(self):
+        """`want` is clamped against the capacity that admits the request, not
+        the one that happened to be in force when it arrived.
+
+        Clamping once, before the wait, leaves a waiter that arrived under a
+        large budget asking for more than the whole budget it is now waiting
+        on -- unsatisfiable even at zero outstanding, while the same request
+        made fresh is clamped and runs.
+        """
+        budget = admission.TokenBudget(1_000_000, poll_seconds=0.02)
+        budget.acquire("holder", 900_000)
+        granted: list[int] = []
+
+        def late() -> None:
+            granted.append(budget.acquire("big", 400_000))
+
+        thread = threading.Thread(target=late, daemon=True)
+        thread.start()
+        time.sleep(0.1)
+        budget.resize(300_000)
+        budget.release("holder")
+        thread.join(timeout=3.0)
+        self.assertEqual(granted, [300_000], "the waiter kept a want the budget can never meet")
+
+    def test_the_budget_counts_the_lanes_waiting_on_it(self):
+        """A lane blocked here has not been sent, so the server cannot see it.
+
+        The controller grows on queue depth, and this is the only place the
+        depth exists once the budget rather than the cache is the bottleneck.
+        """
+        budget = admission.TokenBudget(1000, poll_seconds=0.02)
+        budget.acquire("holder", 900)
+        self.assertEqual(budget.waiting(), 0)
+        for name in ("a", "b", "c"):
+            threading.Thread(target=budget.acquire, args=(name, 200), daemon=True).start()
+        deadline = time.monotonic() + 3.0
+        while budget.waiting() < 3 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertEqual(budget.waiting(), 3)
+        budget.release("holder")
+        deadline = time.monotonic() + 3.0
+        while budget.waiting() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertEqual(budget.waiting(), 0, "waiters were still counted after admission")
+
+    def test_a_hold_that_outlives_the_cap_is_returned(self):
+        """A wedged server holds its reservations forever otherwise.
+
+        The request keeps its reservation across retries by design, so a server
+        that stops answering converts the tokens in flight into a permanent
+        deduction from the budget. The cap is the safety valve, not a routine
+        path: it is set well past the longest request the protocol allows.
+        """
+        now = [1000.0]
+        budget = admission.TokenBudget(
+            1000, max_hold_seconds=60, poll_seconds=0.02, clock=lambda: now[0]
+        )
+        budget.acquire("wedged", 900)
+        admitted = threading.Event()
+
+        def later() -> None:
+            budget.acquire("next", 900)
+            admitted.set()
+
+        thread = threading.Thread(target=later, daemon=True)
+        thread.start()
+        self.assertFalse(admitted.wait(timeout=0.2), "admitted while the hold was still fresh")
+        now[0] += 61
+        self.assertTrue(admitted.wait(timeout=3.0), "an expired hold was never returned")
+        self.assertEqual(budget.outstanding(), 900)
+        thread.join(timeout=3.0)
+
+    def test_holds_do_not_expire_when_no_cap_is_set(self):
+        """Expiry is opt-in: a lane run by hand has no cap and no sweeper."""
+        now = [1000.0]
+        budget = admission.TokenBudget(1000, clock=lambda: now[0])
+        budget.acquire("held", 900)
+        now[0] += 86_400
+        self.assertEqual(budget.outstanding(), 900)
 
 
 class ReservationTests(unittest.TestCase):

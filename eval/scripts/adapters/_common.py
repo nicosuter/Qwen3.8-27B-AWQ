@@ -294,47 +294,27 @@ def request_with_retries(
     A 4xx other than 429 still aborts at once; it will answer the same however
     many times it is asked.
 
-    The request holds a KV reservation for as long as it is in flight, retries
-    included, so a retry cannot be what overfills the cache.
+    Each attempt reserves its KV footprint before it is sent and returns it when
+    it ends, so a retry still cannot be what overfills the cache while no single
+    hold can outlast one request timeout. Holding one reservation across the
+    whole chain instead made the worst case the timeout times the attempt count,
+    and against a server that had stopped answering that became a deduction from
+    the budget nothing gave back.
     """
     settings = admission_settings()
     budget = settings["budget"]
-    if budget is None:
-        return _attempt(
-            item_id, payload, base_url=base_url, api_key=api_key,
-            timeout=timeout, retries=retries, client=client, sleep=sleep,
+    tokens = 0
+    if budget is not None:
+        tokens = admission.reservation(
+            payload_text(payload),
+            settings["suite"],
+            settings["priors"] or {"suites": {}, "default": {"prompt": 2048, "output": 4096}},
+            max_tokens=int(payload.get("max_tokens") or 0),
         )
-    tokens = admission.reservation(
-        payload_text(payload),
-        settings["suite"],
-        settings["priors"] or {"suites": {}, "default": {"prompt": 2048, "output": 4096}},
-        max_tokens=int(payload.get("max_tokens") or 0),
-    )
-    budget.acquire(item_id, tokens)
-    try:
-        return _attempt(
-            item_id, payload, base_url=base_url, api_key=api_key,
-            timeout=timeout, retries=retries, client=client, sleep=sleep,
-        )
-    finally:
-        # Released on the failure path too. A leak here ratchets the budget down
-        # over a long suite until the run stalls with the server idle.
-        budget.release(item_id)
-
-
-def _attempt(
-    item_id: str,
-    payload: dict[str, Any],
-    *,
-    base_url: str,
-    api_key: str,
-    timeout: float,
-    retries: int,
-    client: Callable[..., dict[str, Any]],
-    sleep: Callable[[float], None] | None = None,
-) -> tuple[dict[str, Any], int]:
     attempt = 0
     while True:
+        if budget is not None:
+            budget.acquire(item_id, tokens)
         try:
             return client(base_url, api_key, payload, timeout), attempt + 1
         except Exception as error:  # noqa: BLE001 - classified immediately below
@@ -352,7 +332,15 @@ def _attempt(
                     f"{item_id}: request failed after {attempt + 1} attempts: {error}"
                 ) from error
             attempt += 1
-            (sleep or time.sleep)(min(2**attempt, 30))
+        finally:
+            # Released on the failure path too. A leak here ratchets the budget
+            # down over a long suite until the run stalls with the server idle.
+            if budget is not None:
+                budget.release(item_id)
+        # Outside the reservation: a request waiting out its backoff is not
+        # occupying the cache, and holding through the sleep would price the
+        # queue for capacity nobody is using.
+        (sleep or time.sleep)(min(2**attempt, 30))
 
 
 def execute_order(

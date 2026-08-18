@@ -9,6 +9,8 @@ input instead.
 import importlib.util
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -59,6 +61,39 @@ class ControllerStepTests(unittest.TestCase):
             self.broker, sample(50, 40), previous_preemptions=50, ceiling=2_000_000
         )
         self.assertGreater(self.broker.budget.capacity, 1_000_000)
+
+    def test_a_queue_inside_the_broker_grows_the_budget(self):
+        """The growth signal has to include the queue the budget is causing.
+
+        A request blocked on capacity has never been sent, so vLLM's
+        `num_requests_waiting` reads zero exactly when the budget is the
+        bottleneck. Growing only on the server's queue makes the backoff
+        one-way: one run sat at the 262k floor for three hours with the server
+        running 18 requests and nothing queued anywhere it could see.
+        """
+        self.broker.resize(1_000_000)
+        self.broker.budget.acquire("held", 1_000_000)
+        for index in range(broker_main.admission.WAITING_TARGET + 1):
+            threading.Thread(
+                target=self.broker.budget.acquire, args=(f"lane{index}", 1000), daemon=True
+            ).start()
+        deadline = time.monotonic() + 3.0
+        while self.broker.waiting() <= broker_main.admission.WAITING_TARGET:
+            self.assertLess(time.monotonic(), deadline, "waiters never registered")
+            time.sleep(0.02)
+        broker_main.controller_step(
+            self.broker, sample(50, 0), previous_preemptions=50, ceiling=2_000_000
+        )
+        self.assertGreater(self.broker.budget.capacity, 1_000_000)
+
+    def test_backoff_does_not_cut_below_what_the_broker_holds(self):
+        """A cut past the held total cannot un-admit anyone; it only has to be
+        repaid out of completions before anything new is admitted."""
+        self.broker.budget.acquire("held", 1_800_000)
+        broker_main.controller_step(
+            self.broker, sample(60, 0), previous_preemptions=50, ceiling=2_000_000
+        )
+        self.assertEqual(self.broker.budget.capacity, 1_800_000)
 
     def test_a_missing_sample_changes_nothing(self):
         """A server that is restarting scrapes empty. Treating that as calm

@@ -94,12 +94,23 @@ def controller_step(
     # The counter is monotonic across the whole server lifetime, so only the
     # change since the last tick says anything about the budget we just set.
     preempted = max(0.0, total - previous_preemptions)
+    # The queue is wherever the bottleneck is. A request held at the budget was
+    # never sent, so the server reports an empty queue precisely when the budget
+    # is what is holding everything up -- and growth gated on the server's queue
+    # alone can then never fire again. One run sat at the floor for three hours
+    # on that reading, with the server running 18 requests and nothing queued
+    # anywhere it could see.
+    waiting = max(
+        float(sample.get("vllm:num_requests_waiting", 0.0)),
+        float(broker.waiting()),
+    )
     broker.resize(
         admission.next_capacity(
             broker.budget.capacity,
             preempted=preempted,
-            waiting=float(sample.get("vllm:num_requests_waiting", 0.0)),
+            waiting=waiting,
             ceiling=ceiling,
+            held=broker.outstanding(),
         )
     )
     return total
@@ -127,6 +138,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "the budget is their sum",
     )
     parser.add_argument("--interval", type=float, default=10.0)
+    parser.add_argument(
+        "--max-hold-seconds",
+        type=float,
+        default=0.0,
+        help="return a reservation held longer than this; 0 disables the valve. "
+             "Set it past the longest request the lanes can make -- one request "
+             "timeout, since a retry re-reserves -- so it fires only for a "
+             "server that has stopped answering",
+    )
     parser.add_argument(
         "--status",
         type=Path,
@@ -161,10 +181,13 @@ def main(argv: list[str] | None = None) -> int:
     bound.parent.mkdir(parents=True, exist_ok=True)
     if bound.exists():
         bound.unlink()
-    broker = admission.serve(args.socket, capacity=ceiling)
+    broker = admission.serve(
+        args.socket, capacity=ceiling, max_hold_seconds=args.max_hold_seconds or None
+    )
     print(
         f"admission broker on {bound} ceiling={ceiling} tokens "
-        f"({args.data_parallel} engine(s))",
+        f"({args.data_parallel} engine(s)) "
+        f"max-hold={args.max_hold_seconds or 'off'}",
         flush=True,
     )
 
@@ -191,6 +214,10 @@ def main(argv: list[str] | None = None) -> int:
                 "outstanding": broker.outstanding(),
                 "preemptions_total": previous,
                 "waiting": sample.get("vllm:num_requests_waiting"),
+                # Recorded apart from the server's queue: the two disagreeing is
+                # the signature of the budget being the bottleneck, and reading
+                # only the server's number is what hid that for a whole run.
+                "blocked": broker.waiting(),
             }
             with args.status.open("a", encoding="utf-8") as handle:
                 handle.write(f"{line}\n")

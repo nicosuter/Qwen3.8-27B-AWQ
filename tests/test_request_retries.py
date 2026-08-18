@@ -163,6 +163,32 @@ class AdmissionHoldTests(unittest.TestCase):
             call(client)
         self.assertEqual(budget.outstanding(), 0)
 
+    def test_a_retry_takes_its_reservation_out_again_rather_than_holding_it(self):
+        """One hold is one attempt, so the worst case is one timeout long.
+
+        Holding across the whole retry chain makes the worst case the request
+        timeout times the attempt count -- three hours on these lanes -- and a
+        server that stops answering turns that into a deduction from the budget
+        that nothing gives back. The retry still reserves before it is sent, so
+        a retry still cannot be what overfills the cache.
+        """
+        budget = self.configure(capacity=110)
+        between: list[int] = []
+        client = Client([TimeoutError("timed out"), {"ok": True}])
+        common.request_with_retries(
+            "item-1",
+            dict(PAYLOAD, max_tokens=100),
+            base_url="http://server",
+            api_key="EMPTY",
+            timeout=5.0,
+            retries=2,
+            client=client,
+            sleep=lambda _seconds: between.append(budget.outstanding()),
+        )
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(between, [0], "the reservation was held across the backoff")
+        self.assertEqual(budget.outstanding(), 0)
+
     def test_with_no_budget_configured_requests_are_unrestricted(self):
         common.configure_admission(budget=None, priors=None, suite="")
         response, _ = call(Client([{"ok": True}]))

@@ -15,6 +15,8 @@ import os
 import socket
 import tempfile
 import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -38,16 +40,29 @@ WAITING_TARGET = 8
 
 
 def next_capacity(
-    capacity: int, *, preempted: int, waiting: float, ceiling: int, floor: int = FLOOR_TOKENS
+    capacity: int,
+    *,
+    preempted: int,
+    waiting: float,
+    ceiling: int,
+    floor: int = FLOOR_TOKENS,
+    held: int = 0,
 ) -> int:
     """AIMD on the one signal that means the reservation was wrong.
 
     Preemption is the only observable that distinguishes "the cache is working"
     from "the cache is thrashing"; queue depth alone cannot, because a deep
     queue is the intended state when items outnumber capacity.
+
+    `held` bounds the decrease. A resize is not a revocation, so a budget cut
+    below what is already outstanding cannot un-admit anybody -- admission is
+    shut either way -- and the difference becomes an overdraft that only
+    completions can clear. Backing off from 5.9M to the floor while 4.6M was
+    held bought nothing and cost three hours: the run then needed 94% of the
+    cache to drain before it could admit one more request.
     """
     if preempted > 0:
-        return max(min(floor, ceiling), int(capacity * BACKOFF))
+        return max(min(floor, ceiling), min(capacity, int(held)), int(capacity * BACKOFF))
     if waiting > WAITING_TARGET:
         return min(ceiling, capacity + GROWTH_TOKENS)
     return capacity
@@ -98,14 +113,58 @@ def reservation(text: str, suite: str, priors: dict[str, Any], *, max_tokens: in
 class TokenBudget:
     """A semaphore counted in KV tokens rather than in requests."""
 
-    def __init__(self, capacity: int):
+    def __init__(
+        self,
+        capacity: int,
+        *,
+        max_hold_seconds: float | None = None,
+        poll_seconds: float = 1.0,
+        clock: Callable[[], float] = time.monotonic,
+    ):
         self.capacity = int(capacity)
-        self._held: dict[str, int] = {}
+        self.max_hold_seconds = max_hold_seconds
+        self._held: dict[str, tuple[int, float]] = {}
+        self._waiters = 0
+        self._poll = poll_seconds
+        self._clock = clock
         self._condition = threading.Condition()
+
+    def _total(self) -> int:
+        return sum(tokens for tokens, _ in self._held.values())
+
+    def _expire(self) -> None:
+        """Return the tokens of holds that have outlived the cap.
+
+        A request keeps its reservation across retries, so a server that stops
+        answering turns the tokens in flight into a permanent deduction from a
+        budget nothing will ever give back. The cap is a safety valve set past
+        the longest request the protocol allows, not a routine path -- when it
+        fires, the budget is briefly optimistic about a request the server may
+        still be running, which is the lesser of the two failures.
+        """
+        if not self.max_hold_seconds:
+            return
+        cutoff = self._clock() - self.max_hold_seconds
+        stale = [key for key, (_, since) in self._held.items() if since <= cutoff]
+        for key in stale:
+            del self._held[key]
+        if stale:
+            self._condition.notify_all()
 
     def outstanding(self) -> int:
         with self._condition:
-            return sum(self._held.values())
+            self._expire()
+            return self._total()
+
+    def waiting(self) -> int:
+        """How many lanes are blocked here.
+
+        This is the queue the controller cannot see anywhere else: a request
+        held at the budget has not been sent, so it is absent from the server's
+        own queue depth exactly when the budget is what is holding it up.
+        """
+        with self._condition:
+            return self._waiters
 
     def resize(self, capacity: int) -> None:
         """Change what may be admitted next; never revoke what is already held.
@@ -125,14 +184,28 @@ class TokenBudget:
         would hang the suite on capacity that cannot appear, and admitting it
         unreserved would let the cache overfill by exactly the amount the
         estimate was wrong by.
+
+        The clamp is applied against the capacity that admits the request, not
+        the one in force when it arrived. Clamping once and then waiting left a
+        request that arrived under a large budget asking for more than the
+        whole budget it was now waiting on -- unsatisfiable however empty the
+        budget got, while the same request made a second later would run.
         """
         want = max(1, int(tokens))
         with self._condition:
-            want = min(want, self.capacity)
-            while sum(self._held.values()) + want > self.capacity:
-                self._condition.wait()
-            self._held[key] = want
-            return want
+            self._waiters += 1
+            try:
+                while True:
+                    self._expire()
+                    grant = min(want, self.capacity)
+                    if self._total() + grant <= self.capacity:
+                        self._held[key] = (grant, self._clock())
+                        return grant
+                    # Timed, so an expiry that nobody notifies us about still
+                    # gets noticed by whoever is waiting on it.
+                    self._condition.wait(self._poll)
+            finally:
+                self._waiters -= 1
 
     def release(self, key: str) -> None:
         with self._condition:
@@ -179,9 +252,9 @@ class Broker:
     closes, which is what keeps a killed lane from ratcheting the budget down.
     """
 
-    def __init__(self, path: Path, capacity: int):
+    def __init__(self, path: Path, capacity: int, max_hold_seconds: float | None = None):
         self.path = socket_path(path)
-        self.budget = TokenBudget(capacity)
+        self.budget = TokenBudget(capacity, max_hold_seconds=max_hold_seconds)
         self._connections = 0
         self._lock = threading.Lock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -193,6 +266,9 @@ class Broker:
 
     def outstanding(self) -> int:
         return self.budget.outstanding()
+
+    def waiting(self) -> int:
+        return self.budget.waiting()
 
     def resize(self, capacity: int) -> None:
         self.budget.resize(capacity)
@@ -242,7 +318,11 @@ class Broker:
             held.discard(key)
             return {"ok": True}
         if op == "stat":
-            return {"capacity": self.budget.capacity, "outstanding": self.budget.outstanding()}
+            return {
+                "capacity": self.budget.capacity,
+                "outstanding": self.budget.outstanding(),
+                "waiting": self.budget.waiting(),
+            }
         return {"error": f"unknown op {op!r}"}
 
     def stop(self) -> None:
@@ -255,8 +335,8 @@ class Broker:
                 pass
 
 
-def serve(path: Path, capacity: int) -> Broker:
-    return Broker(Path(path), capacity)
+def serve(path: Path, capacity: int, max_hold_seconds: float | None = None) -> Broker:
+    return Broker(Path(path), capacity, max_hold_seconds)
 
 
 class RemoteBudget:
