@@ -132,9 +132,9 @@ environment artifacts, and roughly 28 GB for the result. Against the 55.6 GB
 BF16 source the checkpoint is about 21.6 GB at `int8` (2.6x), about 19.5 GB at
 `int4` (2.9x) and 25.5 GB at `source` (2.2x). All are larger than a fully 4-bit
 checkpoint of this size, because the exclusions leave 4.9B of the model's 27.8B
-parameters in BF16, or 8.9B under `source`. The `int8` and `int4` figures are
-arithmetic rather than measurements: no build has been made under either yet,
-though a third-party checkpoint of the `int4` shape measures 19.5 GB.
+parameters in BF16, or 8.9B under `source`. The `int8` figure is a measurement:
+a build weighs 21.57 GB on disk. The `int4` figure is still arithmetic, though a
+third-party checkpoint of that shape measures 19.5 GB.
 
 Once dependencies are installed and preparation has run, a quantization finishes
 inside 30 minutes. The recorded `elapsed_seconds` is 6.1 minutes at eight H200s
@@ -207,13 +207,14 @@ are not conservatism.
 `in_proj_qkv` and `in_proj_z` are the exception, and they are most of the
 remaining difference from `cyankiwi/Qwen3.8-27B-AWQ-INT4` at 19.6 GB. Across all
 48 linear-attention layers they are 4.0B parameters, roughly 15% of the model:
-held in BF16 the checkpoint is 25.5 GB, and at FP8 it is 21.5 GB, within 1.9 GB
+held in BF16 the checkpoint is 25.5 GB, at 8 bits it is 21.5 GB, within 1.9 GB
 of a checkpoint that quantizes them to 4 bits. `FP8_BLOCK` is what Qwen's own
-FP8 release applies to these same layers, but 8 bits with per-block scales is
-not evidence about 4-bit AWQ: the reported failure mode is recurrent-state
-corruption that only shows at long context, and the FP8 variant does not settle
-it either. RULER at 128K is the measurement that separates them, and both
-variants come from one calibration so that comparison is paired. AWQ mappings
+FP8 release applies to these same layers, and an earlier build used it here;
+8 bits with per-block scales is not evidence about 4-bit AWQ either way. The
+reported failure mode is recurrent-state corruption that only shows at long
+context, and no 8-bit variant settles it. RULER at 128K is the measurement that
+separates them, and the variants come from one calibration so that comparison
+is paired. AWQ mappings
 are restricted to the MLP paths, so calibration never wraps
 `Qwen3_5GatedDeltaNet`; this avoids the positional-`hidden_states` bug in
 compressed-tensors cache offload.
@@ -235,11 +236,11 @@ files alone instead of deleting them. If you do not copy the card in, the old
 one stays live. Copy it first:
 
 ```bash
-cp MODEL_CARD.md artifacts/Qwen3.8-27B-AWQ-FP8GDN/README.md
+cp MODEL_CARD.md artifacts/Qwen3.8-27B-AWQ-INT8GDN/README.md
 
 .venv/bin/python quant/scripts/publish_checkpoint.py \
     --repo nicosuter/Qwen3.8-27B-AWQ \
-    --path artifacts/Qwen3.8-27B-AWQ-FP8GDN \
+    --path artifacts/Qwen3.8-27B-AWQ-INT8GDN \
     --message "Requantize"          # add --execute to actually publish
 ```
 
@@ -256,7 +257,7 @@ and left alone.
 Check what a fresh clone would receive before publishing:
 
 ```bash
-ls -a artifacts/Qwen3.8-27B-AWQ-FP8GDN
+ls -a artifacts/Qwen3.8-27B-AWQ-INT8GDN
 ```
 
 ## Rapid paired release smoke
