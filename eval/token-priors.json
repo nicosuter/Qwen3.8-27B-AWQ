@@ -1,37 +1,37 @@
 {
   "suites": {
     "bfcl_v4": {
-      "prompt": 671,
-      "output": 219
+      "prompt": 588,
+      "output": 370
     },
     "gpqa_diamond": {
-      "prompt": 272,
-      "output": 7594
+      "prompt": 275,
+      "output": 17438
     },
     "livecodebench_v6": {
       "prompt": 580,
-      "output": 18685
+      "output": 35812
     },
     "matharena_2026_06": {
       "prompt": 228,
-      "output": 51617
+      "output": 62128
     },
     "mmmu_pro": {
       "prompt": 491,
-      "output": 2213
+      "output": 5559
     },
     "multimodal": {
-      "prompt": 869,
-      "output": 89
+      "prompt": 868,
+      "output": 378
     },
     "ruler": {
       "prompt": 32597,
-      "output": 552
+      "output": 20207
     }
   },
   "default": {
     "prompt": 2048,
     "output": 4096
   },
-  "note": "Median prompt and output tokens per suite, measured by eval/scripts/build_token_priors.py. Admission control reserves max(prompt estimate, prompt) + output. Rebuild after a checkpoint changes how long it reasons, or after a suite changes what it sends."
+  "note": "Median prompt and mean output tokens per suite, measured by eval/scripts/build_token_priors.py. Admission control reserves max(prompt estimate, prompt) + output. Rebuild after a checkpoint changes how long it reasons, or after a suite changes what it sends."
 }

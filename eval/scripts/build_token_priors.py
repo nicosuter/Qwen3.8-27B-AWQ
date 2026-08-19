@@ -12,6 +12,7 @@ starts calibrated instead of discovering the number by thrashing.
 
 import argparse
 import json
+import math
 import statistics
 import sys
 from pathlib import Path
@@ -43,11 +44,29 @@ def usable_output(row: dict[str, Any]) -> int | None:
 
 
 def collect(run_dirs: list[Path]) -> dict[str, Any]:
-    """Median prompt and output length per suite, over both arms of every run.
+    """Median prompt and mean output length per suite, over both arms of every run.
 
     The prompt half is recorded because the client cannot recover it: a
     multimodal prompt is mostly image, and the only party that counted those
-    tokens is the server that encoded them.
+    tokens is the server that encoded them. It stays a median because it is a
+    floor under a per-item estimate, applied as `max(estimate, prior)`, and the
+    max of a draw and a constant sits above both -- a mean floor over-reserved
+    RULER and multimodal by a quarter where the median lands both within a tenth.
+
+    The output half is added rather than floored, and there the mean is the
+    right statistic: a budget admits many requests at once and holds their sum,
+    and the sum of N draws concentrates on N times the mean however skewed each
+    one is. The median answers how long a single request runs, which is not what
+    a shared budget is deciding, and on these suites the two are far apart --
+    mean over median is 1.68x on livecodebench_v6, 2.16x on gpqa_diamond, 2.56x
+    on mmmu_pro, 4.14x on multimodal and 30.94x on ruler, whose median item
+    emits 653 tokens while a tenth of them run to the 131,072 cap.
+
+    Not p90, which this file used to argue against and still does: p90 is 6.2x
+    the median on gpqa_diamond and would idle most of the pool, against the
+    mean's 2.16x. Measured over the runs on disk, the mean brings every suite's
+    actual occupancy to between 0.88 and 1.10 of what it reserved, from as much
+    as 2.27x under it before.
     """
     outputs: dict[str, list[int]] = {}
     prompts: dict[str, list[int]] = {}
@@ -67,8 +86,10 @@ def collect(run_dirs: list[Path]) -> dict[str, Any]:
                     prompts.setdefault(suite, []).append(prompt)
     suites = {
         suite: {
+            # Rounded up: truncation on the output half is a systematic
+            # under-reservation, which is the whole failure being fixed.
             "prompt": int(statistics.median(prompts.get(suite) or [DEFAULT_PROMPT_TOKENS])),
-            "output": int(statistics.median(values)),
+            "output": math.ceil(statistics.fmean(values)),
         }
         for suite, values in sorted(outputs.items())
         if values
@@ -93,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         print("no scored rows found; refusing to write an empty priors file", file=sys.stderr)
         return 1
     priors["note"] = (
-        "Median prompt and output tokens per suite, measured by "
+        "Median prompt and mean output tokens per suite, measured by "
         "eval/scripts/build_token_priors.py. Admission control reserves "
         "max(prompt estimate, prompt) + output. Rebuild after a checkpoint changes how "
         "long it reasons, or after a suite changes what it sends."

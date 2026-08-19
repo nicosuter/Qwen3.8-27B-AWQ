@@ -106,9 +106,19 @@ def reservation(text: str, suite: str, priors: dict[str, Any], *, max_tokens: in
     4k to 128k, so a median would misprice two thirds of it -- while giving the
     image suites a floor that character counting cannot see.
 
-    The output half is the suite's median. Reserving p90 would idle five sixths
-    of the pool on GPQA, whose output spans 8k at p50 and 52k at p90; the
-    controller corrects the tail from the preemption counter instead.
+    The output half is the suite's mean, because it is added and the budget
+    holds the sum of everything in flight: N requests concentrate on N times the
+    mean however skewed each one is. The median answers how long a single
+    request runs, which is not what a shared budget is deciding, and these
+    suites are skewed enough for the difference to be the whole error -- mean
+    over median is 1.68x on livecodebench_v6 and 30.94x on ruler, where the
+    median item emits 653 tokens and a tenth run to the cap.
+
+    Still not p90, which would idle most of the pool: 6.2x the median on GPQA
+    against the mean's 2.16x. The controller corrects what is left from the
+    preemption counter, but it can only correct a tail, not a shortfall on every
+    request in flight -- which is what a median reservation is, and what left
+    the cache holding 2.27x what the budget believed it had booked.
     """
     entry = priors["suites"].get(suite) or priors["default"]
     prompt = max(len(text) // CHARS_PER_TOKEN, int(entry["prompt"]))

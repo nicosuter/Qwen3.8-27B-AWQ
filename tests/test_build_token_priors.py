@@ -28,7 +28,16 @@ def write_rows(path: Path, rows: list[dict]) -> None:
 
 
 class BuildPriorsTests(unittest.TestCase):
-    def test_prior_is_the_median_output_length(self):
+    def test_prior_is_the_mean_because_the_budget_is_a_sum(self):
+        """The budget holds N requests at once, so it holds N times the mean.
+
+        The median answers "how long is this one request", which is not the
+        question a shared budget asks. Every suite in this protocol is
+        right-skewed -- measured over the runs on disk, mean/median is 1.68x on
+        livecodebench_v6, 2.56x on mmmu_pro and 30.94x on ruler -- so a median
+        reservation tells the budget it is holding a fraction of what it will
+        actually hold, and the difference is charged to the cache as preemption.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             run = Path(tmp) / "run"
             write_rows(
@@ -39,7 +48,24 @@ class BuildPriorsTests(unittest.TestCase):
                 ],
             )
             priors = builder.collect([run])
-        self.assertEqual(priors["suites"]["gpqa_diamond"]["output"], 30)
+        self.assertEqual(priors["suites"]["gpqa_diamond"]["output"], 120)
+
+    def test_a_suite_whose_tail_reaches_the_cap_reserves_far_above_its_median(self):
+        """RULER's shape: most items short, a tenth of them at the token cap.
+
+        Its median output is 653 tokens against a mean of 20,206. Reserving the
+        median priced 96 concurrent lanes at a thirtieth of the cache they went
+        on to occupy.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "run"
+            write_rows(
+                run / "raw" / "baseline" / "ruler-r0.jsonl",
+                [{"id": str(i), "output_tokens": 600} for i in range(9)]
+                + [{"id": "tail", "output_tokens": 131_072}],
+            )
+            priors = builder.collect([run])
+        self.assertGreater(priors["suites"]["ruler"]["output"], 600)
 
     def test_both_arms_contribute_because_the_candidate_may_reason_longer(self):
         """Sizing admission on the baseline alone under-reserves the arm under test."""
@@ -83,6 +109,27 @@ class BuildPriorsTests(unittest.TestCase):
             )
             priors = builder.collect([run])
         self.assertNotIn("ruler", priors["suites"])
+
+    def test_the_prompt_half_stays_a_median_because_it_is_a_floor_not_a_summand(self):
+        """Only the output is added to the reservation.
+
+        The prompt prior is a floor under a per-item estimate the client already
+        has, applied as `max(estimate, prior)`, and the max of a draw and a
+        constant sits above both -- so raising the floor to the mean overshoots
+        instead of centring. Measured over the runs on disk it over-reserved
+        RULER and multimodal by a quarter, while the median floor lands both
+        within a tenth of what they actually occupied.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "run"
+            write_rows(
+                run / "raw" / "baseline" / "ruler-r0.jsonl",
+                [{"id": str(i), "prompt_tokens": 100, "output_tokens": 10} for i in range(9)]
+                + [{"id": "tail", "prompt_tokens": 10_000, "output_tokens": 10}],
+            )
+            priors = builder.collect([run])
+        self.assertEqual(priors["suites"]["ruler"]["prompt"], 100)
+        self.assertEqual(priors["suites"]["ruler"]["output"], 10)
 
     def test_the_prompt_half_is_recorded_too_because_pixels_are_not_characters(self):
         """A multimodal prompt is mostly image. Only the server counted it."""
