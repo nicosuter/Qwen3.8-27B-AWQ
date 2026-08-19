@@ -37,9 +37,9 @@ datasets:
 A mixed-precision quantization of the language path in
 [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B): W4A16 asymmetric
 AWQ on the MLP and attention projections, int8 group quantization on the Gated
-DeltaNet input projections. The vision tower stays in source precision, so this
-is still a multimodal checkpoint: image inputs run through an unquantized
-encoder and a quantized decoder.
+DeltaNet input projections. The vision tower is left in source precision, so
+this is still a multimodal checkpoint. Images run through an unquantized
+encoder into a quantized decoder.
 
 **Recipe, calibration builder, evaluation protocol and raw results:
 [github.com/nicosuter/Qwen3.8-27B-AWQ](https://github.com/nicosuter/Qwen3.8-27B-AWQ)**
@@ -58,9 +58,8 @@ encoder and a quantized decoder.
 | Recipe source | [`nicosuter/Qwen3.8-27B-AWQ`](https://github.com/nicosuter/Qwen3.8-27B-AWQ), the `quant/`, `eval/` and `common/` directories |
 
 `run-metadata.json`, `pip-freeze.txt`, the exact calibration `manifest.jsonl`
-and its SHA256 ship alongside the weights here. Anything you want to reproduce
-or audit should start from those and from the repository, rather than from this
-card.
+and its SHA256 ship alongside the weights here. If you want to reproduce or
+audit any of this, start there and in the repository, not from this card.
 
 ## What is and is not quantized
 
@@ -78,19 +77,9 @@ gate_proj/up_proj` and `up_proj → down_proj`, with `duo_scaling="both"` over a
 20-point grid. The remaining projections get no smoothing, and the int8 group
 gets no AWQ scales at all.
 
-`in_proj_qkv` and `in_proj_z` are 4.0B parameters across all 48
-linear-attention layers, roughly 15% of the model, and they are the difference
-between a 25.5 GB checkpoint and this 21.5 GB one. They are held at 8 bits
-rather than 4 because 48 of the 64 layers carry their long-range signal in a
-recurrent state rather than a renormalized attention pattern, so error
-introduced there accumulates along the sequence instead of being bounded per
-token. Qwen's own FP8 release likewise holds these same layers at 8 bits
-rather than 4. Whether 4 bits would actually damage that path is a measurement this
-repository has not made.
-
-Confining AWQ mappings to the MLP paths also keeps calibration from ever
-wrapping `Qwen3_5GatedDeltaNet`, which sidesteps a compressed-tensors
-offload-wrapper bug that drops the positional `hidden_states` argument during
+Keeping the mappings on the MLP paths has a side benefit: calibration never
+wraps `Qwen3_5GatedDeltaNet`, so it never trips the compressed-tensors
+offload-wrapper bug that drops the positional `hidden_states` argument on
 replay.
 
 ## Calibration data
@@ -145,8 +134,8 @@ redistribute this calibration set, attribute each subset separately.
 
 ## Evaluation
 
-No quality difference from `Qwen/Qwen3.8-27B-FP8` is detectable on the four
-suites scored so far, at a resolution of roughly one point. The suite set is not
+On the four suites scored so far, nothing separates this checkpoint from
+`Qwen/Qwen3.8-27B-FP8` at a resolution of about one point. The suite set is not
 final and will grow; nothing here covers executable coding or agentic use.
 
 These numbers come from a paired comparison against the FP8 release on the same
@@ -250,16 +239,11 @@ not claim either one yet.
 
 - Long context is unmeasured. The recurrent path is quantized, at 8 bits, and
   error in a recurrent state accumulates along the sequence instead of being
-  bounded per token, so if it costs anything that is where it would show. RULER
-  could not resolve it: nearly every item scored the same on both checkpoints,
-  and the rest ran into the output cap.
-- An unquantized vision tower does not mean multimodal output is unaffected,
-  since image tokens still pass through a quantized decoder. The multimodal
-  suite above is that check, on document, chart and scene text; it found no
+  bounded per token, so if it costs anything that is where it would show.
+- An unquantized vision tower does not mean multimodal output is safe: image
+  tokens still pass through a quantized decoder. The multimodal suite above is
+  the check for that, on document, chart and scene text, and it found no
   difference.
-- Calibration is 256 samples at 4,096 tokens. The recipe was not tuned for
-  behavior well past that length, or for languages and domains the blend does
-  not cover.
 
 ## License
 
