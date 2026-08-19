@@ -238,17 +238,110 @@ def build_payload(
     return payload
 
 
+def stream_body(payload: dict[str, Any]) -> dict[str, Any]:
+    """The payload as sent: streamed, and asked for the usage it omits by default.
+
+    Copied rather than mutated because the caller keeps the payload for the
+    raw-response archive, where transport fields are noise.
+    """
+    return {**payload, "stream": True, "stream_options": {"include_usage": True}}
+
+
+def collect_stream(lines: Iterable[bytes], *, item_id: str) -> dict[str, Any]:
+    """Fold an SSE stream back into the shape a buffered completion has.
+
+    Rebuilding `choices[0].message` is what keeps this change inside the
+    transport: the adapters, the raw-response archive and the scorers all read
+    the buffered shape and none of them need to know.
+
+    Only the decoded text is retained. An envelope is roughly fifty times the
+    token it carries, so keeping the parsed chunks would turn a full-length
+    answer into tens of megabytes, once per in-flight request.
+    """
+    content: list[str] = []
+    reasoning: list[str] = []
+    finish_reason = ""
+    usage: dict[str, Any] | None = None
+    done = False
+    for raw in lines:
+        line = raw.strip()
+        # Blank lines separate events and `:` opens a comment; both are keepalive.
+        if not line or not line.startswith(b"data:"):
+            continue
+        data = line[len(b"data:"):].strip()
+        if data == b"[DONE]":
+            done = True
+            break
+        try:
+            chunk = json.loads(data)
+        except ValueError as error:
+            raise AdapterError(f"{item_id}: unparsable stream chunk: {error}") from error
+        if chunk.get("usage"):
+            usage = chunk["usage"]
+        for choice in chunk.get("choices") or ():
+            delta = choice.get("delta") or {}
+            piece = delta.get("content")
+            if piece:
+                content.append(piece)
+            thought = delta.get("reasoning_content")
+            if thought:
+                reasoning.append(thought)
+            if choice.get("finish_reason"):
+                finish_reason = str(choice["finish_reason"])
+    # A cut connection now yields a well-formed prefix rather than the JSON
+    # parse error buffering used to give, so silence here would be scored as a
+    # short answer the model never produced. Both endings have to be seen.
+    if not done or not finish_reason:
+        raise AdapterError(
+            f"{item_id}: stream ended after {len(content) + len(reasoning)} deltas "
+            f"without {'[DONE]' if not done else 'a finish_reason'}"
+        )
+    if not usage:
+        raise AdapterError(
+            f"{item_id}: stream carried no usage; admission is sized from the "
+            "token counts, and defaulting them silently under-reserves the cache"
+        )
+    return {
+        "choices": [
+            {
+                "message": {
+                    "content": "".join(content),
+                    "reasoning_content": "".join(reasoning),
+                },
+                "finish_reason": finish_reason,
+            }
+        ],
+        "usage": usage,
+    }
+
+
 def post_chat(
     base_url: str, api_key: str, payload: dict[str, Any], timeout: float
 ) -> dict[str, Any]:
+    """Stream the completion so `timeout` bounds silence, not total duration.
+
+    Unstreamed, the server sends nothing until the answer is finished, so one
+    blocking read spans the whole request and the socket deadline becomes a
+    total-duration cap that fires on contention. Measured on job 4805, filling
+    the 131072-token cap took 132 minutes per stream under load against a
+    90-minute timeout: the items at risk were the longest-reasoning ones, which
+    is the axis the arms are being compared on.
+
+    Streamed, the deadline sits between chunks. A busy server just takes longer;
+    only a server that has stopped producing trips it. Degenerate output is
+    already caught by max_tokens, which returns `finish_reason: length` -- an
+    observation both arms get under the same rule.
+    """
     request = urllib.request.Request(
         base_url.rstrip("/") + "/chat/completions",
-        data=json.dumps(payload).encode(),
+        data=json.dumps(stream_body(payload)).encode(),
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
         method="POST",
     )
+    # request_with_retries prefixes the real item id on the way out; naming the
+    # seed here would read like one and point at the wrong thing.
     with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.load(response)
+        return collect_stream(response, item_id="stream")
 
 
 def is_permanent_rejection(error: BaseException) -> bool:
