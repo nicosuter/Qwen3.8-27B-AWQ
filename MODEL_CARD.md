@@ -71,16 +71,7 @@ These modules stay in source precision:
 - `lm_head`
 
 The Gated DeltaNet `in_proj_qkv` and `in_proj_z` projections are int8 rather
-than 4-bit. Everything else that is a `Linear` gets W4A16. The AWQ scale search
-itself is restricted to two MLP mappings, `post_attention_layernorm →
-gate_proj/up_proj` and `up_proj → down_proj`, with `duo_scaling="both"` over a
-20-point grid. The remaining projections get no smoothing, and the int8 group
-gets no AWQ scales at all.
-
-Keeping the mappings on the MLP paths has a side benefit: calibration never
-wraps `Qwen3_5GatedDeltaNet`, so it never trips the compressed-tensors
-offload-wrapper bug that drops the positional `hidden_states` argument on
-replay.
+than 4-bit. Everything else that is a `Linear` gets W4A16.
 
 ## Calibration data
 
@@ -89,11 +80,6 @@ dataset revision. The blend targets agent trajectories, native tool calls,
 code, math, STEM, vision, and long-context material. All 48 Cauldron records
 run through the model with their real pixels, calibrating the quantized decoder
 on visual embeddings while the vision tower itself remains source precision.
-
-Image rows are 48 of 256 samples but only 29,594 of 797,190 calibration tokens,
-or 3.7%. Cauldron images average 616 visual tokens per row against 3,690 tokens
-per text row, so text dominates the activation statistics AWQ uses to pick
-per-channel scales.
 
 | Samples | Source | Config / split |
 |---:|---|---|
@@ -110,24 +96,6 @@ per-channel scales.
 
 Revisions: Open-SWE `ad4805a`, Lambda `b92885e`, Nemotron `74e23eb`, Cauldron
 `847a98a`, FineWeb-Edu `87f0914`.
-
-The Open-SWE rows are stratified by scaffold and model and target a 25% prefix,
-50% tool- and code-centered interior, 25% tail mix. If a preferred span cannot
-fit the token budget, the builder tries the other complete-turn window modes
-for that row. Foreign tool schemas and calls are parsed and re-emitted through
-Qwen3.8's own chat template rather than left in their original serialization,
-so the calibration text matches what the model actually sees at inference.
-
-Each rank first runs its image rows through the BF16 vision tower and splices
-the resulting real visual embeddings into the token stream. Sequential AWQ then
-receives one uniform `inputs_embeds` schema for both text and image rows. This
-avoids specializing Qwen's optional-pixel branch to the first batch while
-retaining the sequential pipeline's bounded activation cache.
-
-The builder enforces gates for reasoning content, Qwen-native tool calls,
-long-context length, and image files, and validates the exact per-source
-allocation before writing the manifest. A run that cannot fill a source fails
-instead of quietly substituting.
 
 Cauldron aggregates upstream datasets under their own licenses. If you
 redistribute this calibration set, attribute each subset separately.
@@ -221,19 +189,12 @@ trigger repetition loops, and that warning carries over here.
 ### MTP / speculative decoding
 
 The 15 MTP tensors are copied unchanged from the pinned source checkpoint into
-a dedicated BF16 shard after AWQ serialization. The export fails if their
-keyset, dtype, or values differ, or if the main model contains no packed
-weights. All eight MTP projection modules are also added to the compressed
-tensors ignore list so vLLM constructs them as BF16 Linears. Native speculation
-can be enabled with:
+a dedicated BF16 shard after AWQ serialization. Native speculation can be
+enabled with:
 
 ```bash
 --speculative-config '{"method":"mtp","num_speculative_tokens":1}'
 ```
-
-Preserved weights are not the same as verified behavior. The MTP acceptance
-rate and quality delta are part of the pending validation, so this card does
-not claim either one yet.
 
 ## Limitations
 

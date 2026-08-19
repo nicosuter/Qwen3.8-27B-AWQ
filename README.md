@@ -98,8 +98,11 @@ generation smoke tests; submit `eval/slurm/paired-smoke-eval.sbatch` separately 
 the checkpoint has been saved.
 
 The quantization workflow preserves and validates the source-precision MTP head
-automatically. For an artifact created through another export path, add MTP
-without recalibration or requantization:
+automatically. The export fails if the 15 tensors' keyset, dtype or values
+differ from source, or if the main model carries no packed weights, and it adds
+the eight MTP projection modules to the compressed-tensors ignore list so vLLM
+builds them as BF16 Linears. For an artifact created through another export
+path, add MTP without recalibration or requantization:
 
 ```bash
 source .venv/bin/activate
@@ -216,7 +219,10 @@ it either. RULER at 128K is the measurement that separates them, and both
 variants come from one calibration so that comparison is paired. AWQ mappings
 are restricted to the MLP paths, so calibration never wraps
 `Qwen3_5GatedDeltaNet`; this avoids the positional-`hidden_states` bug in
-compressed-tensors cache offload.
+compressed-tensors cache offload. The scale search itself covers two mappings,
+`post_attention_layernorm -> gate_proj/up_proj` and `up_proj -> down_proj`, with
+`duo_scaling="both"` over a 20-point grid. Every other projection is quantized
+without smoothing, and the 8-bit group gets no AWQ scales at all.
 
 ## Publishing the checkpoint
 
