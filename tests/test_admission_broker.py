@@ -86,14 +86,25 @@ class ControllerStepTests(unittest.TestCase):
         )
         self.assertGreater(self.broker.budget.capacity, 1_000_000)
 
-    def test_backoff_does_not_cut_below_what_the_broker_holds(self):
-        """A cut past the held total cannot un-admit anyone; it only has to be
-        repaid out of completions before anything new is admitted."""
+    def test_a_budget_almost_entirely_held_still_backs_off(self):
+        """Nearly full is the normal state under load, not a reason to stand
+        down. The budget is still what admits the next request, so the cut
+        reaches it."""
         self.broker.budget.acquire("held", 1_800_000)
         broker_main.controller_step(
             self.broker, sample(60, 0), previous_preemptions=50, ceiling=2_000_000
         )
-        self.assertEqual(self.broker.budget.capacity, 1_800_000)
+        self.assertEqual(self.broker.budget.capacity, 1_600_000)
+
+    def test_an_overdrawn_budget_is_left_where_it_is(self):
+        """Held above capacity means admission is already shut. A further cut
+        un-admits nobody and only has to be repaid out of completions."""
+        self.broker.budget.acquire("held", 1_800_000)
+        self.broker.resize(1_000_000)
+        broker_main.controller_step(
+            self.broker, sample(60, 0), previous_preemptions=50, ceiling=2_000_000
+        )
+        self.assertEqual(self.broker.budget.capacity, 1_000_000)
 
     def test_a_missing_sample_changes_nothing(self):
         """A server that is restarting scrapes empty. Treating that as calm

@@ -106,30 +106,76 @@ class ControllerTests(unittest.TestCase):
             after = admission.next_capacity(after, preempted=1, waiting=0, ceiling=4_000_000)
         self.assertGreaterEqual(after, admission.FLOOR_TOKENS)
 
-    def test_backoff_stops_at_what_is_already_held(self):
-        """Cutting below the held total buys nothing and has to be repaid.
+    def test_a_budget_full_to_its_ceiling_still_backs_off(self):
+        """A full budget is the state the brake exists for, not an exemption.
 
-        Once capacity is down to what is outstanding, admission is already shut:
-        a resize cannot un-admit anybody. Every further cut only deepens an
-        overdraft that completions alone can clear, which is how one run spent
-        three hours at a 262k budget against 4.6M of held reservations.
+        Bounding the cut by the held total was meant to stop a second cut
+        deepening an overdraft the first one had already opened. Applied to a
+        budget that is merely full, it cancels the first cut too: held sits a
+        hair under capacity, the bound returns capacity unchanged, and nothing
+        responds to the preemption counter at all. One run held 5,882,813 of a
+        5,883,095 budget and took 5,990 preemptions before the engine stopped
+        answering.
         """
         after = admission.next_capacity(
-            4_700_000, preempted=9, waiting=0, ceiling=5_878_175, held=4_600_000
+            5_883_095, preempted=5_990, waiting=0, ceiling=5_883_095, held=5_882_813
         )
-        self.assertEqual(after, 4_600_000)
+        # A whole backoff step, not the 282 tokens that separate held from
+        # capacity: anything less leaves the budget where the thrash found it.
+        self.assertLessEqual(after, int(5_883_095 * admission.BACKOFF))
 
-    def test_backoff_follows_the_drain_instead_of_plunging_past_it(self):
-        """Sustained preemption tracks the held total down, not the floor."""
+    def test_an_overdrawn_budget_is_not_cut_again(self):
+        """Held above capacity means the last cut has not taken effect yet.
+
+        Admission is already shut, so a further cut un-admits nobody and only
+        deepens an overdraft that completions alone can clear. That is how one
+        run spent three hours at a 262k budget against 4.6M of held
+        reservations.
+        """
+        after = admission.next_capacity(
+            4_000_000, preempted=9, waiting=0, ceiling=5_878_175, held=4_600_000
+        )
+        self.assertEqual(after, 4_000_000)
+
+    def test_sustained_preemption_settles_just_below_what_is_held(self):
+        """The budget has to end up under the held total, not level with it.
+
+        Level with it, the next completion re-admits immediately and the cache
+        goes on thrashing. One backoff step under it is what makes the drain
+        actually drain.
+        """
         capacity, held = 5_878_175, 4_600_000
         for _ in range(50):
             capacity = admission.next_capacity(
                 capacity, preempted=9, waiting=0, ceiling=5_878_175, held=held
             )
-        self.assertEqual(capacity, held)
+        self.assertLess(capacity, held)
+        self.assertGreaterEqual(capacity, int(held * admission.BACKOFF))
+
+    def test_a_budget_cut_to_the_floor_climbs_back_once_the_cache_settles(self):
+        """Recovery is what makes an aggressive cut safe to take.
+
+        The cut is no longer bounded by the held total, so the floor is
+        reachable whenever preemption outlives the drain. That is only
+        acceptable while the growth path works: this walks a budget down under
+        sustained preemption and then back up on a standing queue, because a
+        one-way controller is the failure the last one shipped with.
+        """
+        capacity = 4_000_000
+        for _ in range(50):
+            capacity = admission.next_capacity(
+                capacity, preempted=3, waiting=0, ceiling=4_000_000, held=0
+            )
+        self.assertEqual(capacity, admission.FLOOR_TOKENS)
+        for _ in range(50):
+            capacity = admission.next_capacity(
+                capacity, preempted=0, waiting=32, ceiling=4_000_000, held=0
+            )
+        self.assertGreater(capacity, admission.FLOOR_TOKENS)
 
     def test_an_unheld_budget_still_backs_off_to_the_floor(self):
-        """The held total bounds the cut; it does not abolish it."""
+        """Nothing outstanding and still preempting: the cut has nothing to
+        wait for, so it runs all the way down."""
         capacity = 4_000_000
         for _ in range(50):
             capacity = admission.next_capacity(

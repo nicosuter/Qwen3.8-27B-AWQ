@@ -54,15 +54,24 @@ def next_capacity(
     from "the cache is thrashing"; queue depth alone cannot, because a deep
     queue is the intended state when items outnumber capacity.
 
-    `held` bounds the decrease. A resize is not a revocation, so a budget cut
-    below what is already outstanding cannot un-admit anybody -- admission is
-    shut either way -- and the difference becomes an overdraft that only
-    completions can clear. Backing off from 5.9M to the floor while 4.6M was
-    held bought nothing and cost three hours: the run then needed 94% of the
-    cache to drain before it could admit one more request.
+    `held` decides whether a cut is worth making, not how deep it goes. A
+    resize is not a revocation, so once held is above capacity admission is
+    already shut and a further cut un-admits nobody: it only deepens an
+    overdraft that completions alone can clear. Backing off from 5.9M to the
+    floor while 4.6M was held bought nothing and cost three hours.
+
+    Bounding every cut by `held` instead of only the overdrawn ones put the
+    brake out of service at full load, which is the one load that needs it. A
+    budget that is merely full has held a hair under capacity, so the bound
+    returned capacity unchanged and the preemption counter climbed against a
+    budget that never moved -- 5,990 preemptions at 5,882,813 held of 5,883,095
+    before the engine stopped answering. Cut when the budget is what admits
+    requests; hold still only when a cut cannot reach them.
     """
     if preempted > 0:
-        return max(min(floor, ceiling), min(capacity, int(held)), int(capacity * BACKOFF))
+        if held >= capacity:
+            return capacity
+        return max(min(floor, ceiling), int(capacity * BACKOFF))
     if waiting > WAITING_TARGET:
         return min(ceiling, capacity + GROWTH_TOKENS)
     return capacity
