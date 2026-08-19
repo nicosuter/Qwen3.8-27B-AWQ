@@ -18,7 +18,7 @@
         "dataset": "633f5ee89ab8ad4522a9f850766b73f62147ffdd",
         "harness": "builtin-gpqa-mcq-v1",
         "verifier": "exact-choice-v1",
-        "adapter": "sha256:b6d0054bb75f3c64e83a41499e1a5a049d205b9a89634a88a21fb3a00426f7f7"
+        "adapter": "sha256:8667e0eb4837615371c49aeb0575793066efab93d303ba0da7022086d7620d8d"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -45,7 +45,7 @@
         "dataset": "sha256:632a63b0ccd60b992c263937e996f462bc43bc0e87c0b22d7edcea0d5aaa8540",
         "harness": "builtin-ruler-synth-v1",
         "verifier": "recall-string-match-v1",
-        "adapter": "sha256:1c5027cf8ccbfc4d9ad2a56c1d53c0a113fd9f1961f2e4bf457419997682c7a2"
+        "adapter": "sha256:6cbf17a11a8d3b15283e8ef170205d56b1f5a39dab2511ba5a505d39efe88d56"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -78,7 +78,7 @@
         "dataset": "MathArena/aime_2026@d2de22f3c656b4f56cf8981212186377d1e23bc3,MathArena/apex-shortlist@f3efdf224ef665f129ddaae37699f6098c65781b",
         "harness": "builtin-matharena-exact-v1",
         "verifier": "exact-integer-answer-v1",
-        "adapter": "sha256:bd7cc92a619dff7e7b41e0dc6c66755a1359aaa1dc4860aea6665a384e2135a6"
+        "adapter": "sha256:f5448c637bd18641100f49003177685ce968a9793561747bf2ef15ca849248dd"
       },
       "prepare": [
         "${EVAL_PYTHON}",

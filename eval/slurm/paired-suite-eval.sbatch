@@ -726,14 +726,21 @@ if "--max-tokens" in run:
 # clear, so any recorded timeout is contamination from the old contract.
 #
 # Missing is not zero: a run that did not record the count establishes nothing.
+#
+# Exit 2 rather than 1, and the difference is what the caller resumes on. Every
+# other check above says the recorded rows measured something else; this one
+# says they measured the right thing and came up short on some items. Those
+# items are the only ones that have to be bought again -- the rest are the same
+# checkpoint answering the same item under the same cap, which this protocol
+# already reuses across jobs.
 fired = recorded.get("timeouts")
 if fired != 0:
     print(
         f"{suite}: recorded timeouts={fired}; a timed-out item is not a score, "
-        "so these rows cannot be reused",
+        "so those rows cannot be reused",
         file=sys.stderr,
     )
-    sys.exit(1)
+    sys.exit(2)
 
 sys.exit(0)
 PY
@@ -754,14 +761,21 @@ count_alive() {
 # measure of reproducibility this protocol produces, and it only exists if the
 # earlier draw survives. Move it aside instead of letting the adapter write over
 # it; raw and metadata travel together so the pair stays interpretable.
+# Sets ARCHIVED_RESULTS to where the rows went, so a caller that means to resume
+# from them can say which file it means rather than reconstructing the path.
+ARCHIVED_RESULTS=""
 archive_existing() {
     local variant="$1" suite="$2" rep="$3"
+    ARCHIVED_RESULTS=""
     local out="$RUN_DIR/raw/$variant/$suite-r$rep.jsonl"
     local meta="$RUN_DIR/metadata/$suite-$variant-r$rep.json"
     [[ -s "$out" || -s "$meta" ]] || return 0
     local dest="$RUN_DIR/superseded/$RUN_STAMP-job${SLURM_JOB_ID:-manual}"
     mkdir -p "$dest/raw/$variant" "$dest/metadata"
-    [[ -s "$out" ]] && mv "$out" "$dest/raw/$variant/"
+    if [[ -s "$out" ]]; then
+        mv "$out" "$dest/raw/$variant/"
+        ARCHIVED_RESULTS="$dest/raw/$variant/$suite-r$rep.jsonl"
+    fi
     [[ -s "$meta" ]] && mv "$meta" "$dest/metadata/"
     echo "superseded $suite r$rep ($variant); previous result kept in $dest"
     return 0
@@ -830,18 +844,34 @@ score_variant() {
     fi
 
     local pending=() lane_pids=()
+    # Where each pending lane resumes from, if anywhere. Indexed in lockstep
+    # with `pending` rather than keyed by suite: bash 3.2 has no associative
+    # arrays and the dev machines that run this file's tests still ship it.
+    local resume_from=()
     for suite in $SUITES; do
         if suite_failed "$suite"; then
             echo "=== $suite ($variant) skipped; it already failed on the other variant ==="
             continue
         fi
         for (( rep = 0; rep < REPLICATES; rep++ )); do
-            if [[ "${PAIRED_FORCE:-0}" != "1" ]] && suite_is_current "$variant" "$suite" "$rep"; then
+            local reuse_rc=0
+            suite_is_current "$variant" "$suite" "$rep" || reuse_rc=$?
+            if [[ "${PAIRED_FORCE:-0}" != "1" ]] && (( reuse_rc == 0 )); then
                 echo "=== $suite r$rep ($variant) already scored under this policy; reusing ==="
                 continue
             fi
             archive_existing "$variant" "$suite" "$rep"
+            # rc 2 is suite_is_current saying the rows measured this exact
+            # configuration and only timed out on some items. Those items are
+            # the rerun; the rest are carried forward from the archived copy.
+            local resume=""
+            if [[ "${PAIRED_FORCE:-0}" != "1" ]] && (( reuse_rc == 2 )) \
+               && [[ -s "$ARCHIVED_RESULTS" ]]; then
+                resume="$ARCHIVED_RESULTS"
+                echo "=== $suite r$rep ($variant) resuming; only the timed-out items rerun ==="
+            fi
             pending+=("$suite:$rep")
+            resume_from+=("$resume")
         done
     done
     (( ${#pending[@]} > 0 )) || return 0
@@ -854,7 +884,9 @@ score_variant() {
     mkdir -p "$lane_dir"
     echo "scoring ${#pending[@]} job(s) for $variant across $lanes lane(s); live logs in $lane_dir"
 
-    for job in "${pending[@]}"; do
+    local job_index
+    for (( job_index = 0; job_index < ${#pending[@]}; job_index++ )); do
+        job="${pending[$job_index]}"
         suite="${job%%:*}"
         rep="${job##*:}"
         label="$suite-r$rep"
@@ -872,6 +904,9 @@ score_variant() {
         # whichever finished, which is why each job records its own into a file.
         while (( $(count_alive "${lane_pids[@]}") >= lanes )); do wait -n || true; done
         (
+            # Per lane, inside the subshell: two suites resuming at once must not
+            # see each other's source file.
+            export EVAL_RESUME_FROM="${resume_from[$job_index]:-}"
             if [[ "${RUNNER:-adapter}" == "evalscope" ]]; then
                 # EvalScope owns the task definitions; we keep the server
                 # lifecycle, the lane fan-out and the comparison. The lane
@@ -915,7 +950,9 @@ score_variant() {
     (( ${#lane_pids[@]} == 0 )) || wait "${lane_pids[@]}" 2>/dev/null || true
 
     # Replay the lanes in a fixed order; concurrent stdout would be unreadable.
-    for job in "${pending[@]}"; do
+    local job_index
+    for (( job_index = 0; job_index < ${#pending[@]}; job_index++ )); do
+        job="${pending[$job_index]}"
         suite="${job%%:*}"
         rep="${job##*:}"
         label="$suite-r$rep"

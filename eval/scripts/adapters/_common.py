@@ -343,17 +343,76 @@ def request_with_retries(
         (sleep or time.sleep)(min(2**attempt, 30))
 
 
+def carried_forward(source: Any = None) -> dict[str, dict[str, Any]]:
+    """Rows from an earlier attempt that a rerun does not have to buy again.
+
+    Set EVAL_RESUME_FROM to the superseded results file and a rerun re-measures
+    only the items that have no measurement: a timeout wrote a zero the model
+    never produced, and a deferred row was never executed at all. Everything
+    else is the same checkpoint answering the same item under the same cap, and
+    the protocol already reuses that across jobs -- pairing is per item, not per
+    process.
+
+    This is not the relaxation the --max-tokens check refuses. Truncation at the
+    cap is an observation, and it lands on the longest reasoning, so keeping the
+    items that fit and rescoring the rest would select on the outcome along the
+    axis the arms differ on. A timeout leaves nothing to select on, and every
+    item in the frozen order is still scored exactly once.
+
+    Whoever sets the variable has already decided the rows are comparable;
+    paired-suite-eval.sbatch sets it only when the recorded run matches this one
+    in checkpoint, cap and timeout scale, and differs solely in having timed out.
+    """
+    if source is None:
+        source = os.environ.get("EVAL_RESUME_FROM", "")
+    if not source:
+        return {}
+    path = Path(source)
+    if not path.is_file():
+        raise AdapterError(
+            f"EVAL_RESUME_FROM={path} does not exist; refusing to silently rerun "
+            "the whole suite, which would look the same as a resume that worked"
+        )
+    carried: dict[str, dict[str, Any]] = {}
+    for row in read_jsonl(path):
+        if row.get("timeout") or row.get("deferred"):
+            continue
+        item_id = row.get("id")
+        if item_id is not None:
+            carried[str(item_id)] = row
+    return carried
+
+
 def execute_order(
-    order: Sequence[str], worker: Callable[[str], dict[str, Any]], concurrency: int
+    order: Sequence[str],
+    worker: Callable[[str], dict[str, Any]],
+    concurrency: int,
+    *,
+    reuse: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Run the frozen task order, returning rows in that order."""
+    """Run the frozen task order, returning rows in that order.
+
+    Items already measured by an earlier attempt are spliced back in rather than
+    re-requested, so the returned list is the whole order either way.
+    """
     if concurrency < 1:
         raise AdapterError("--concurrency must be at least 1")
-    if concurrency == 1:
-        return [worker(item_id) for item_id in order]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = {item_id: pool.submit(worker, item_id) for item_id in order}
-        return [futures[item_id].result() for item_id in order]
+    if reuse is None:
+        reuse = carried_forward()
+    pending = [item_id for item_id in order if item_id not in reuse]
+    if reuse:
+        print(
+            f"resuming: {len(reuse)} of {len(order)} items carried forward, "
+            f"{len(pending)} to measure",
+            flush=True,
+        )
+    if concurrency == 1 or len(pending) <= 1:
+        fresh = {item_id: worker(item_id) for item_id in pending}
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
+            futures = {item_id: pool.submit(worker, item_id) for item_id in pending}
+            fresh = {item_id: future.result() for item_id, future in futures.items()}
+    return [reuse[item_id] if item_id in reuse else fresh[item_id] for item_id in order]
 
 
 def timing(started_wall: float, started_mono: float) -> dict[str, float]:

@@ -283,6 +283,10 @@ def do_run(config: dict[str, Any], suite: str, run_dir: Path, args: argparse.Nam
             "request_timeout_scale": args.request_timeout_scale,
             "concurrency_scale": args.concurrency_scale,
             "admission": admission_record(env),
+            # A resumed suite is part measurement and part inheritance, and
+            # nothing else in the file says so: wall_clock_seconds covers only
+            # the items this job bought, while accuracy covers all of them.
+            "resumed_from": os.environ.get("EVAL_RESUME_FROM") or None,
             # Surfaced next to the hardware because together they say whether a
             # zero was the model's answer or the wall clock's.
             "timeouts": sum(1 for row in rows if row.get("timeout")),

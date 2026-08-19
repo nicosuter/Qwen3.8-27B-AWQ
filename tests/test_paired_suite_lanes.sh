@@ -25,7 +25,7 @@ awk '/^suite_is_current\(\) \{/,/^\}/' "$SBATCH" > "$WORK/fns.sh"
 awk '/^count_alive\(\) \{/,/^\}/'     "$SBATCH" >> "$WORK/fns.sh"
 for fn in suite_failed record_failure usable_suites report_failures require_usable_suites \
           variant_requested candidate_bind stale_suites capability_of \
-          require_materialized; do
+          require_materialized archive_existing; do
     awk -v f="^${fn}\\\\(\\\\) \\\\{" '$0 ~ f, /^\}/' "$SBATCH" >> "$WORK/fns.sh"
 done
 awk '/^score_variant\(\) \{/,/^\}/'   "$SBATCH" >> "$WORK/fns.sh"
@@ -38,6 +38,7 @@ done
 # Checked per source file: an awk pattern that silently matched nothing let the
 # concat tests pass against an empty extraction.
 grep -q "score_variant"  "$WORK/fns.sh" || { echo "could not extract from the sbatch"; exit 1; }
+grep -q "archive_existing" "$WORK/fns.sh" || { echo "could not extract archive_existing"; exit 1; }
 grep -q "score_variant"  "$WORK/fns.sh" || { echo "could not extract score_variant"; exit 1; }
 grep -q "concat_variant" "$WORK/fns.sh" || { echo "could not extract from compare_run_dir.sh"; exit 1; }
 
@@ -49,7 +50,7 @@ case "${1:-}" in
     *gpqa_diamond.py) echo "probe ok"; exit 0 ;;
 esac
 # Which script a lane invoked is the only way to tell the runners apart.
-echo "script=${1##*/}"
+echo "script=${1##*/} resume=${EVAL_RESUME_FROM:-none}"
 suite=""; rep=""; conc=""; scale=""; variant=""; tscale=""
 while (( $# )); do
     case "$1" in
@@ -90,6 +91,9 @@ for suite in json.load(open(sys.argv[1]))["suites"]:
     print(f"{suite['name']}\t{suite.get('kv_class', 'short')}")
 PY
 )"
+    # archive_existing moves superseded rows into a stamped directory; the real
+    # sbatch always has this set.
+    RUN_STAMP="stamp"
     PYTHON="$WORK/stub"; BASE_URL="http://x"; SERVED_NAME="m"
     CONCURRENCY=""; CONCURRENCY_SCALE="0.5"; PAIRED_FORCE=0; TIMEOUT_SCALE="1.0"
     BASELINE_FP="sha256:aaa"; CANDIDATE_FP="sha256:bbb"
@@ -542,6 +546,32 @@ check "nothing excluded" "" "$(stale_suites 2>/dev/null)"
 echo "== case 19c: a suite the eval suite does not define is dropped, not crashed on =="
 echo '{"id":"x"}' > "$RUN_DIR/raw/baseline/retired-r0.jsonl"
 check "named" "retired" "$(stale_suites 2>/dev/null)"
+
+echo "== case 20: a suite that only timed out resumes from its archived rows =="
+setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
+mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
+echo '{"id":"x"}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
+{"timeouts":7,"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:bbb"}}
+JSON
+out="$(score_variant candidate 2>&1)"; rc=$?
+check "exit 0" 0 "$rc"
+check "not treated as already scored" 0 "$(grep -c 'already scored' <<<"$out")"
+check "announced as a resume" 1 "$(grep -c 'resuming; only the timed-out items rerun' <<<"$out")"
+check "lane pointed at the archived rows" 1 \
+    "$(grep -c 'resume=.*/superseded/.*/raw/candidate/alpha-r0.jsonl' <<<"$out")"
+
+echo "== case 20b: a stale suite is rerun whole, never resumed =="
+setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
+mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
+echo '{"id":"x"}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
+{"timeouts":7,"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:OTHER"}}
+JSON
+out="$(score_variant candidate 2>&1)"; rc=$?
+check "exit 0" 0 "$rc"
+check "no resume announced" 0 "$(grep -c 'resuming; only' <<<"$out")"
+check "lane got no source" 1 "$(grep -c 'resume=none' <<<"$out")"
 
 echo
 echo "passed $PASS, failed $FAIL"
