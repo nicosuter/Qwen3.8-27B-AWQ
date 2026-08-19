@@ -4,7 +4,16 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --mem=0
+# --mem=0 asks for every byte on the node, which holds the whole machine against
+# other jobs for the entire walltime while this one uses a fraction of it.
+# Measured peak RSS over the paired runs is 34-57 GiB (sacct MaxRSS), the
+# heaviest being the mixed image suites. 160 GiB is ~2.8x that: room for a
+# spike sacct's sampling missed, and for the streamed transport's per-request
+# accumulation, while leaving most of the node schedulable.
+#
+# Raise it rather than let a multi-hour GPU run die at the ceiling -- but raise
+# it against a number, and MaxRSS in sacct is that number.
+#SBATCH --mem=160G
 #SBATCH --gres=gpu:4
 #SBATCH --time=06:00:00
 # %x is the job name, so pass --job-name=<what is being scored>: several
