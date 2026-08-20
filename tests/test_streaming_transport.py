@@ -41,12 +41,12 @@ def sse(*chunks: dict) -> list[bytes]:
     return lines + [b"data: [DONE]\n"]
 
 
-def delta(content=None, reasoning=None, finish_reason=None) -> dict:
+def delta(content=None, reasoning=None, finish_reason=None, reasoning_key="reasoning_content") -> dict:
     body: dict = {}
     if content is not None:
         body["content"] = content
     if reasoning is not None:
-        body["reasoning_content"] = reasoning
+        body[reasoning_key] = reasoning
     return {"choices": [{"delta": body, "finish_reason": finish_reason}]}
 
 
@@ -183,6 +183,113 @@ class CollectStreamTests(unittest.TestCase):
             20 * tokens,
             "the collector is retaining chunk objects, not just the text",
         )
+
+
+class ReasoningFieldNameTests(unittest.TestCase):
+    """The server names the thinking text `reasoning`, not `reasoning_content`.
+
+    Every fixture in this repository was written against `reasoning_content`, so
+    the suite stayed green while the harness discarded the thinking text of
+    every item of every suite. What it actually sends, from a scored run's own
+    archive:
+
+        message keys = ['annotations', 'audio', 'content', 'function_call',
+                        'reasoning', 'refusal', 'role']
+
+    Reading one name and being sent the other is silent by construction: a reply
+    that finished still carries its answer in `content`, so only the reasoning
+    goes missing. A reply that ran to the token cap never leaves the think
+    block, so all of it goes missing and the row arrives empty.
+    """
+
+    def test_buffered_reasoning_is_read(self):
+        response = {
+            "choices": [
+                {
+                    "message": {"content": "42", "reasoning": "think harder"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"completion_tokens": 11},
+        }
+        content, reasoning, _, _ = common.unpack_choice("a", response)
+        self.assertEqual(reasoning, "think harder")
+        self.assertEqual(content, "42")
+
+    def test_streamed_reasoning_is_read(self):
+        stream = sse(
+            delta(reasoning="think ", reasoning_key="reasoning"),
+            delta(reasoning="harder", reasoning_key="reasoning"),
+            delta(content="42", finish_reason="stop"),
+            usage_chunk(),
+        )
+        response = common.collect_stream(stream, item_id="a")
+        content, reasoning, _, _ = common.unpack_choice("a", response)
+        self.assertEqual(reasoning, "think harder")
+        self.assertEqual(content, "42")
+
+    def test_a_reply_truncated_inside_the_think_block_keeps_its_text(self):
+        """The production failure, reduced.
+
+        A RULER item that ran to the cap generated 131072 tokens and reached the
+        scorer as `content=''`, `reasoning_content=''` -- so `repetition_loop`
+        was computed over an empty string and `repetition_assessed` was False on
+        every truncated row. The whole point of recording truncation is to be
+        able to look at what the model was doing when it happened.
+        """
+        stream = sse(
+            delta(reasoning="counting: item001, ", reasoning_key="reasoning"),
+            delta(reasoning="item002, ", reasoning_key="reasoning", finish_reason="length"),
+            usage_chunk(),
+        )
+        response = common.collect_stream(stream, item_id="a")
+        content, reasoning, finish, _ = common.unpack_choice("a", response)
+        self.assertEqual(finish, "length")
+        self.assertEqual(content, "")
+        self.assertEqual(reasoning, "counting: item001, item002, ")
+
+    def test_either_name_is_accepted(self):
+        """Both spellings are in the archive; neither may start being ignored.
+
+        The buffered runs of this protocol carry `reasoning` and the fixtures
+        carry `reasoning_content`, and a rescored run directory mixes the two.
+        """
+        for key in ("reasoning", "reasoning_content"):
+            with self.subTest(key=key):
+                response = {
+                    "choices": [{"message": {"content": "", key: "t"}, "finish_reason": "stop"}],
+                    "usage": {},
+                }
+                _, reasoning, _, _ = common.unpack_choice("a", response)
+                self.assertEqual(reasoning, "t")
+
+
+class ReasoningTokenEstimateTests(unittest.TestCase):
+    """The estimate must not change units when the text arrives.
+
+    `reasoning_tokens_median` is compared between arms, so the estimator has to
+    mean the same thing in both. It used to fall back to `completion_tokens`
+    minus the visible answer, because the text was never there; once the text is
+    read, a word count would answer the same question in different units and
+    every rescored row would move by roughly the tokens-per-word ratio while
+    nothing about the run had changed.
+    """
+
+    def test_the_estimate_is_the_same_with_and_without_the_text(self):
+        usage = {"completion_tokens": 1000}
+        reasoning = "word " * 700
+        without = common.reasoning_tokens(usage, "", "answer")
+        with_text = common.reasoning_tokens(usage, reasoning, "answer")
+        self.assertEqual(with_text, without)
+
+    def test_a_reported_count_still_wins(self):
+        """When the server counts them itself, nothing here should guess."""
+        usage = {"completion_tokens": 1000, "completion_tokens_details": {"reasoning_tokens": 640}}
+        self.assertEqual(common.reasoning_tokens(usage, "word " * 700, "answer"), 640)
+
+    def test_text_alone_is_still_measurable(self):
+        """Rows exist whose usage was not retained; they must not report zero."""
+        self.assertGreater(common.reasoning_tokens({}, "word " * 700), 0)
 
 
 class StreamRequestTests(unittest.TestCase):

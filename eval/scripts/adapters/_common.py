@@ -247,6 +247,22 @@ def stream_body(payload: dict[str, Any]) -> dict[str, Any]:
     return {**payload, "stream": True, "stream_options": {"include_usage": True}}
 
 
+# The server names the thinking text `reasoning`; the OpenAI-compatible field
+# other servers use is `reasoning_content`. Reading only the latter cost this
+# protocol the reasoning of every item of every suite -- invisibly, because a
+# reply that finished still carries its answer in `content`. Accept both, in a
+# message or a stream delta, so neither spelling can go quiet again.
+REASONING_FIELDS = ("reasoning", "reasoning_content")
+
+
+def reasoning_field(body: dict[str, Any]) -> str:
+    for field in REASONING_FIELDS:
+        value = body.get(field)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
 def collect_stream(lines: Iterable[bytes], *, item_id: str) -> dict[str, Any]:
     """Fold an SSE stream back into the shape a buffered completion has.
 
@@ -283,7 +299,7 @@ def collect_stream(lines: Iterable[bytes], *, item_id: str) -> dict[str, Any]:
             piece = delta.get("content")
             if piece:
                 content.append(piece)
-            thought = delta.get("reasoning_content")
+            thought = reasoning_field(delta)
             if thought:
                 reasoning.append(thought)
             if choice.get("finish_reason"):
@@ -552,21 +568,23 @@ CHARS_PER_TOKEN = 4
 
 
 def reasoning_tokens(usage: dict[str, Any], reasoning: str, content: str = "") -> int:
-    """Reasoning tokens, inferred when the server strips them without reporting.
+    """Reasoning tokens, counted where the server counts them and inferred where
+    it does not.
 
-    The pinned vLLM build removes the think block from `content` and returns
-    nothing in `reasoning_content`, so the only evidence that thinking happened
-    is the gap between tokens generated and tokens visible.
+    The pinned vLLM build reports no `reasoning_tokens`, so the count comes from
+    the gap between tokens generated and tokens visible in the answer. Having
+    the reasoning text does not change that: it is measured in characters, and
+    switching to it would answer the same question in different units. The
+    median is compared between arms, so the estimator has to be stable.
     """
     details = usage.get("completion_tokens_details")
     if isinstance(details, dict) and isinstance(details.get("reasoning_tokens"), int):
         return int(details["reasoning_tokens"])
-    if reasoning:
-        return len(reasoning.split())
     completion = usage.get("completion_tokens")
     if isinstance(completion, int) and not isinstance(completion, bool):
         return max(0, completion - len(content) // CHARS_PER_TOKEN)
-    return 0
+    # Rows whose usage was not retained. Same units as the branch above.
+    return len(reasoning) // CHARS_PER_TOKEN
 
 
 def unpack_choice(item_id: str, response: dict[str, Any]) -> tuple[str, str, str, dict[str, Any]]:
@@ -578,7 +596,7 @@ def unpack_choice(item_id: str, response: dict[str, Any]) -> tuple[str, str, str
         raise AdapterError(f"{item_id}: malformed chat completion: {error}") from error
     return (
         message_text(message, "content"),
-        message_text(message, "reasoning_content"),
+        reasoning_field(message),
         str(choice.get("finish_reason") or ""),
         response.get("usage") or {},
     )

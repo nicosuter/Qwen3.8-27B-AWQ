@@ -18,7 +18,7 @@
         "dataset": "61fc0608cfd831fcfbbaa676ebdfef0ed963eeda",
         "harness": "builtin-bfcl-ast-v1",
         "verifier": "bfcl-ast-match-v1",
-        "adapter": "sha256:7bd7149e1ae27fd47711d0e66b9e91b7621029b0efd9f6b027381a9126954a81"
+        "adapter": "sha256:d2bdc0688fdbf969ba6afcc92550992bf04aa1db30ae3b0fdd593283cef8da1e"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -43,7 +43,7 @@
         "dataset": "lmms-lab/DocVQA@539088ef8a8ada01ac8e2e6d4e372586748a265e,lmms-lab/ChartQA@9e63b7df1592a1c2158e735cc1725454aef0d6d9,lmms-lab/textvqa@9c0699cd19768ac5ab97568f6b3cbac4c0062884",
         "harness": "builtin-vqa-v1",
         "verifier": "anls-relaxed-vqa-v1",
-        "adapter": "sha256:283194d1798926dfa5d7c553b4369732d29f5808994a81002321c3ceb3e76c29"
+        "adapter": "sha256:3acb9a336c7bbe17bf0b9a3bf0717a59ebf878b69db6fb91d0e7b1035e5051a8"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -70,7 +70,7 @@
         "dataset": "633f5ee89ab8ad4522a9f850766b73f62147ffdd",
         "harness": "builtin-gpqa-mcq-v1",
         "verifier": "exact-choice-v1",
-        "adapter": "sha256:7e779b03b0bc2c1c59aab83cbe10a4881b2a28eca8ebfe651cb1861e55a3b1b3"
+        "adapter": "sha256:de58a41b16d80cffa2f640c9845d3c70fb7fa2ed3c5edc292cfb2cbf40396b75"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -97,7 +97,7 @@
         "dataset": "0fe84c3912ea0c4d4a78037083943e8f0c4dd505",
         "harness": "builtin-lcb-exec-v1",
         "verifier": "stdin-and-functional-exec-v1",
-        "adapter": "sha256:cebcb7f8b9b54e4d30fe13b2887bb724ff88953446d5d1b40b53eef3e95f0c03"
+        "adapter": "sha256:33c4c0193572eb2c52ffc97094e062cbece5171b3e6cac6a550b689ba485b3da"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -125,7 +125,7 @@
         "dataset": "MathArena/aime_2026@d2de22f3c656b4f56cf8981212186377d1e23bc3,MathArena/apex-shortlist@f3efdf224ef665f129ddaae37699f6098c65781b",
         "harness": "builtin-matharena-exact-v1",
         "verifier": "exact-integer-answer-v1",
-        "adapter": "sha256:df8552860be8557896d2fed84f52d424f3cbc17de34ce3af2b07d8149e08de67"
+        "adapter": "sha256:ac1877913de5a689f3f82626d2e0fd0007a1c57eb4e45b7e8c245a1843289c1e"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -150,7 +150,7 @@
         "dataset": "4a8ffc87c4650054825fb767fe0da4a4fc97ff32",
         "harness": "builtin-omniscience-exact-v1",
         "verifier": "exact-answer-with-abstention-v1",
-        "adapter": "sha256:0879b58668aef09276534215bb185e28ebd86271dd02af44b01ae22294aa22b4"
+        "adapter": "sha256:4ba7f69bf0bc06d7012f4735344f5bdfe1b4697c6463169c23664141beafb112"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -175,7 +175,7 @@
         "dataset": "bdae010bbce259820c0e34c1d7cce210d966fb75",
         "harness": "builtin-lcr-exact-v1",
         "verifier": "exact-answer-v1",
-        "adapter": "sha256:dc9f0aa7ff88857954b00a9ac58218b2e0a8b24f67234f8a2ce8f1b30610a59a"
+        "adapter": "sha256:7fe0b42d800a56409754d5c6fea1e1bb5dcf8fa1f9b1670079e1a226774e1129"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -201,7 +201,7 @@
         "dataset": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
         "harness": "builtin-mmlu-pro-mcq-v1",
         "verifier": "exact-choice-v1",
-        "adapter": "sha256:5a6345f948f2cb22384752421806fd451f44654acd5f2b4d1115c50e7a0e0f72"
+        "adapter": "sha256:a2ca1f1a3942a7cc84d20dd0d047ceb7bf3d082e72a1fb39e1ff3d928e079626"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -226,7 +226,7 @@
         "dataset": "563f3e84bb3b90893083a1f039cfa13077f2302b",
         "harness": "builtin-mmmu-pro-mcq-v1",
         "verifier": "exact-choice-v1",
-        "adapter": "sha256:aea32e455ec7a14da5cab6aab0c6aed3e90f0a59c0e84cdc52458b3718999c59"
+        "adapter": "sha256:94956d22e489ecab596033c296ba69354d74accd4ba6cc1f726d79734df041f7"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -251,7 +251,7 @@
         "dataset": "5a81a4c7271a2a2a312b9a690f0c2fde837e4c29",
         "harness": "builtin-hle-judged-v1",
         "verifier": "judged-equivalence-v1",
-        "adapter": "sha256:127498c205fc5232f0266b4804a70b6514df9348b825074c66d72aa51909f9f3"
+        "adapter": "sha256:94bd7b56f2cbe83b86bd534b1bb99711fa84746e8d73ace7b8b57f0e234cfe7f"
       },
       "prepare": [
         "${EVAL_PYTHON}",
