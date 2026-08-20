@@ -18,7 +18,7 @@
         "dataset": "633f5ee89ab8ad4522a9f850766b73f62147ffdd",
         "harness": "builtin-gpqa-mcq-v1",
         "verifier": "exact-choice-v1",
-        "adapter": "sha256:de58a41b16d80cffa2f640c9845d3c70fb7fa2ed3c5edc292cfb2cbf40396b75"
+        "adapter": "sha256:2e4b5964f452864bff6756f46e1177c3a9bbfe0aa6dbf3d58c8800478ec58766"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -41,7 +41,7 @@
         "dataset": "sha256:632a63b0ccd60b992c263937e996f462bc43bc0e87c0b22d7edcea0d5aaa8540",
         "harness": "builtin-ruler-synth-v1",
         "verifier": "recall-string-match-v1",
-        "adapter": "sha256:6e4ffb5b587f58081121c53cbab57967c3dc866737a474d033ac1c0e4ae80f2d"
+        "adapter": "sha256:3b53ea545a244a4ad107add6cb43e7760a08bda412b5c2213a25e4043207f3ed"
       },
       "prepare": [
         "${EVAL_PYTHON}",

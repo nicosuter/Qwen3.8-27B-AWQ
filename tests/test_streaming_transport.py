@@ -264,6 +264,95 @@ class ReasoningFieldNameTests(unittest.TestCase):
                 self.assertEqual(reasoning, "t")
 
 
+def tool_delta(index=0, call_id=None, name=None, arguments=None, finish_reason=None) -> dict:
+    """One `delta.tool_calls` fragment, the way a server streams a call.
+
+    The id and name arrive once, on the fragment that opens the call; the
+    arguments arrive as a JSON string split across any number of later
+    fragments, tied together only by `index`.
+    """
+    call: dict = {"index": index}
+    if call_id is not None:
+        call["id"] = call_id
+        call["type"] = "function"
+    function: dict = {}
+    if name is not None:
+        function["name"] = name
+    if arguments is not None:
+        function["arguments"] = arguments
+    if function:
+        call["function"] = function
+    return {"choices": [{"delta": {"tool_calls": [call]}, "finish_reason": finish_reason}]}
+
+
+class StreamedToolCallTests(unittest.TestCase):
+    """BFCL scores `message.tool_calls`, and the stream was dropping them.
+
+    `collect_stream` rebuilt the message from a fixed list of keys, so anything
+    the server sent outside that list vanished. On a streamed BFCL run 2193 of
+    3486 items came back `empty_answer` against 0 on a buffered run of the same
+    items -- read as a checkpoint scoring 32.07 against a baseline of 81.61.
+    """
+
+    def test_a_call_split_across_fragments_is_reassembled(self):
+        stream = sse(
+            tool_delta(call_id="call_1", name="get_weather", arguments=""),
+            tool_delta(arguments='{"city": '),
+            tool_delta(arguments='"Zurich"}', finish_reason="tool_calls"),
+            usage_chunk(),
+        )
+        response = common.collect_stream(stream, item_id="a")
+        calls = response["choices"][0]["message"]["tool_calls"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["id"], "call_1")
+        self.assertEqual(calls[0]["type"], "function")
+        self.assertEqual(calls[0]["function"]["name"], "get_weather")
+        self.assertEqual(json.loads(calls[0]["function"]["arguments"]), {"city": "Zurich"})
+
+    def test_parallel_calls_stay_separate_and_ordered(self):
+        """`index` is the only thing tying a fragment to its call."""
+        stream = sse(
+            tool_delta(index=0, call_id="a", name="first", arguments='{"x":'),
+            tool_delta(index=1, call_id="b", name="second", arguments='{"y":'),
+            tool_delta(index=1, arguments=" 2}"),
+            tool_delta(index=0, arguments=" 1}", finish_reason="tool_calls"),
+            usage_chunk(),
+        )
+        response = common.collect_stream(stream, item_id="a")
+        calls = response["choices"][0]["message"]["tool_calls"]
+        self.assertEqual([c["function"]["name"] for c in calls], ["first", "second"])
+        self.assertEqual(json.loads(calls[0]["function"]["arguments"]), {"x": 1})
+        self.assertEqual(json.loads(calls[1]["function"]["arguments"]), {"y": 2})
+
+    def test_the_scorer_can_read_what_the_stream_rebuilt(self):
+        """The shape is only right if the adapter that consumes it agrees."""
+        bfcl_spec = importlib.util.spec_from_file_location(
+            "_bfcl", ROOT / "eval" / "scripts" / "adapters" / "bfcl.py"
+        )
+        bfcl = importlib.util.module_from_spec(bfcl_spec)
+        sys.modules["_bfcl"] = bfcl
+        bfcl_spec.loader.exec_module(bfcl)
+
+        response = common.collect_stream(
+            sse(
+                tool_delta(call_id="call_1", name="get_weather", arguments='{"city":'),
+                tool_delta(arguments='"Zurich"}', finish_reason="tool_calls"),
+                usage_chunk(),
+            ),
+            item_id="a",
+        )
+        calls, malformed = bfcl.extract_calls(response["choices"][0]["message"])
+        self.assertFalse(malformed)
+        self.assertEqual(calls, [{"name": "get_weather", "arguments": {"city": "Zurich"}}])
+
+    def test_a_reply_without_tool_calls_has_no_tool_calls(self):
+        """Every other suite reads `content`; none of them should grow a key."""
+        response = common.collect_stream(
+            sse(delta(content="42", finish_reason="stop"), usage_chunk()), item_id="a"
+        )
+        self.assertNotIn("tool_calls", response["choices"][0]["message"])
+
+
 class ReasoningTokenEstimateTests(unittest.TestCase):
     """The estimate must not change units when the text arrives.
 

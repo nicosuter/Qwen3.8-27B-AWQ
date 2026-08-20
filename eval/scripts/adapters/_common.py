@@ -263,6 +263,25 @@ def reasoning_field(body: dict[str, Any]) -> str:
     return ""
 
 
+def accumulate_tool_call(calls: dict[int, dict[str, Any]], fragment: dict[str, Any]) -> None:
+    """Fold one `delta.tool_calls` fragment into the call it belongs to."""
+    if not isinstance(fragment, dict):
+        return
+    index = fragment.get("index")
+    index = int(index) if isinstance(index, int) else len(calls)
+    call = calls.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+    if fragment.get("id"):
+        call["id"] = fragment["id"]
+    if fragment.get("type"):
+        call["type"] = fragment["type"]
+    function = fragment.get("function") or {}
+    if function.get("name"):
+        call["function"]["name"] = function["name"]
+    piece = function.get("arguments")
+    if isinstance(piece, str):
+        call["function"]["arguments"] += piece
+
+
 def collect_stream(lines: Iterable[bytes], *, item_id: str) -> dict[str, Any]:
     """Fold an SSE stream back into the shape a buffered completion has.
 
@@ -276,6 +295,11 @@ def collect_stream(lines: Iterable[bytes], *, item_id: str) -> dict[str, Any]:
     """
     content: list[str] = []
     reasoning: list[str] = []
+    # Keyed by the fragment's `index`, which is the only thing tying a tool
+    # call's arguments to the call they belong to: the id and name arrive once,
+    # the arguments arrive as JSON split across any number of later fragments,
+    # and parallel calls interleave freely.
+    calls: dict[int, dict[str, Any]] = {}
     finish_reason = ""
     usage: dict[str, Any] | None = None
     done = False
@@ -302,6 +326,8 @@ def collect_stream(lines: Iterable[bytes], *, item_id: str) -> dict[str, Any]:
             thought = reasoning_field(delta)
             if thought:
                 reasoning.append(thought)
+            for fragment in delta.get("tool_calls") or ():
+                accumulate_tool_call(calls, fragment)
             if choice.get("finish_reason"):
                 finish_reason = str(choice["finish_reason"])
     # A cut connection now yields a well-formed prefix rather than the JSON
@@ -317,16 +343,16 @@ def collect_stream(lines: Iterable[bytes], *, item_id: str) -> dict[str, Any]:
             f"{item_id}: stream carried no usage; admission is sized from the "
             "token counts, and defaulting them silently under-reserves the cache"
         )
+    message: dict[str, Any] = {
+        "content": "".join(content),
+        "reasoning_content": "".join(reasoning),
+    }
+    # Absent rather than empty when there were none: a buffered reply without
+    # tool calls has no such key, and the two shapes have to stay the same.
+    if calls:
+        message["tool_calls"] = [calls[index] for index in sorted(calls)]
     return {
-        "choices": [
-            {
-                "message": {
-                    "content": "".join(content),
-                    "reasoning_content": "".join(reasoning),
-                },
-                "finish_reason": finish_reason,
-            }
-        ],
+        "choices": [{"message": message, "finish_reason": finish_reason}],
         "usage": usage,
     }
 
