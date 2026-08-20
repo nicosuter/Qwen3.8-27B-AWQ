@@ -95,7 +95,16 @@ COMPARISON="$(
     EVAL_SUITE_VERSION="$EVAL_SUITE_VERSION" \
     COMPARISON_TAG="${SLURM_JOB_ID:-manual}" \
     ALLOW_PARTIAL="${PAIRED_ALLOW_PARTIAL:-0}" \
-    ./eval/scripts/compare_run_dir.sh | tee /dev/stderr | sed -n 's/^comparison=//p'
+    ./eval/scripts/compare_run_dir.sh | tee /dev/stderr | sed -n 's/^comparison=//p' || true
 )"
 
-echo "score-deferred=complete results=$RUN_DIR comparison=$COMPARISON"
+# This job exists to produce the verdict, so failing to produce one is its
+# failure and not a footnote -- a missing arm, an unscored suite, anything the
+# comparator stops on.
+if [[ -n "$COMPARISON" ]]; then
+    echo "score-deferred=complete results=$RUN_DIR comparison=$COMPARISON"
+else
+    echo "score-deferred=failed results=$RUN_DIR comparison=none" \
+         "(executed $scored, skipped $skipped; the comparator produced no verdict)" >&2
+    exit 1
+fi

@@ -107,10 +107,19 @@ COMPARISON="$RUN_DIR/comparisons/$RUN_STAMP-job$COMPARISON_TAG.json"
     --baseline-floor ruler="${RULER_FLOOR:-0.760}" \
     --eval-suite "$EVAL_SUITE_VERSION" \
     $( (( ALLOW_PARTIAL )) && echo --allow-partial ) \
-    || true   # a failing gate is a result, not a job error
-if [[ -s "$COMPARISON" ]]; then
-    ln -sfn "comparisons/$(basename "$COMPARISON")" "$RUN_DIR/comparison.json"
+    && STATUS=0 || STATUS=$?   # a failing gate is a result, not a job error
+
+# Whether a verdict exists is a question about the disk, not about the exit
+# code: the comparator exits non-zero both when a gate fails and when it stops
+# before comparing anything, and only the first of those is an answer. Two jobs
+# reported `paired-eval=complete` naming this path while nothing was ever
+# written to it, because the status was discarded and the path echoed anyway.
+if [[ ! -s "$COMPARISON" ]]; then
+    echo "no comparison written: the comparator exited $STATUS before producing" \
+         "a verdict. Nothing here is a result yet." >&2
+    exit "${STATUS:-1}"
 fi
+ln -sfn "comparisons/$(basename "$COMPARISON")" "$RUN_DIR/comparison.json"
 
 # Repeated after the verdict, because the verdict is the part that gets quoted.
 # A recovery figure measured where the server would not perform the checkpoint's

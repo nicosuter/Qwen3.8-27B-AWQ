@@ -1070,7 +1070,16 @@ COMPARISON="$(
     COMPARISON_TAG="${SLURM_JOB_ID:-manual}" \
     EXCLUDE_SUITES="${FAILED_SUITES[*]-} $STALE" \
     ALLOW_PARTIAL="$( [[ -n "${PAIRED_SUITES:-}${PAIRED_BATCH:-}" ]] && echo 1 || echo 0 )" \
-    ./eval/scripts/compare_run_dir.sh | tee /dev/stderr | sed -n 's/^comparison=//p'
+    ./eval/scripts/compare_run_dir.sh | tee /dev/stderr | sed -n 's/^comparison=//p' || true
 )"
 
-echo "paired-eval=complete results=$RUN_DIR comparison=$COMPARISON"
+# Generating the rows and comparing them are separate claims. LiveCodeBench
+# defers execution by design, so a run whose generation went perfectly still has
+# no verdict until a CPU job scores it -- and saying `complete` there sent two
+# finished runs off looking like they had produced a comparison they had not.
+if [[ -n "$COMPARISON" ]]; then
+    echo "paired-eval=complete results=$RUN_DIR comparison=$COMPARISON"
+else
+    echo "paired-eval=generated results=$RUN_DIR comparison=none" \
+         "(scored rows are on disk; no verdict was produced)"
+fi

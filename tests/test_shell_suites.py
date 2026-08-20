@@ -17,6 +17,7 @@ SUITES = (
     ("tests/test_paired_suite_lanes.sh", "eval/slurm/paired-suite-eval.sbatch"),
     ("tests/test_campaign_lib.sh", "eval/slurm/campaign-lib.sh"),
     ("tests/test_campaign.sh", "eval/slurm/campaign.sh"),
+    ("tests/test_compare_run_dir.sh", "eval/scripts/compare_run_dir.sh"),
 )
 
 
