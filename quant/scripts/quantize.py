@@ -23,6 +23,13 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
+# Deliberately dependency-free so it is testable without a CUDA environment;
+# nothing else in this module can be imported off a GPU node.
+try:
+    from calibration_trim import trim_to_closed_think
+except ModuleNotFoundError:  # imported by path rather than run from its directory
+    from quant.scripts.calibration_trim import trim_to_closed_think
+
 from distributed_lifecycle import run_rank0_after_group_teardown
 from gdn_in_proj import (
     DEFAULT_GDN_IN_PROJ_PRECISION,
@@ -81,6 +88,44 @@ class RankCalibrationDataset(Dataset):
     def __init__(self, records: list[dict[str, Any]], processor: Any) -> None:
         self.records = records
         self.processor = processor
+        tokenizer = getattr(processor, "tokenizer", processor)
+        self.think_open = tokenizer.convert_tokens_to_ids("<think>")
+        self.think_close = tokenizer.convert_tokens_to_ids("</think>")
+
+    def _close_think(self, encoded: dict[str, Any]) -> dict[str, Any]:
+        """Drop a reasoning block that truncation cut before it could close.
+
+        Truncating at MAX_LENGTH lands inside a long trace, so the quantizer
+        collects the activations of reasoning-in-progress without the transition
+        that ends it. On the shipped set that was 73.9% of the in-think token
+        mass -- 2.8 tokens of reasoning that never concludes for every one that
+        does. AWQ fits per-channel scales to what it observes, and an inflated
+        opening with no matching close is the shape that biases a stop
+        probability.
+
+        An empty `<think></think>` is left alone: both tags are present and
+        adjacent, so they move together and nothing is skewed.
+        """
+        if self.think_open is None or self.think_close is None:
+            return encoded
+        ids = encoded.get("input_ids")
+        if ids is None or ids.ndim != 2 or ids.shape[0] != 1:
+            return encoded
+        kept = len(
+            trim_to_closed_think(
+                ids[0], open_id=self.think_open, close_id=self.think_close
+            )
+        )
+        # A row that is nothing but an unterminated block would trim to zero and
+        # break the forward pass. No source here starts inside one -- the system
+        # turn always precedes it -- so keep the row whole and let it be visible
+        # rather than silently emitting an empty sequence.
+        if kept == ids.shape[1] or kept == 0:
+            return encoded
+        return {
+            key: (value[:, :kept] if hasattr(value, "ndim") and value.ndim == 2 else value)
+            for key, value in encoded.items()
+        }
 
     def __len__(self) -> int:
         return len(self.records)
@@ -88,7 +133,7 @@ class RankCalibrationDataset(Dataset):
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
         record = self.records[index]
         if record["kind"] == "text":
-            return dict(
+            encoded = dict(
                 self.processor(
                     text=[record["text"]],
                     padding=False,
@@ -97,6 +142,7 @@ class RankCalibrationDataset(Dataset):
                     return_tensors="pt",
                 )
             )
+            return self._close_think(encoded)
         image_path = CALIBRATION_DIR / record["image"]
         messages = [
             {
