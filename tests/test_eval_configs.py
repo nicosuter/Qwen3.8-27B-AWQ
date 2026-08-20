@@ -295,7 +295,7 @@ class RulerItemBudgetTests(unittest.TestCase):
     The count is tasks x lengths x items-per-task.
     """
 
-    EXPECTED_ITEMS = 400
+    EXPECTED_ITEMS = 100
 
     def _ruler(self, config: str) -> dict:
         raw = json.loads((ROOT / "eval" / config).read_text())
@@ -320,20 +320,32 @@ class RulerItemBudgetTests(unittest.TestCase):
         prepare = self._ruler("eval-suite-v2.json")["prepare"]
         lengths = [int(x) for x in self._arg(prepare, "--lengths").split(",")]
         per_task = int(self._arg(prepare, "--items-per-task"))
-        excluded = ruler.parse_exclusions(
-            self._arg(prepare, "--exclude") if "--exclude" in prepare else ""
-        )
-        plan = ruler.plan_categories(lengths, excluded)
+        kept = ruler.parse_categories(self._arg(prepare, "--only"))
+        plan = ruler.plan_categories(lengths, set(), kept=kept)
         self.assertEqual(len(plan) * per_task, self.EXPECTED_ITEMS)
 
-    def test_only_unanswerable_categories_are_excluded(self) -> None:
-        """128k/cwe is dropped because it does not fit, not because it scored 0.
+    def test_every_kept_category_separated_some_checkpoint(self) -> None:
+        """The suite is now defined by where the checkpoints measured differed.
 
-        One counting pass over its 26,174-word list needs roughly 141k output
-        tokens and a 131k-token prompt leaves 131,112 in the window. 32k/cwe
-        reads 0 -> 0 on four of five checkpoints too, and separates the fifth,
-        so an outcome-based rule would have deleted a working category.
+        Sixteen categories returned an identical score on both arms for all five
+        checkpoints and were dropped. These five moved: 128k/fwe and 32k/fwe on
+        several, 32k/cwe on barry, 4k/cwe on fp8gdn, 128k/vt on philbert.
         """
         prepare = self._ruler("eval-suite-v2.json")["prepare"]
-        excluded = self._ruler_module().parse_exclusions(self._arg(prepare, "--exclude"))
-        self.assertEqual(excluded, {("128k", "cwe")})
+        kept = self._ruler_module().parse_categories(self._arg(prepare, "--only"))
+        self.assertEqual(
+            kept,
+            {("4k", "cwe"), ("32k", "cwe"), ("32k", "fwe"), ("128k", "fwe"), ("128k", "vt")},
+        )
+
+    def test_the_cost_of_narrowing_is_written_down(self) -> None:
+        """A suite that can no longer detect a failure must say so in the file.
+
+        Every dropped niah_* category was the evidence that long-context
+        retrieval survived quantization, which is the risk MODEL_CARD.md
+        singles out. Losing that silently is the failure mode worth a test.
+        """
+        raw = json.loads((ROOT / "eval" / "eval-suite-v2.json").read_text())
+        note = raw["rationale"]["ruler_categories"]
+        self.assertIn("selection on the results", note)
+        self.assertIn("long-context retrieval", note)

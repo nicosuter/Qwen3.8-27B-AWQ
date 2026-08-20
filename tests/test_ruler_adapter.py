@@ -568,3 +568,39 @@ class ExcludedCategoryTests(unittest.TestCase):
         self.assertIn((4096, "cwe"), plan)
         self.assertIn((131072, "fwe"), plan)
         self.assertEqual(len(plan), 3 * len(adapter.TASKS) - 1)
+
+
+class KeptCategoryTests(unittest.TestCase):
+    """`--only` names the categories that survive, for when most do not.
+
+    Sixteen of twenty-one categories returned the same score on both arms for
+    every checkpoint measured, so the suite is now defined by the five that
+    moved. Spelling that as sixteen exclusions would put the decision in the
+    complement of a list nobody can read.
+    """
+
+    KEPT = "4k/cwe,32k/cwe,32k/fwe,128k/fwe,128k/vt"
+
+    def test_only_keeps_exactly_what_it_names(self) -> None:
+        plan = adapter.plan_categories(
+            [4096, 32768, 131072], set(), kept=adapter.parse_categories(self.KEPT)
+        )
+        labelled = {f"{adapter.length_label(L)}/{t}" for L, t in plan}
+        self.assertEqual(labelled, set(self.KEPT.split(",")))
+
+    def test_only_and_exclude_are_mutually_exclusive(self) -> None:
+        with self.assertRaises(adapter.AdapterError):
+            adapter.plan_categories(
+                [4096], adapter.parse_categories("4k/cwe"), kept=adapter.parse_categories("4k/fwe")
+            )
+
+    def test_naming_a_category_that_no_length_produces_is_refused(self) -> None:
+        """A typo in a keep-list silently shrinks the suite; make it loud."""
+        with self.assertRaises(adapter.AdapterError):
+            adapter.plan_categories(
+                [4096, 32768], set(), kept=adapter.parse_categories("128k/fwe")
+            )
+
+    def test_an_empty_only_is_refused(self) -> None:
+        with self.assertRaises(adapter.AdapterError):
+            adapter.plan_categories([4096], set(), kept=set())

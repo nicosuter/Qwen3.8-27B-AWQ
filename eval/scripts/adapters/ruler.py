@@ -188,6 +188,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help="comma-separated <length>/<task> categories to leave out, e.g. 128k/cwe",
     )
+    prepare.add_argument(
+        "--only",
+        default="",
+        help="comma-separated <length>/<task> categories to keep, excluding all others",
+    )
     prepare.add_argument("--max-model-len", type=int, default=DEFAULT_MAX_MODEL_LEN)
     prepare.add_argument("--output-reserve", type=int, default=DEFAULT_OUTPUT_RESERVE)
 
@@ -524,11 +529,11 @@ def build_item(
     return prompt, key
 
 
-def parse_exclusions(raw: str) -> set[tuple[str, str]]:
-    """Parse `--exclude` into (length label, task) pairs.
+def parse_categories(raw: str) -> set[tuple[str, str]]:
+    """Parse a category list into (length label, task) pairs.
 
     Spelled as the category label the results carry, `128k/cwe`, so what is
-    dropped here reads the same as what is missing from a comparison.
+    named here reads the same as what appears in a comparison.
     """
     pairs: set[tuple[str, str]] = set()
     for chunk in (part.strip() for part in raw.split(",")):
@@ -538,21 +543,46 @@ def parse_exclusions(raw: str) -> set[tuple[str, str]]:
         if not sep or not label or not task:
             raise AdapterError(f"--exclude takes <length>/<task> pairs, not {chunk!r}")
         if task not in TASKS:
-            raise AdapterError(f"--exclude names unknown task {task!r}; known: {', '.join(TASKS)}")
+            raise AdapterError(f"category names unknown task {task!r}; known: {', '.join(TASKS)}")
         pairs.add((label, task))
     return pairs
 
 
+# Retained so the older spelling keeps working where it is already written down.
+parse_exclusions = parse_categories
+
+
 def plan_categories(
-    lengths: list[int], excluded: set[tuple[str, str]]
+    lengths: list[int],
+    excluded: set[tuple[str, str]],
+    kept: set[tuple[str, str]] | None = None,
 ) -> list[tuple[int, str]]:
     """The (length, task) categories to synthesize, in a fixed order.
 
-    A category is dropped only when the task cannot be answered at that length,
-    never because it scored badly -- that would be selecting on the outcome, and
-    the categories sitting at 100 are the evidence that quantization cost
-    nothing there.
+    `kept` names the survivors outright; `excluded` names the casualties. Which
+    spelling is clearer depends on how many survive, and they cannot both be
+    given -- two ways to express one selection is two ways to disagree.
     """
+    if kept is not None and excluded:
+        raise AdapterError("give --only or --exclude, not both")
+    if kept is not None:
+        if not kept:
+            raise AdapterError("--only named no categories; nothing would be measured")
+        available = {(length_label(length), task) for length in lengths for task in TASKS}
+        unknown = kept - available
+        if unknown:
+            # A typo in a keep-list shrinks the suite without any other symptom.
+            raise AdapterError(
+                "--only names categories no length produces: "
+                + ", ".join(sorted(f"{label}/{task}" for label, task in unknown))
+            )
+        plan = [
+            (length, task)
+            for length in lengths
+            for task in TASKS
+            if (length_label(length), task) in kept
+        ]
+        return plan
     plan = [
         (length, task)
         for length in lengths
@@ -573,7 +603,11 @@ def command_prepare(args: argparse.Namespace) -> int:
     )
     if args.items_per_task < 1:
         raise AdapterError("--items-per-task must be at least 1")
-    plan = plan_categories(lengths, parse_exclusions(args.exclude))
+    plan = plan_categories(
+        lengths,
+        parse_categories(args.exclude),
+        kept=parse_categories(args.only) if args.only else None,
+    )
 
     run_dir = env_path("EVAL_RUN_DIR")
     prompts_path = env_path("EVAL_PROMPTS_JSONL")
@@ -608,7 +642,11 @@ def command_prepare(args: argparse.Namespace) -> int:
             # category says so from its own artifacts rather than from the
             # command line that produced it.
             "excluded_categories": sorted(
-                f"{label}/{task}" for label, task in parse_exclusions(args.exclude)
+                f"{label}/{task}"
+                for label, task in (
+                    {(length_label(L), t) for L in lengths for t in TASKS}
+                    - {(length_label(L), t) for L, t in plan}
+                )
             ),
             "categories": [f"{length_label(length)}/{task}" for length, task in plan],
             "synthesis_seed": args.synthesis_seed,

@@ -41,7 +41,7 @@
         "dataset": "sha256:632a63b0ccd60b992c263937e996f462bc43bc0e87c0b22d7edcea0d5aaa8540",
         "harness": "builtin-ruler-synth-v1",
         "verifier": "recall-string-match-v1",
-        "adapter": "sha256:c9da6e9445369e1ed39985e27eca80b6c98eb05bb028f00883003368d81015c4"
+        "adapter": "sha256:7d923ec7ca891ff9b54cbfd01726eea9f03ae404290f755c141092cb54bf6c23"
       },
       "prepare": [
         "${EVAL_PYTHON}",

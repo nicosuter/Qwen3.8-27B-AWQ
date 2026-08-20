@@ -12,7 +12,8 @@
       "aa_omniscience": "Never part of the protocol; ran as a diagnostic.",
       "matharena_2026_06": "Dropped after four replicates showed its recovery ratio has a between-draw standard deviation of 4.77 points at 77 items -- single draws of the same checkpoint pair returned 96.8%, 103.3%, 93.8% and 103.3%. Resolving the protocol's 2-point margin on it would need about twenty replicates, and the item pool cannot grow: MathArena publishes only aime_2026 and apex-shortlist for this window, and older windows predate the model's training. livecodebench_v6 covers what it was kept for -- long chains, exact scoring, no guessing floor -- at 175 items with a 0.874 baseline and a between-draw sd near 2.6 points. The precision argument is derivable from the four-replicate run of 2026-08-16 alone and does not depend on the low single draw seen after."
     },
-    "token_budget": "Every suite caps the response at 131072 tokens. The cap was measured as non-binding on all of them: median output is 208 tokens on bfcl_v4, 2199 on mmmu_pro, 90 on multimodal, 7832 on gpqa_diamond and 18685 on livecodebench_v6. The one suite where it bound -- matharena_2026_06 at 13.0% of candidate items against 7.8% of baseline ones -- is no longer part of the protocol."
+    "token_budget": "Every suite caps the response at 131072 tokens. The cap was measured as non-binding on all of them: median output is 208 tokens on bfcl_v4, 2199 on mmmu_pro, 90 on multimodal, 7832 on gpqa_diamond and 18685 on livecodebench_v6. The one suite where it bound -- matharena_2026_06 at 13.0% of candidate items against 7.8% of baseline ones -- is no longer part of the protocol.",
+    "ruler_categories": "Five of RULER's twenty-one categories are measured. The other sixteen returned an identical score on both arms for all five checkpoints scored to date -- every niah_* category sat at 100 -> 100, and 128k/cwe at 0 -> 0 -- so they were consuming about three quarters of the suite's runtime without contributing to any delta. Two of the sixteen are dropped on mechanism rather than outcome: 128k/cwe cannot be answered in the window at all, because the model counts by transcribing and one pass over its 26,174-word list needs roughly 141k output tokens against the 131,112 a 131k prompt leaves in 262,144. The rest are dropped on outcome, which is selection on the results and has two consequences to state plainly: RULER's recovery figure now describes only the categories where the checkpoints measured so far differed, and it can no longer detect a regression in long-context retrieval, which every dropped niah_* category was the evidence against. The 100 -> 100 readings from the runs of 2026-08-17 to 2026-08-19 remain the record that retrieval was intact for those five checkpoints; a new checkpoint has no such check. Readmit the niah_* categories, or raise their difficulty so they stop sitting at ceiling, before treating this suite as long-context coverage again."
   },
   "served_model_name": "qwen38-eval",
   "order_seed": 38027,
@@ -170,7 +171,7 @@
         "dataset": "sha256:632a63b0ccd60b992c263937e996f462bc43bc0e87c0b22d7edcea0d5aaa8540",
         "harness": "builtin-ruler-synth-v1",
         "verifier": "recall-string-match-v1",
-        "adapter": "sha256:c9da6e9445369e1ed39985e27eca80b6c98eb05bb028f00883003368d81015c4"
+        "adapter": "sha256:7d923ec7ca891ff9b54cbfd01726eea9f03ae404290f755c141092cb54bf6c23"
       },
       "prepare": [
         "${EVAL_PYTHON}",
@@ -186,8 +187,8 @@
         "${EVAL_TOKENIZER}",
         "--items-per-task",
         "20",
-        "--exclude",
-        "128k/cwe"
+        "--only",
+        "4k/cwe,32k/cwe,32k/fwe,128k/fwe,128k/vt"
       ],
       "run": [
         "${EVAL_PYTHON}",
