@@ -20,6 +20,33 @@ present and adjacent, so they are represented in proportion.
 from typing import Iterable
 
 
+# A row rendered with the chat template ends on the generation prompt, so it can
+# close with a bare `<think>\n` carrying no reasoning at all. That is an artefact
+# of rendering, not a trace cut mid-thought, and the trim removes it in two
+# tokens. Anything longer than this is real reasoning that got cut.
+TRIVIAL_DANGLE = 8
+
+
+def closes_in_window(
+    ids: Iterable, *, open_id: int, close_id: int, max_dangling: int = TRIVIAL_DANGLE
+) -> bool:
+    """True when no substantial reasoning is left unterminated in `ids`.
+
+    Used while building the calibration set, so a sample whose reasoning does
+    not fit is passed over and another is drawn. Without it the trim is the only
+    defence, and trimming a row whose whole content is one oversized block
+    leaves a prompt and spends the sample slot on nothing -- while selecting
+    against the longest chains, which is the opposite of what a wide window is
+    for.
+    """
+    # Materialised once: trim_to_closed_think consumes the argument, so counting
+    # the original afterwards would read zero for a generator and wave through
+    # every cut sample.
+    tokens = [int(token) for token in ids]
+    kept = trim_to_closed_think(tokens, open_id=open_id, close_id=close_id)
+    return len(tokens) - len(kept) <= max_dangling
+
+
 def trim_to_closed_think(ids: Iterable, *, open_id: int, close_id: int) -> list[int]:
     """Return `ids` cut back to just before an unterminated `<think>`.
 

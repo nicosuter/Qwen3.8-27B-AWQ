@@ -15,6 +15,10 @@ from typing import Any
 from datasets import load_dataset
 from transformers import AutoProcessor
 
+# Dependency-free on purpose so the rule is testable without a GPU node.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from calibration_trim import closes_in_window  # noqa: E402
+
 MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen3.8-27B")
 MODEL_REVISION = os.environ.get(
     "MODEL_REVISION", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
@@ -532,6 +536,9 @@ def build_text_records(processor: Any) -> list[dict[str, Any]]:
         source_records: list[dict[str, Any]] = []
         accepted = 0
         scanned = 0
+        skipped_open_think = 0
+        think_open = processor.tokenizer.convert_tokens_to_ids("<think>")
+        think_close = processor.tokenizer.convert_tokens_to_ids("</think>")
         errors: list[str] = []
         try:
             for row_index, row in enumerate(iterator):
@@ -562,6 +569,18 @@ def build_text_records(processor: Any) -> list[dict[str, Any]]:
                         text, truncation=True, max_length=MAX_LENGTH
                     )["input_ids"]
                     if len(tokens) < 32:
+                        continue
+                    # A trace whose reasoning does not close inside the window
+                    # would reach the quantizer as an opening tag and an
+                    # interior with no matching close, which is the asymmetry
+                    # that biases a stop probability. Pass it over and draw
+                    # another rather than let calibration trim it to a prompt:
+                    # the rows this rejects are the longest chains, so trimming
+                    # them would select against exactly what the window is for.
+                    if not closes_in_window(
+                        tokens, open_id=think_open, close_id=think_close
+                    ):
+                        skipped_open_think += 1
                         continue
                     source_records.append(
                         {
@@ -595,7 +614,8 @@ def build_text_records(processor: Any) -> list[dict[str, Any]]:
         records.extend(source_records)
         print(
             f"source-build=done dataset={dataset_id} config={config} split={split} "
-            f"accepted={accepted} scanned={scanned}",
+            f"accepted={accepted} scanned={scanned} "
+            f"skipped_open_think={skipped_open_think}",
             flush=True,
         )
     return records

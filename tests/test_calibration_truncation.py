@@ -140,3 +140,71 @@ class CalibrationWindowTests(unittest.TestCase):
             self.sbatch_window("quantize.sbatch"),
             self.sbatch_window("quantize-single.sbatch"),
         )
+
+
+class ClosesInWindowTests(unittest.TestCase):
+    """Reject a sample at build time rather than gut it at calibration time.
+
+    The trim is a safety net, and a net that catches a whole sample is not
+    doing anyone a favour: the worst row in the shipped set is 34,383 tokens
+    whose single reasoning block never closes, so trimming leaves 148 tokens of
+    prompt and the sample slot is spent on nothing. Worse, that row is the
+    longest chain in the set -- exactly the deep coverage the wide window exists
+    to capture -- so trimming silently selects against the samples that matter
+    most.
+
+    Rejecting it while building means the loop draws another candidate instead,
+    and every accepted sample contributes in full.
+
+    A bare trailing `<think>` is not that fault. The chat template ends a row
+    with the generation prompt, so eight fineweb-edu rows close with `<think>\\n`
+    and nothing after it -- two tokens the trim removes cleanly. Rejecting those
+    would throw away good samples over a rendering artefact, so the predicate
+    tolerates a dangling block with no substance in it.
+    """
+
+    def closes(self, ids, **kw):
+        return trim_module.closes_in_window(
+            ids, open_id=OPEN, close_id=CLOSE, **kw
+        )
+
+    def test_a_row_whose_reasoning_closes_is_accepted(self) -> None:
+        self.assertTrue(self.closes([1, OPEN, 2, 3, CLOSE, 4]))
+
+    def test_a_row_with_no_reasoning_is_accepted(self) -> None:
+        self.assertTrue(self.closes([1, 2, 3]))
+
+    def test_a_row_cut_mid_reasoning_is_rejected(self) -> None:
+        self.assertFalse(self.closes([1, OPEN] + list(range(100, 200))))
+
+    def test_a_trailing_generation_prompt_is_tolerated(self) -> None:
+        """`...<|im_start|>assistant\\n<think>\\n` -- an artefact, not lost reasoning."""
+        self.assertTrue(self.closes([1, 2, 3, OPEN, 9]))
+
+    def test_the_tolerance_is_adjustable_and_bounded(self) -> None:
+        self.assertFalse(self.closes([1, OPEN, 9, 9, 9], max_dangling=2))
+        self.assertTrue(self.closes([1, OPEN, 9, 9, 9], max_dangling=8))
+
+    def test_an_earlier_closed_block_does_not_excuse_a_cut_one(self) -> None:
+        ids = [1, OPEN, 2, CLOSE, 3, OPEN] + list(range(100, 200))
+        self.assertFalse(self.closes(ids))
+
+
+class IteratorSafetyTests(unittest.TestCase):
+    """Both helpers must not depend on `ids` being re-iterable.
+
+    The collator passes a tensor row and the builder passes a list, but a
+    generator is the natural thing for a caller to reach for, and a predicate
+    that silently returns True on one would wave through every cut sample.
+    """
+
+    def test_closes_in_window_handles_a_one_shot_iterator(self) -> None:
+        cut = [1, OPEN] + list(range(100, 200))
+        self.assertFalse(trim_module.closes_in_window(
+            iter(cut), open_id=OPEN, close_id=CLOSE))
+
+    def test_trim_handles_a_one_shot_iterator(self) -> None:
+        self.assertEqual(
+            trim_module.trim_to_closed_think(iter([1, 2, OPEN, 3]), open_id=OPEN, close_id=CLOSE),
+            [1, 2],
+        )
