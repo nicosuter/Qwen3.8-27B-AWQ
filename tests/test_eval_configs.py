@@ -284,18 +284,14 @@ class EnvironmentContractTests(unittest.TestCase):
 
 
 class RulerItemBudgetTests(unittest.TestCase):
-    """RULER's item count is a protocol decision, so state it out loud.
+    """RULER's size and category set are protocol decisions; state them out loud.
 
-    RULER is the one suite whose item pool is synthesized rather than fixed, so
-    `--items-per-task` is a dial and not a constraint. That makes it the only
-    place the protocol's own rule -- "items buy precision that replicates do
-    not" -- can actually be acted on, and it makes an accidental change to the
-    dial invisible unless something asserts the resulting size.
-
-    The count is tasks x lengths x items-per-task.
+    RULER is the one suite whose items are synthesized, so its size is a dial
+    and not a fixed pool. Each item seeds from its own id, so raising the dial
+    adds indices without disturbing the ones already scored.
     """
 
-    EXPECTED_ITEMS = 100
+    EXPECTED_ITEMS = 400
 
     def _ruler(self, config: str) -> dict:
         raw = json.loads((ROOT / "eval" / config).read_text())
@@ -320,35 +316,38 @@ class RulerItemBudgetTests(unittest.TestCase):
         prepare = self._ruler("eval-suite-v2.json")["prepare"]
         lengths = [int(x) for x in self._arg(prepare, "--lengths").split(",")]
         per_task = int(self._arg(prepare, "--items-per-task"))
-        kept = ruler.parse_categories(self._arg(prepare, "--only"))
-        plan = ruler.plan_categories(lengths, set(), kept=kept)
+        excluded = ruler.parse_categories(self._arg(prepare, "--exclude"))
+        plan = ruler.plan_categories(lengths, excluded)
         self.assertEqual(len(plan) * per_task, self.EXPECTED_ITEMS)
 
-    def test_every_kept_category_separated_some_checkpoint(self) -> None:
-        """The suite is now defined by where the checkpoints measured differed.
+    def test_categories_are_dropped_only_on_mechanism(self) -> None:
+        """Selecting categories by how they scored moves the headline.
 
-        Sixteen categories returned an identical score on both arms for all five
-        checkpoints and were dropped. These five moved: 128k/fwe and 32k/fwe on
-        several, 32k/cwe on barry, 4k/cwe on fp8gdn, 128k/vt on philbert.
+        On identical rows for inproj-int8, all categories give ruler 96.67% and
+        a macro of 98.78% [97.53, 99.95]; the five categories that separated
+        some checkpoint give ruler 80.00% and a macro of 95.71% [90.55, 99.30].
+        PASS to FAIL, from choosing what to average. The ceiling items hold the
+        suite's baseline at 85.71 rather than 60.00, and a ratio measured on a
+        hard-selected subset is not comparable with the unselected suites it is
+        averaged against.
+
+        128k/cwe is the one exclusion that does not select on the outcome: its
+        single counting pass needs more output than the window holds.
         """
         prepare = self._ruler("eval-suite-v2.json")["prepare"]
-        kept = self._ruler_module().parse_categories(self._arg(prepare, "--only"))
+        excluded = self._ruler_module().parse_categories(self._arg(prepare, "--exclude"))
         self.assertEqual(
-            kept,
-            {("4k", "cwe"), ("32k", "cwe"), ("32k", "fwe"), ("128k", "fwe"), ("128k", "vt")},
+            excluded,
+            {("128k", "cwe")},
+            "a category was dropped for something other than being unanswerable",
         )
+        self.assertNotIn("--only", prepare, "--only would define the suite by its results")
 
-    def test_the_cost_of_narrowing_is_written_down(self) -> None:
-        """A suite that can no longer detect a failure must say so in the file.
-
-        Every dropped niah_* category was the evidence that long-context
-        retrieval survived quantization, which is the risk MODEL_CARD.md
-        singles out. Losing that silently is the failure mode worth a test.
-        """
+    def test_the_reverted_narrowing_stays_written_down(self) -> None:
         raw = json.loads((ROOT / "eval" / "eval-suite-v2.json").read_text())
         note = raw["rationale"]["ruler_categories"]
-        self.assertIn("selection on the results", note)
-        self.assertIn("long-context retrieval", note)
+        self.assertIn("selection on the outcome", note)
+        self.assertIn("95.71", note)
 
 
 class WindowBudgetTests(unittest.TestCase):
