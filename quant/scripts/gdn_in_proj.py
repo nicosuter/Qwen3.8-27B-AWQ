@@ -26,14 +26,49 @@ more aggressive than our FP8 build on these modules and measures less verbose
 than it -- 1.04x median reasoning against our 1.13x -- so "quantizing the GDN
 path causes the extra reasoning" is not what the evidence says.
 
+At four bits the ordering above reverses, because sixteen levels make the shape
+of the grid matter more than its uniformity: e2m1 reconstructs these weights at
+0.1098 against int4's 0.1219, a tenth better, and NVFP4 would do better still
+since it blocks by 16 with an e4m3 scale rather than by 128. compressed-tensors
+ships NVFP4A16, llm-compressor implements the tensor_group strategy it needs,
+and the recipe change would be one line here.
+
+It is servable on this hardware, which is worth stating because the class names
+suggest otherwise. vLLM dispatches a weight-only NVFP4 config -- weights in
+NVFP4 with input_quant None -- to CompressedTensorsW4A4Fp4(use_a16=True), and
+that selects MarlinNvFp4LinearKernel, gated on device capability 75. Marlin
+dequantizes to BF16 and runs an ordinary matmul, so no FP4 tensor core is
+involved and the sm_86 serving cards and sm_90 evaluation cards both qualify.
+The Blackwell requirement applies to the activation-quantized W4A4 path, not to
+this one. What is missing off Blackwell is acceleration, not support.
+
+Two things it is not. It is not a memory saving over int4: 4 + 8/16 bits a
+weight against 4 + 16/128, because sixteen-element blocks carry eight times the
+scale metadata. And it is not faster here, since both formats reach the same
+Marlin dequantize-and-matmul path. What it buys is the tenth of reconstruction
+error above, and a checkpoint that runs natively for anyone on Blackwell.
+
 `int8` gives them eight bits with a group-128 scale, and is the default.
 
-There is deliberately no FP8 mode beside it. At eight bits FP8 is the worse
-format for weight-only quantization: e4m3 spends three bits on the mantissa, so
-every weight carries about 6% relative error whatever its magnitude, where an
-int8 group resolves its range to one part in 254 and does so per 128 input
-channels rather than per 128x128 tile -- finer scales and finer steps for the
-weights carrying most of the mass. vLLM routes int8 through
+There is deliberately no FP8 mode beside it, and the reason is measurable on
+these tensors rather than only arguable. Reconstruction error against the source
+weights, every format given the same group-128 scale so the comparison is about
+how the bits are spent inside a group:
+
+    int8            (e0m7)   0.0067   1.00x
+    fp8  e2m5                0.0066   0.98x
+    fp8  e3m4                0.0127   1.88x
+    fp8  e4m3  (standard)    0.0256   3.81x
+    fp8  e5m2                0.0511   7.60x
+
+Monotone in exponent bits: a group scale already carries the dynamic range, so
+every bit spent on an exponent pays twice for it. e4m3 spends four of eight and
+costs 3.81x the error. The limit of that trend -- no exponent bits, a uniform
+grid -- is int8, and only e2m5 edges it, by 2%. No split is worth a format the
+serving stack handles worse. The published literature agrees for the
+block-scaled case: MXINT8 outperforms MXFP8 at block size 32, and FP8's real
+advantage is in activations, whose range varies by orders of magnitude across
+layers and which no mode here quantizes. vLLM routes int8 through
 `CompressedTensorsWNA16`, minimum capability 75, so the serving cards run it
 natively; that was checked in the container rather than assumed, since the FP8
 path is exactly where assuming went wrong. Offering FP8 anyway would have kept a
