@@ -183,6 +183,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="checkpoint whose tokenizer defines the length targets",
     )
     prepare.add_argument("--items-per-task", type=int, default=10)
+    prepare.add_argument(
+        "--exclude",
+        default="",
+        help="comma-separated <length>/<task> categories to leave out, e.g. 128k/cwe",
+    )
     prepare.add_argument("--max-model-len", type=int, default=DEFAULT_MAX_MODEL_LEN)
     prepare.add_argument("--output-reserve", type=int, default=DEFAULT_OUTPUT_RESERVE)
 
@@ -519,6 +524,46 @@ def build_item(
     return prompt, key
 
 
+def parse_exclusions(raw: str) -> set[tuple[str, str]]:
+    """Parse `--exclude` into (length label, task) pairs.
+
+    Spelled as the category label the results carry, `128k/cwe`, so what is
+    dropped here reads the same as what is missing from a comparison.
+    """
+    pairs: set[tuple[str, str]] = set()
+    for chunk in (part.strip() for part in raw.split(",")):
+        if not chunk:
+            continue
+        label, sep, task = chunk.partition("/")
+        if not sep or not label or not task:
+            raise AdapterError(f"--exclude takes <length>/<task> pairs, not {chunk!r}")
+        if task not in TASKS:
+            raise AdapterError(f"--exclude names unknown task {task!r}; known: {', '.join(TASKS)}")
+        pairs.add((label, task))
+    return pairs
+
+
+def plan_categories(
+    lengths: list[int], excluded: set[tuple[str, str]]
+) -> list[tuple[int, str]]:
+    """The (length, task) categories to synthesize, in a fixed order.
+
+    A category is dropped only when the task cannot be answered at that length,
+    never because it scored badly -- that would be selecting on the outcome, and
+    the categories sitting at 100 are the evidence that quantization cost
+    nothing there.
+    """
+    plan = [
+        (length, task)
+        for length in lengths
+        for task in TASKS
+        if (length_label(length), task) not in excluded
+    ]
+    if not plan:
+        raise AdapterError("--exclude removed every category; nothing would be measured")
+    return plan
+
+
 def command_prepare(args: argparse.Namespace) -> int:
     check_action("prepare", SUITE)
     pins = load_pins()
@@ -528,6 +573,7 @@ def command_prepare(args: argparse.Namespace) -> int:
     )
     if args.items_per_task < 1:
         raise AdapterError("--items-per-task must be at least 1")
+    plan = plan_categories(lengths, parse_exclusions(args.exclude))
 
     run_dir = env_path("EVAL_RUN_DIR")
     prompts_path = env_path("EVAL_PROMPTS_JSONL")
@@ -536,19 +582,18 @@ def command_prepare(args: argparse.Namespace) -> int:
 
     prompts = []
     key = {}
-    for length in lengths:
-        for task in TASKS:
-            for index in range(args.items_per_task):
-                prompt, entry = build_item(
-                    task,
-                    length,
-                    index,
-                    corpus_ids=corpus_ids,
-                    tokenizer=tokenizer,
-                    seed=args.synthesis_seed,
-                )
-                prompts.append(prompt)
-                key[prompt["id"]] = entry
+    for length, task in plan:
+        for index in range(args.items_per_task):
+            prompt, entry = build_item(
+                task,
+                length,
+                index,
+                corpus_ids=corpus_ids,
+                tokenizer=tokenizer,
+                seed=args.synthesis_seed,
+            )
+            prompts.append(prompt)
+            key[prompt["id"]] = entry
 
     write_jsonl(prompts_path, prompts)
     total_tokens = sum(entry["achieved_tokens"] for entry in key.values())
@@ -559,6 +604,13 @@ def command_prepare(args: argparse.Namespace) -> int:
             "lengths": lengths,
             "tasks": list(TASKS),
             "items_per_task": args.items_per_task,
+            # What was left out travels with the key, so a comparison missing a
+            # category says so from its own artifacts rather than from the
+            # command line that produced it.
+            "excluded_categories": sorted(
+                f"{label}/{task}" for label, task in parse_exclusions(args.exclude)
+            ),
+            "categories": [f"{length_label(length)}/{task}" for length, task in plan],
             "synthesis_seed": args.synthesis_seed,
             "corpus": str(args.corpus),
             "corpus_sha256": pins["dataset"],

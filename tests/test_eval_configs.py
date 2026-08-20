@@ -295,7 +295,7 @@ class RulerItemBudgetTests(unittest.TestCase):
     The count is tasks x lengths x items-per-task.
     """
 
-    EXPECTED_ITEMS = 420
+    EXPECTED_ITEMS = 400
 
     def _ruler(self, config: str) -> dict:
         raw = json.loads((ROOT / "eval" / config).read_text())
@@ -306,14 +306,34 @@ class RulerItemBudgetTests(unittest.TestCase):
     def _arg(self, argv: list, flag: str) -> str:
         return argv[argv.index(flag) + 1]
 
-    def test_the_suite_size_is_what_the_protocol_says(self) -> None:
+    @staticmethod
+    def _ruler_module():
         spec = importlib.util.spec_from_file_location(
             "_ruler", ROOT / "eval" / "scripts" / "adapters" / "ruler.py"
         )
-        ruler = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(ruler)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
+    def test_the_suite_size_is_what_the_protocol_says(self) -> None:
+        ruler = self._ruler_module()
         prepare = self._ruler("eval-suite-v2.json")["prepare"]
-        lengths = self._arg(prepare, "--lengths").split(",")
+        lengths = [int(x) for x in self._arg(prepare, "--lengths").split(",")]
         per_task = int(self._arg(prepare, "--items-per-task"))
-        self.assertEqual(len(ruler.TASKS) * len(lengths) * per_task, self.EXPECTED_ITEMS)
+        excluded = ruler.parse_exclusions(
+            self._arg(prepare, "--exclude") if "--exclude" in prepare else ""
+        )
+        plan = ruler.plan_categories(lengths, excluded)
+        self.assertEqual(len(plan) * per_task, self.EXPECTED_ITEMS)
+
+    def test_only_unanswerable_categories_are_excluded(self) -> None:
+        """128k/cwe is dropped because it does not fit, not because it scored 0.
+
+        One counting pass over its 26,174-word list needs roughly 141k output
+        tokens and a 131k-token prompt leaves 131,112 in the window. 32k/cwe
+        reads 0 -> 0 on four of five checkpoints too, and separates the fifth,
+        so an outcome-based rule would have deleted a working category.
+        """
+        prepare = self._ruler("eval-suite-v2.json")["prepare"]
+        excluded = self._ruler_module().parse_exclusions(self._arg(prepare, "--exclude"))
+        self.assertEqual(excluded, {("128k", "cwe")})

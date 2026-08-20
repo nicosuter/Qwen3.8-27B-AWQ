@@ -516,3 +516,55 @@ class RunTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExcludedCategoryTests(unittest.TestCase):
+    """A category can be dropped when the task does not fit, never because it
+    scored badly.
+
+    `128k/cwe` scored 0 on both arms for all five checkpoints measured, and the
+    reason is arithmetic rather than a property of any checkpoint: the model
+    counts by transcribing the list, one pass over 26,174 words needs roughly
+    141k output tokens, and a 131k-token prompt leaves 131,112 in a 262,144
+    window. The category cannot be answered, so it reports nothing about
+    quantization while consuming the largest share of the suite's runtime.
+
+    Dropping a category for scoring badly would be selecting on the outcome --
+    `32k/cwe` also reads 0 -> 0 on four of five checkpoints, and separates the
+    fifth. This flag exists so the distinction has to be written down.
+    """
+
+    def test_lengths_and_tasks_parse_into_pairs(self) -> None:
+        self.assertEqual(adapter.parse_exclusions(""), set())
+        self.assertEqual(adapter.parse_exclusions("128k/cwe"), {("128k", "cwe")})
+        self.assertEqual(
+            adapter.parse_exclusions("128k/cwe,32k/fwe"), {("128k", "cwe"), ("32k", "fwe")}
+        )
+
+    def test_an_unknown_task_is_refused(self) -> None:
+        with self.assertRaises(adapter.AdapterError):
+            adapter.parse_exclusions("128k/nosuchtask")
+
+    def test_a_malformed_pair_is_refused(self) -> None:
+        with self.assertRaises(adapter.AdapterError):
+            adapter.parse_exclusions("cwe")
+
+    def test_excluding_every_category_is_refused(self) -> None:
+        """The guard against a flag that quietly empties the suite."""
+        every = ",".join(
+            f"{label}/{task}"
+            for label in ("4k", "32k", "128k")
+            for task in adapter.TASKS
+        )
+        with self.assertRaises(adapter.AdapterError):
+            adapter.plan_categories([4096, 32768, 131072], adapter.parse_exclusions(every))
+
+    def test_the_plan_drops_only_the_named_category(self) -> None:
+        plan = adapter.plan_categories(
+            [4096, 32768, 131072], adapter.parse_exclusions("128k/cwe")
+        )
+        self.assertNotIn((131072, "cwe"), plan)
+        self.assertIn((32768, "cwe"), plan, "32k/cwe separates barry and must survive")
+        self.assertIn((4096, "cwe"), plan)
+        self.assertIn((131072, "fwe"), plan)
+        self.assertEqual(len(plan), 3 * len(adapter.TASKS) - 1)
