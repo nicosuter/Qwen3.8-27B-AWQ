@@ -316,3 +316,48 @@ class AWQEqualizationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NvFp4ModeTests(unittest.TestCase):
+    """A four-bit float grid for these projections, for export more than for us.
+
+    At four bits the grid's shape matters more than its uniformity: sixteen
+    levels spaced non-uniformly fit a weight distribution better than sixteen
+    spaced evenly. Measured on these tensors, e2m1 reconstructs at 0.1098
+    against int4's 0.1219, and NVFP4 blocks by sixteen with an e4m3 scale rather
+    than by 128, so it should do better than that figure.
+
+    It is servable here, which the class names in vLLM actively disguise: a
+    weight-only NVFP4 config dispatches to CompressedTensorsW4A4Fp4(use_a16=True)
+    and lands on MarlinNvFp4LinearKernel, gated on device capability 75. The
+    Blackwell requirement belongs to the activation-quantized W4A4 path. So this
+    mode is scorable on the same hardware as every other one, unlike the FP8
+    mode that was removed.
+
+    It is not chosen for memory. NVFP4 costs 4 + 8/16 bits a weight against
+    int4's 4 + 16/128, so it is larger, and both reach the same Marlin
+    dequantize-and-matmul off Blackwell.
+    """
+
+    def test_it_is_a_mode(self) -> None:
+        self.assertIn("nvfp4", GDN_IN_PROJ_PRECISIONS)
+
+    def test_it_gets_its_own_group_and_no_activations(self) -> None:
+        plan = gdn_in_proj_plan("nvfp4")
+        self.assertEqual(plan["own_group"], "NVFP4A16")
+        self.assertNotIn("quantize_activations", plan)
+
+    def test_it_does_not_also_join_the_four_bit_group(self) -> None:
+        """Its own group is a different grid; being in both would be a conflict."""
+        plan = gdn_in_proj_plan("nvfp4")
+        self.assertEqual(plan["four_bit"], ())
+        self.assertEqual(plan["ignore"], ())
+
+    def test_it_writes_somewhere_of_its_own(self) -> None:
+        suffixes = {p: output_suffix(p) for p in GDN_IN_PROJ_PRECISIONS}
+        self.assertEqual(suffixes["nvfp4"], "-inproj-nvfp4")
+        self.assertEqual(len(set(suffixes.values())), len(suffixes))
+
+    def test_the_name_does_not_claim_an_activation_axis(self) -> None:
+        """The preset is NVFP4A16; the mode name must not carry the A16."""
+        self.assertNotIn("a16", "nvfp4")

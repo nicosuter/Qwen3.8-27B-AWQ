@@ -99,7 +99,7 @@ GDN_IN_PROJ_TARGETS = (
     "re:.*linear_attn\\.in_proj_qkv$",
     "re:.*linear_attn\\.in_proj_z$",
 )
-GDN_IN_PROJ_PRECISIONS = ("source", "int4", "int8")
+GDN_IN_PROJ_PRECISIONS = ("source", "int4", "nvfp4", "int8")
 # Eight bits with a group scale, because these projections feed a recurrent
 # state whose errors carry rather than being re-read each step, and because the
 # AWQ mappings do not cover this path -- four bits here would be bare
@@ -189,6 +189,12 @@ def gdn_in_proj_plan(precision: str) -> dict[str, Any]:
         # shortcut -- but it is the reason this mode is not simply "int4 like
         # everything else".
         plan["four_bit"] = GDN_IN_PROJ_TARGETS
+    elif precision == "nvfp4":
+        # Sixteen-element blocks with an e4m3 scale, which is why it beats a
+        # uniform four-bit grid: at sixteen levels the shape of the grid matters
+        # more than its evenness. Its own group rather than the four-bit one --
+        # a different grid entirely, and a module cannot be in both.
+        plan["own_group"] = "NVFP4A16"
     else:
         # W8A16 declares no activations at all. The caller strips them anyway,
         # so a preset added here later cannot reintroduce them by accident.
@@ -209,7 +215,12 @@ def output_suffix(precision: str, algorithm: str = "awq") -> str:
     # Named for what varies, since the whole model is four-bit in every mode and
     # "-int4" alone would read as a claim about all of it. -fp8gdn stays
     # unreachable: it holds the build made before activations were settled.
-    suffix = {"source": "", "int4": "-inproj-int4", "int8": "-inproj-int8"}[precision]
+    suffix = {
+        "source": "",
+        "int4": "-inproj-int4",
+        "nvfp4": "-inproj-nvfp4",
+        "int8": "-inproj-int8",
+    }[precision]
     if algorithm == "awq+gptq":
         suffix += "-gptq"
     return suffix
