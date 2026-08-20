@@ -185,7 +185,7 @@
         "--tokenizer",
         "${EVAL_TOKENIZER}",
         "--items-per-task",
-        "5"
+        "20"
       ],
       "run": [
         "${EVAL_PYTHON}",

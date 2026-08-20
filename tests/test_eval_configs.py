@@ -281,3 +281,39 @@ class EnvironmentContractTests(unittest.TestCase):
 
     def test_it_never_defaults_into_home(self) -> None:
         self.assertNotIn(os.path.expanduser("~"), self.source_env(HF_HOME=""))
+
+
+class RulerItemBudgetTests(unittest.TestCase):
+    """RULER's item count is a protocol decision, so state it out loud.
+
+    RULER is the one suite whose item pool is synthesized rather than fixed, so
+    `--items-per-task` is a dial and not a constraint. That makes it the only
+    place the protocol's own rule -- "items buy precision that replicates do
+    not" -- can actually be acted on, and it makes an accidental change to the
+    dial invisible unless something asserts the resulting size.
+
+    The count is tasks x lengths x items-per-task.
+    """
+
+    EXPECTED_ITEMS = 420
+
+    def _ruler(self, config: str) -> dict:
+        raw = json.loads((ROOT / "eval" / config).read_text())
+        suites = raw["suites"]
+        by_name = {e["name"]: e for e in suites} if isinstance(suites, list) else suites
+        return by_name["ruler"]
+
+    def _arg(self, argv: list, flag: str) -> str:
+        return argv[argv.index(flag) + 1]
+
+    def test_the_suite_size_is_what_the_protocol_says(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "_ruler", ROOT / "eval" / "scripts" / "adapters" / "ruler.py"
+        )
+        ruler = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ruler)
+
+        prepare = self._ruler("eval-suite-v2.json")["prepare"]
+        lengths = self._arg(prepare, "--lengths").split(",")
+        per_task = int(self._arg(prepare, "--items-per-task"))
+        self.assertEqual(len(ruler.TASKS) * len(lengths) * per_task, self.EXPECTED_ITEMS)
