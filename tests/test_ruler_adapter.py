@@ -604,3 +604,45 @@ class KeptCategoryTests(unittest.TestCase):
     def test_an_empty_only_is_refused(self) -> None:
         with self.assertRaises(adapter.AdapterError):
             adapter.plan_categories([4096], set(), kept=set())
+
+
+class IncrementalItemTests(unittest.TestCase):
+    """Raising --items-per-task adds items; it does not disturb the existing ones.
+
+    Each item seeds its own generator from its id, `<suite>-<length>-<task>-<index>`,
+    and the id does not mention how many items the run asked for. Going from 5
+    to 20 therefore leaves indices 00-04 byte-identical and synthesizes 05-19
+    beside them, so rows already scored under the same generation policy stay
+    valid and only the new indices need buying.
+
+    Worth pinning: if the count ever leaked into the seed, an increase would
+    silently reissue every prompt under an old item id, and the paired
+    comparison would be matching scores across two different questions.
+    """
+
+    def setUp(self) -> None:
+        self.tokenizer = WordTokenizer()
+        self.corpus_ids = self.tokenizer.encode(corpus_text())
+
+    def build(self, task: str, index: int, length: int = 4096):
+        return adapter.build_item(
+            task, length, index,
+            corpus_ids=self.corpus_ids, tokenizer=self.tokenizer, seed=38027,
+        )
+
+    def test_existing_indices_are_unchanged_by_a_larger_run(self) -> None:
+        small = [self.build("fwe", i)[0] for i in range(5)]
+        large = [self.build("fwe", i)[0] for i in range(20)]
+        self.assertEqual([p["id"] for p in small], [p["id"] for p in large[:5]])
+        for before, after in zip(small, large[:5]):
+            self.assertEqual(before["text"], after["text"], f"{before['id']} changed")
+
+    def test_the_new_indices_are_genuinely_different_items(self) -> None:
+        """Extending must add questions, not repeat the ones already scored."""
+        texts = [self.build("fwe", i)[0]["text"] for i in range(20)]
+        self.assertEqual(len(set(texts)), 20)
+
+    def test_answer_keys_track_their_own_index(self) -> None:
+        first = self.build("cwe", 0)[1]
+        sixth = self.build("cwe", 5)[1]
+        self.assertNotEqual(first["expected"], sixth["expected"])

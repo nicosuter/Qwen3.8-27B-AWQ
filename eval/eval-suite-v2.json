@@ -12,7 +12,7 @@
       "aa_omniscience": "Never part of the protocol; ran as a diagnostic.",
       "matharena_2026_06": "Dropped after four replicates showed its recovery ratio has a between-draw standard deviation of 4.77 points at 77 items -- single draws of the same checkpoint pair returned 96.8%, 103.3%, 93.8% and 103.3%. Resolving the protocol's 2-point margin on it would need about twenty replicates, and the item pool cannot grow: MathArena publishes only aime_2026 and apex-shortlist for this window, and older windows predate the model's training. livecodebench_v6 covers what it was kept for -- long chains, exact scoring, no guessing floor -- at 175 items with a 0.874 baseline and a between-draw sd near 2.6 points. The precision argument is derivable from the four-replicate run of 2026-08-16 alone and does not depend on the low single draw seen after."
     },
-    "token_budget": "Every suite passes --max-tokens 0, which omits the field so the server allows whatever the prompt leaves of max-model-len 262144: about 258,217 tokens behind a 4k prompt and 131,112 behind a 131k one. The budget is therefore decided per item by arithmetic instead of by one number chosen for all of them. The previous fixed cap of 131072 was recorded here as non-binding on every suite, on medians of 208 tokens for bfcl_v4, 2199 for mmmu_pro, 90 for multimodal, 7832 for gpqa_diamond and 18685 for livecodebench_v6. That was measured before ruler joined the set and it does not hold there: ruler truncated 14.3% of baseline items and 17.1% of candidate ones, above the 7.8% and 13.0% that got matharena_2026_06 dropped for the same fault. A cap does not buy a shorter answer, it buys no answer -- nothing tells the model its budget, so it cannot spend against one -- and truncation lands on the arm that reasons longer, which is the arm under test. Note this does not rescue 128k/cwe, whose single counting pass needs more output than the window can hold at that prompt length; see rationale.ruler_categories.",
+    "token_budget": "131072 everywhere except ruler, which passes --max-tokens 0 so the server allows whatever the prompt leaves of max-model-len 262144 -- about 229,517 tokens behind a 32k prompt and 131,112 behind a 131k one. The cap is changed only where it binds, because suite_is_current compares --max-tokens exactly and editing it supersedes every row already scored under the old value. It binds on ruler: 14.3% of baseline items and 17.1% of candidate ones truncated, above the 7.8% and 13.0% that got matharena_2026_06 dropped for the same fault, and all three of its differing items were truncation rather than a wrong answer. It does not bind elsewhere -- median output is 208 tokens on bfcl_v4, 90 on multimodal, 2199 on mmmu_pro, 7832 on gpqa_diamond and 18685 on livecodebench_v6 -- so lifting those would re-run roughly 6,200 items per arm to change nothing. Note the lift does not rescue 128k/cwe, whose single counting pass needs more output than the window holds at that prompt length; see rationale.ruler_categories.",
     "ruler_categories": "Five of RULER's twenty-one categories are measured. The other sixteen returned an identical score on both arms for all five checkpoints scored to date -- every niah_* category sat at 100 -> 100, and 128k/cwe at 0 -> 0 -- so they were consuming about three quarters of the suite's runtime without contributing to any delta. Two of the sixteen are dropped on mechanism rather than outcome: 128k/cwe cannot be answered in the window at all, because the model counts by transcribing and one pass over its 26,174-word list needs roughly 141k output tokens against the 131,112 a 131k prompt leaves in 262,144. The rest are dropped on outcome, which is selection on the results and has two consequences to state plainly: RULER's recovery figure now describes only the categories where the checkpoints measured so far differed, and it can no longer detect a regression in long-context retrieval, which every dropped niah_* category was the evidence against. The 100 -> 100 readings from the runs of 2026-08-17 to 2026-08-19 remain the record that retrieval was intact for those five checkpoints; a new checkpoint has no such check. Readmit the niah_* categories, or raise their difficulty so they stop sitting at ceiling, before treating this suite as long-context coverage again."
   },
   "served_model_name": "qwen38-eval",
@@ -48,7 +48,7 @@
         "--concurrency",
         "384",
         "--max-tokens",
-        "0",
+        "131072",
         "--request-timeout",
         "5400"
       ],
@@ -76,7 +76,7 @@
         "--concurrency",
         "384",
         "--max-tokens",
-        "0",
+        "131072",
         "--request-timeout",
         "5400"
       ],
@@ -105,7 +105,7 @@
         "--concurrency",
         "256",
         "--max-tokens",
-        "0",
+        "131072",
         "--request-timeout",
         "5400"
       ],
@@ -131,7 +131,7 @@
         "--concurrency",
         "256",
         "--max-tokens",
-        "0",
+        "131072",
         "--request-timeout",
         "5400"
       ],
@@ -159,7 +159,7 @@
         "--concurrency",
         "256",
         "--max-tokens",
-        "0",
+        "131072",
         "--request-timeout",
         "5400"
       ],

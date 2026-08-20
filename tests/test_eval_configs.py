@@ -352,41 +352,57 @@ class RulerItemBudgetTests(unittest.TestCase):
 
 
 class WindowBudgetTests(unittest.TestCase):
-    """Every v2 suite spends what the window leaves, not a fixed cap.
+    """A cap is changed only where it binds, because changing it costs a re-run.
 
-    A cap does not buy a shorter answer, it buys no answer. Nothing tells the
-    model its budget -- the API does not carry it and the prompt does not
-    mention it -- so it cannot spend against one: under 131072, nine of ten
-    truncated MathArena items had spent the whole cap on reasoning and emitted
-    zero answer tokens, and RULER truncated 14% of baseline items against 17% of
-    candidate ones. Truncation lands on the arm that reasons longer, which is
-    the arm under test, so the cap was measuring itself.
+    `suite_is_current` compares --max-tokens exactly, so editing a suite's cap
+    supersedes every row already scored under the old one -- deliberately, since
+    truncation lands on the arm that reasons longer and mixing two cap regimes
+    would select along the axis under test. That makes the cap the single most
+    expensive field in this file to touch.
 
-    `--max-tokens 0` omits the field, and the server then allows whatever the
-    prompt leaves of max-model-len. That is the per-item budget: 258,217 tokens
-    behind a 4k prompt and 131,112 behind a 131k one, decided per item by
-    arithmetic rather than by one number chosen for all of them.
+    It binds on ruler and nowhere else. ruler truncated 14.3% of baseline items
+    and 17.1% of candidate ones, above the 7.8% and 13.0% that got
+    matharena_2026_06 dropped for the same fault, and its three differing items
+    were all truncation. The rest are nowhere near 131072: median output is 208
+    tokens on bfcl_v4, 90 on multimodal, 2199 on mmmu_pro, 7832 on
+    gpqa_diamond, 18685 on livecodebench_v6. Lifting their cap would re-run
+    about 6,200 items per arm to change nothing.
 
-    One value still has to be shared. Per-suite caps meant a suite's score
-    partly measured its own budget; "the rest of the window" is a single rule
-    that happens to resolve differently per item.
+    So ruler defers to the window and the others keep the cap they were measured
+    under. The invariant that survives is the one that mattered -- no suite runs
+    with a budget that binds on it -- and every suite still carrying a fixed cap
+    carries the same one.
     """
 
-    def test_every_v2_suite_defers_to_the_window(self) -> None:
-        raw = json.loads((ROOT / "eval" / "eval-suite-v2.json").read_text())
-        for suite in raw["suites"]:
+    WINDOW_BUDGET = {"ruler"}
+
+    def _v2(self) -> dict:
+        return json.loads((ROOT / "eval" / "eval-suite-v2.json").read_text())
+
+    def test_only_the_suite_whose_cap_binds_defers_to_the_window(self) -> None:
+        for suite in self._v2()["suites"]:
             run = [str(part) for part in suite["run"]]
+            cap = run[run.index("--max-tokens") + 1]
             with self.subTest(suite=suite["name"]):
-                self.assertIn("--max-tokens", run, "a suite with no cap flag is unreadable")
-                self.assertEqual(
-                    run[run.index("--max-tokens") + 1],
-                    "0",
-                    f"{suite['name']} still carries a fixed cap",
-                )
+                if suite["name"] in self.WINDOW_BUDGET:
+                    self.assertEqual(cap, "0", "ruler's cap binds and must be lifted")
+                else:
+                    self.assertNotEqual(
+                        cap, "0",
+                        f"{suite['name']} does not truncate; lifting its cap "
+                        "supersedes every row it has for no measurable gain",
+                    )
+
+    def test_the_capped_suites_still_share_one_cap(self) -> None:
+        """Per-suite caps meant a suite's score partly measured its own budget."""
+        caps = {
+            str(suite["run"][suite["run"].index("--max-tokens") + 1])
+            for suite in self._v2()["suites"]
+            if suite["name"] not in self.WINDOW_BUDGET
+        }
+        self.assertEqual(caps, {"131072"}, f"capped suites disagree: {caps}")
 
     def test_the_reason_is_recorded_where_the_old_cap_was_justified(self) -> None:
-        """token_budget claimed the cap was non-binding. It was not, on RULER."""
-        raw = json.loads((ROOT / "eval" / "eval-suite-v2.json").read_text())
-        note = raw["rationale"]["token_budget"]
-        self.assertIn("0", note)
+        note = self._v2()["rationale"]["token_budget"]
         self.assertIn("ruler", note.lower())
+        self.assertIn("0", note)
