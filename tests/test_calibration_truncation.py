@@ -248,3 +248,35 @@ class WindowConsistencyTests(unittest.TestCase):
         match = re.search(r"SOURCE_CACHE_VERSION = (\d+)", text)
         self.assertIsNotNone(match)
         self.assertGreaterEqual(int(match.group(1)), 2)
+
+
+class CalibrationDirTests(unittest.TestCase):
+    """The set that gets built and the set that gets quantized must be one set.
+
+    prepare.sh writes the manifest and both quantize entry points read it, from
+    independent defaults. Point them at different directories and a rebuild is
+    invisible: the job finds a manifest, passes its 256-row check, and quantizes
+    against whatever was there before.
+
+    calibration-v2 is the set built at 32768 with unterminated reasoning
+    filtered out. The original v2/calibration stays where it is -- it is the
+    provenance record for the checkpoints already built and published, and the
+    model card ships its SHA256 alongside the weights.
+    """
+
+    EXPECTED = "calibration-v2"
+
+    def dir_of(self, relative: str) -> str:
+        text = (ROOT / relative).read_text()
+        match = re.search(r'CALIBRATION_DIR="\$\{CALIBRATION_DIR:-\$RUN_ROOT/([^}"]+)\}"', text)
+        self.assertIsNotNone(match, f"{relative} does not default CALIBRATION_DIR")
+        return match.group(1)
+
+    def test_producer_and_consumers_name_the_same_set(self) -> None:
+        producer = self.dir_of("quant/scripts/prepare.sh")
+        for name in ("quant/slurm/quantize.sbatch", "quant/slurm/quantize-single.sbatch"):
+            with self.subTest(sbatch=name):
+                self.assertEqual(producer, self.dir_of(name))
+
+    def test_the_default_is_the_rebuilt_set(self) -> None:
+        self.assertEqual(self.dir_of("quant/scripts/prepare.sh"), self.EXPECTED)

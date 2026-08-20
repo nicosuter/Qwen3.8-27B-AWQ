@@ -19,7 +19,7 @@ source ./common/scripts/load_env.sh
 RUN_ROOT="${RUN_ROOT:-$RUN_BASE/v2}"
 mkdir -p "$RUN_ROOT"
 export HF_HOME="${HF_HOME:-$RUN_BASE/huggingface}"
-export CALIBRATION_DIR="${CALIBRATION_DIR:-$RUN_ROOT/calibration}"
+export CALIBRATION_DIR="${CALIBRATION_DIR:-$RUN_ROOT/calibration-v2}"
 export OUTPUT_DIR="${OUTPUT_DIR:-$RUN_ROOT/model}"
 export MAX_SEQ_LENGTH=32768
 export TOKENIZERS_PARALLELISM=true
