@@ -149,3 +149,39 @@ class BuildPriorsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RulerPriorFloorTests(unittest.TestCase):
+    """RULER's output prior must survive the suite it now describes.
+
+    Admission reserves `prompt + expected output`. The prompt half corrects
+    itself from the text, but the output half is taken from this file as-is, so
+    a stale value under-reserves every request in flight -- the failure that
+    left the cache holding 2.27x what the budget believed it had booked.
+
+    Two changes moved it at once. Narrowing RULER to the five categories that
+    separated a checkpoint dropped the cheap niah_* items that were holding the
+    mean down, and `--max-tokens 0` removed the ceiling those items were hitting.
+    Measured over the surviving categories in the 2026-08-19 baseline and
+    candidate arms, still under the old 131072 cap: mean output 86,767 and
+    89,961 tokens against a shipped prior of 20,207.
+
+    That measurement is a floor, not the answer -- it was taken with the cap
+    still in place, and the 32k items that were truncating have 229,517 tokens
+    of room without it. Re-measure with build_token_priors.py once the narrowed
+    suite has run, and let this floor stop a silent regression meanwhile.
+    """
+
+    MEASURED_FLOOR = 80_000
+
+    def test_the_ruler_output_prior_covers_the_narrowed_suite(self) -> None:
+        priors = json.loads(
+            (Path(__file__).resolve().parent.parent / "eval" / "token-priors.json").read_text()
+        )
+        output = priors["suites"]["ruler"]["output"]
+        self.assertGreaterEqual(
+            output,
+            self.MEASURED_FLOOR,
+            "ruler's output prior is below what its surviving categories generate; "
+            "admission would under-reserve every request in flight",
+        )

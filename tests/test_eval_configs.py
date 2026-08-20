@@ -349,3 +349,44 @@ class RulerItemBudgetTests(unittest.TestCase):
         note = raw["rationale"]["ruler_categories"]
         self.assertIn("selection on the results", note)
         self.assertIn("long-context retrieval", note)
+
+
+class WindowBudgetTests(unittest.TestCase):
+    """Every v2 suite spends what the window leaves, not a fixed cap.
+
+    A cap does not buy a shorter answer, it buys no answer. Nothing tells the
+    model its budget -- the API does not carry it and the prompt does not
+    mention it -- so it cannot spend against one: under 131072, nine of ten
+    truncated MathArena items had spent the whole cap on reasoning and emitted
+    zero answer tokens, and RULER truncated 14% of baseline items against 17% of
+    candidate ones. Truncation lands on the arm that reasons longer, which is
+    the arm under test, so the cap was measuring itself.
+
+    `--max-tokens 0` omits the field, and the server then allows whatever the
+    prompt leaves of max-model-len. That is the per-item budget: 258,217 tokens
+    behind a 4k prompt and 131,112 behind a 131k one, decided per item by
+    arithmetic rather than by one number chosen for all of them.
+
+    One value still has to be shared. Per-suite caps meant a suite's score
+    partly measured its own budget; "the rest of the window" is a single rule
+    that happens to resolve differently per item.
+    """
+
+    def test_every_v2_suite_defers_to_the_window(self) -> None:
+        raw = json.loads((ROOT / "eval" / "eval-suite-v2.json").read_text())
+        for suite in raw["suites"]:
+            run = [str(part) for part in suite["run"]]
+            with self.subTest(suite=suite["name"]):
+                self.assertIn("--max-tokens", run, "a suite with no cap flag is unreadable")
+                self.assertEqual(
+                    run[run.index("--max-tokens") + 1],
+                    "0",
+                    f"{suite['name']} still carries a fixed cap",
+                )
+
+    def test_the_reason_is_recorded_where_the_old_cap_was_justified(self) -> None:
+        """token_budget claimed the cap was non-binding. It was not, on RULER."""
+        raw = json.loads((ROOT / "eval" / "eval-suite-v2.json").read_text())
+        note = raw["rationale"]["token_budget"]
+        self.assertIn("0", note)
+        self.assertIn("ruler", note.lower())
