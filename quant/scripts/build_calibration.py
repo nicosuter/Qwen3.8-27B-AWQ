@@ -39,7 +39,10 @@ VISION_SHUFFLE_MIN = int(os.environ.get("VISION_SHUFFLE_MIN", "64"))
 VISION_SHUFFLE_MULTIPLIER = int(
     os.environ.get("VISION_SHUFFLE_MULTIPLIER", "8")
 )
-SOURCE_CACHE_VERSION = 1
+# Bumped to 2 with the completeness filter: the key carries max_length, so a
+# wider window already invalidates a cached render, but the filter changes which
+# candidates are accepted at the same width and nothing in the key sees that.
+SOURCE_CACHE_VERSION = 2
 
 LAMBDA_REVISION = "b92885e4f0161d4b2536512710e004d4892cac6e"
 NEMOTRON_REVISION = "74e23eb6f830fef4a9e96a92f6f6262214cbb9a8"

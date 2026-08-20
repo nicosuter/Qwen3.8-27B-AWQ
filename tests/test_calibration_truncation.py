@@ -208,3 +208,43 @@ class IteratorSafetyTests(unittest.TestCase):
             trim_module.trim_to_closed_think(iter([1, 2, OPEN, 3]), open_id=OPEN, close_id=CLOSE),
             [1, 2],
         )
+
+
+class WindowConsistencyTests(unittest.TestCase):
+    """Build and calibration must agree on the window, or the rule misfires.
+
+    The builder rejects a candidate whose reasoning does not close inside
+    MAX_SEQ_LENGTH, and the collator trims what is left at the same bound. Set
+    them differently and both go wrong: build at 4096 and quantize at 32768 and
+    the set was filtered against a window far tighter than the one used, so the
+    long traces were discarded for nothing; build wide and quantize narrow and
+    the filter passes rows the trim then guts.
+    """
+
+    def window_of(self, relative: str) -> int:
+        text = (ROOT / relative).read_text()
+        match = re.search(r"MAX_SEQ_LENGTH(?:=|:-|:=)\"?(\d+)", text)
+        self.assertIsNotNone(match, f"{relative} does not pin MAX_SEQ_LENGTH")
+        return int(match.group(1))
+
+    def test_prepare_and_quantize_use_the_same_window(self) -> None:
+        prepare = self.window_of("quant/scripts/prepare.sh")
+        for name in ("quant/slurm/quantize.sbatch", "quant/slurm/quantize-single.sbatch"):
+            with self.subTest(sbatch=name):
+                self.assertEqual(
+                    prepare,
+                    self.window_of(name),
+                    "the set would be filtered against a different window than it is used at",
+                )
+
+    def test_the_source_cache_version_moved_with_the_selection_rule(self) -> None:
+        """A cached render predates the completeness filter and must not be reused.
+
+        The cache key carries max_length, so widening the window already
+        invalidates it -- but the filter changes which candidates are accepted at
+        the same width, and nothing in the key describes that.
+        """
+        text = (ROOT / "quant" / "scripts" / "build_calibration.py").read_text()
+        match = re.search(r"SOURCE_CACHE_VERSION = (\d+)", text)
+        self.assertIsNotNone(match)
+        self.assertGreaterEqual(int(match.group(1)), 2)
