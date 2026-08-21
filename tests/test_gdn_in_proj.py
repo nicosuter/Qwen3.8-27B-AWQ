@@ -7,6 +7,7 @@ on what the modes are. None of that needs a GPU stack, which is why the plan is
 its own module.
 """
 
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -73,8 +74,8 @@ class PlacementTests(unittest.TestCase):
             gdn_in_proj_plan("fp8")
 
     def test_the_default_is_eight_bit(self) -> None:
-        """Four bits here would be bare round-to-nearest: the AWQ mappings do
-        not reach this path, so it gets none of the rescaling the rest does."""
+        """These projections feed a recurrent state, so their errors carry
+        rather than being re-read each step."""
         self.assertEqual(DEFAULT_GDN_IN_PROJ_PRECISION, "int8")
 
     def test_out_proj_is_never_a_gdn_target(self) -> None:
@@ -255,22 +256,47 @@ class AWQEqualizationTests(unittest.TestCase):
     which share the GDN block's normalized input and are never quantized.
     """
 
-    SHIPPED = [
-        (r"re:.*post_attention_layernorm$", [r"re:.*gate_proj$", r"re:.*up_proj$"]),
-        (r"re:.*up_proj$", [r"re:.*down_proj$"]),
+    # The shape the model has: 64 layers, full attention every fourth starting
+    # at 3, Gated DeltaNet everywhere else.
+    LAYER_TYPES = [
+        "full_attention" if i % 4 == 3 else "linear_attention" for i in range(64)
     ]
+    ATTENTION_LAYERS = [i for i, t in enumerate(LAYER_TYPES) if t == "full_attention"]
+    GDN_LAYERS = [i for i, t in enumerate(LAYER_TYPES) if t == "linear_attention"]
 
-    def test_the_shipped_mappings_are_balanced(self) -> None:
+    def shipped(self) -> list[tuple[str, list[str]]]:
+        from quant.scripts.gdn_in_proj import input_layernorm_pattern
+
+        return [
+            (
+                input_layernorm_pattern(self.ATTENTION_LAYERS),
+                [r"re:.*self_attn\.q_proj$",
+                 r"re:.*self_attn\.k_proj$",
+                 r"re:.*self_attn\.v_proj$"],
+            ),
+            (
+                input_layernorm_pattern(self.GDN_LAYERS),
+                [r"re:.*linear_attn\.in_proj_qkv$",
+                 r"re:.*linear_attn\.in_proj_z$",
+                 r"re:.*linear_attn\.in_proj_a$",
+                 r"re:.*linear_attn\.in_proj_b$"],
+            ),
+            (r"re:.*post_attention_layernorm$", [r"re:.*gate_proj$", r"re:.*up_proj$"]),
+            (r"re:.*up_proj$", [r"re:.*down_proj$"]),
+        ]
+
+    def check(self, mappings: list[tuple[str, list[str]]]) -> list[str]:
         from quant.scripts.gdn_in_proj import unbalanced_norm_mappings
 
-        self.assertEqual(unbalanced_norm_mappings(self.SHIPPED), [])
+        return unbalanced_norm_mappings(mappings, self.LAYER_TYPES)
+
+    def test_the_shipped_mappings_are_balanced(self) -> None:
+        self.assertEqual(self.check(self.shipped()), [])
 
     def test_a_suffix_regex_counts_as_covering_its_module(self) -> None:
         """re:.*gate_proj$ covers mlp.gate_proj without containing the string."""
-        from quant.scripts.gdn_in_proj import unbalanced_norm_mappings
-
         self.assertEqual(
-            unbalanced_norm_mappings(
+            self.check(
                 [(r"re:.*post_attention_layernorm$",
                   [r"re:.*mlp\.(gate|up)_proj$"])]
             ),
@@ -278,40 +304,86 @@ class AWQEqualizationTests(unittest.TestCase):
         )
 
     def test_half_the_mlp_is_caught(self) -> None:
-        from quant.scripts.gdn_in_proj import unbalanced_norm_mappings
-
-        problems = unbalanced_norm_mappings(
+        problems = self.check(
             [(r"re:.*post_attention_layernorm$", [r"re:.*gate_proj$"])]
         )
-        self.assertEqual(len(problems), 1)
-        self.assertIn("mlp.up_proj", problems[0])
+        # Both layer types have an MLP and both are missing the same consumer,
+        # so it is one report per type rather than one per layer.
+        self.assertEqual(len(problems), 2)
+        self.assertTrue(all("mlp.up_proj" in problem for problem in problems))
 
     def test_smoothing_the_gdn_norm_must_reach_the_unquantized_consumers(self) -> None:
         """The case worth having the check for: a mapping that scales the norm
         and folds into the two projections a mode quantizes, leaving in_proj_a
         and in_proj_b reading a rescaled input."""
-        from quant.scripts.gdn_in_proj import unbalanced_norm_mappings
-
-        problems = unbalanced_norm_mappings(
-            [(r"re:.*input_layernorm$",
+        problems = self.check(
+            [(self.shipped()[1][0],
               [r"re:.*linear_attn\.in_proj_qkv$", r"re:.*linear_attn\.in_proj_z$"])]
         )
         self.assertEqual(len(problems), 1)
         self.assertIn("linear_attn.in_proj_a", problems[0])
         self.assertIn("linear_attn.in_proj_b", problems[0])
 
-    def test_a_complete_gdn_mapping_passes(self) -> None:
-        """What adding AWQ scaling to this path would have to look like."""
-        from quant.scripts.gdn_in_proj import unbalanced_norm_mappings
+    def test_each_layer_type_is_judged_on_its_own_consumers(self) -> None:
+        """input_layernorm feeds q/k/v in one layer type and in_proj_* in the
+        other. A mapping restricted to the attention layers is complete with
+        q/k/v alone, and the GDN consumers must not be held against it."""
+        attention_norm = self.shipped()[0][0]
+        balances = [r"re:.*self_attn\.(q|k|v)_proj$"]
+        self.assertEqual(self.check([(attention_norm, balances)]), [])
+        problems = self.check([(self.shipped()[1][0], balances)])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("linear_attn.in_proj_qkv", problems[0])
 
+    def test_a_norm_smoothed_across_both_types_needs_both_consumer_sets(self) -> None:
+        """An unindexed pattern hits every layer, so it answers for both."""
+        problems = self.check(
+            [(r"re:.*input_layernorm$", [r"re:.*self_attn\.(q|k|v)_proj$"])]
+        )
+        self.assertEqual(len(problems), 1)
+        self.assertIn("linear_attn.in_proj_qkv", problems[0])
         self.assertEqual(
-            unbalanced_norm_mappings(
+            self.check(
                 [(r"re:.*input_layernorm$",
                   [r"re:.*linear_attn\.in_proj_(qkv|z|a|b)$",
                    r"re:.*self_attn\.(q|k|v)_proj$"])]
             ),
             [],
         )
+
+    def test_covering_a_layer_type_only_partly_is_still_caught(self) -> None:
+        """Every index is checked, not one representative per type, so a
+        mapping that is balanced on the layers it was written for and not on
+        the rest does not slip through."""
+        from quant.scripts.gdn_in_proj import input_layernorm_pattern
+
+        problems = self.check(
+            [(input_layernorm_pattern(self.GDN_LAYERS),
+              [r"re:.*layers\.(0|1|2)\.linear_attn\.in_proj_(qkv|z|a|b)$"])]
+        )
+        self.assertEqual(len(problems), 1)
+        self.assertIn("linear_attn.in_proj_qkv", problems[0])
+
+    def test_an_unrecognized_layer_type_is_refused(self) -> None:
+        from quant.scripts.gdn_in_proj import unbalanced_norm_mappings
+
+        with self.assertRaises(ValueError):
+            unbalanced_norm_mappings(self.shipped(), ["sliding_attention"])
+
+    def test_a_pattern_for_no_layers_is_refused(self) -> None:
+        from quant.scripts.gdn_in_proj import input_layernorm_pattern
+
+        with self.assertRaises(ValueError):
+            input_layernorm_pattern([])
+
+    def test_the_index_set_does_not_match_a_longer_index(self) -> None:
+        """(3|7) must not match layers.31 through its leading 3."""
+        from quant.scripts.gdn_in_proj import input_layernorm_pattern
+
+        pattern = input_layernorm_pattern([3, 7])[len("re:"):]
+        base = "model.language_model.layers"
+        self.assertIsNotNone(re.fullmatch(pattern, f"{base}.3.input_layernorm"))
+        self.assertIsNone(re.fullmatch(pattern, f"{base}.31.input_layernorm"))
 
 
 if __name__ == "__main__":

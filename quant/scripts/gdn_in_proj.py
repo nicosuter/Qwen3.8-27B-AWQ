@@ -101,18 +101,15 @@ GDN_IN_PROJ_TARGETS = (
 )
 GDN_IN_PROJ_PRECISIONS = ("source", "int4", "nvfp4", "int8")
 # Eight bits with a group scale, because these projections feed a recurrent
-# state whose errors carry rather than being re-read each step, and because the
-# AWQ mappings do not cover this path -- four bits here would be bare
-# round-to-nearest where every other four-bit tensor gets activation-aware
-# rescaling. `source` remains the control the FP8 group is measured against and
-# is still reachable by name.
+# state whose errors carry rather than being re-read each step. `source` remains
+# the control the FP8 group is measured against and is still reachable by name.
 DEFAULT_GDN_IN_PROJ_PRECISION = "int8"
 
 
-# Every module that reads a given norm's output, in the layer types that have
-# one. AWQ equalization divides the norm's weight by a per-channel scale and
-# multiplies the same scale into the consumers, which is only function-preserving
-# if *every* consumer gets it. Leaving a consumer in BF16 does not exempt it:
+# Every module that reads a given norm's output, per layer type. AWQ
+# equalization divides the norm's weight by a per-channel scale and multiplies
+# the same scale into the consumers, which is only function-preserving if
+# *every* consumer gets it. Leaving a consumer in BF16 does not exempt it:
 # folding a scale into a BF16 weight is a multiply, not a quantization, and
 # skipping it changes the function before anything is quantized.
 #
@@ -120,49 +117,89 @@ DEFAULT_GDN_IN_PROJ_PRECISION = "int8"
 # which no mode ever quantizes. They share one normalized input with
 # in_proj_qkv and in_proj_z, so an equalization that reached the first two and
 # not the last two would silently rescale the decay and write-strength inputs.
+#
+# The two layer types are kept apart because input_layernorm feeds a different
+# set in each, and a mapping written for one must not be judged against the
+# other's consumers. The model is hybrid, so both are always present.
 NORM_CONSUMERS = {
-    "input_layernorm": (
-        "linear_attn.in_proj_qkv",
-        "linear_attn.in_proj_z",
-        "linear_attn.in_proj_a",
-        "linear_attn.in_proj_b",
-        "self_attn.q_proj",
-        "self_attn.k_proj",
-        "self_attn.v_proj",
-    ),
-    "post_attention_layernorm": ("mlp.gate_proj", "mlp.up_proj"),
+    "full_attention": {
+        "input_layernorm": (
+            "self_attn.q_proj",
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+        ),
+        "post_attention_layernorm": ("mlp.gate_proj", "mlp.up_proj"),
+    },
+    "linear_attention": {
+        "input_layernorm": (
+            "linear_attn.in_proj_qkv",
+            "linear_attn.in_proj_z",
+            "linear_attn.in_proj_a",
+            "linear_attn.in_proj_b",
+        ),
+        "post_attention_layernorm": ("mlp.gate_proj", "mlp.up_proj"),
+    },
 }
 
 
-def unbalanced_norm_mappings(mappings: list[tuple[str, list[str]]]) -> list[str]:
+def input_layernorm_pattern(indices: list[int]) -> str:
+    """A suffix regex matching input_layernorm on exactly these layers.
+
+    The two layer types need separate mappings because they consume the norm
+    differently, and the only thing distinguishing them in a module path is the
+    layer index, so the index set has to be spelled into the pattern.
+    """
+    if not indices:
+        raise ValueError("no layers to smooth; the mapping would match nothing")
+    return "re:.*layers\\.(" + "|".join(str(i) for i in indices) + ")\\.input_layernorm$"
+
+
+def unbalanced_norm_mappings(
+    mappings: list[tuple[str, list[str]]], layer_types: list[str]
+) -> list[str]:
     """AWQ mappings that smooth a norm without folding into all its consumers.
 
     Takes (smooth_pattern, balance_patterns) pairs as plain strings so the check
-    needs no AWQ import. The patterns are evaluated against a canonical module
-    path rather than searched for as substrings, because the mappings are
-    written as suffix regexes -- `re:.*gate_proj$` covers `mlp.gate_proj`
+    needs no AWQ import, plus the model's layer_types so each mapping is judged
+    against the consumers the layers it actually matches have. Every layer index
+    is tried rather than one representative per type: a mapping is written as a
+    list of indices, so one that covers a type only partially would pass a
+    representative check and fail on the layers it missed. Patterns are matched
+    against the module path rather than searched for as substrings, because they
+    are written as suffix regexes -- `re:.*gate_proj$` covers `mlp.gate_proj`
     without containing it.
     """
 
-    def covers(pattern: str, consumer: str) -> bool:
-        name = f"model.language_model.layers.0.{consumer}"
+    def covers(pattern: str, index: int, consumer: str) -> bool:
+        name = f"model.language_model.layers.{index}.{consumer}"
         if pattern.startswith("re:"):
             return re.fullmatch(pattern[3:], name) is not None
         return name.endswith(pattern)
 
-    problems = []
+    unknown = sorted(set(layer_types) - set(NORM_CONSUMERS))
+    if unknown:
+        raise ValueError(f"no consumer list for layer types: {', '.join(unknown)}")
+
+    problems: list[str] = []
+    seen = set()
     for smooth, balances in mappings:
-        for norm, consumers in NORM_CONSUMERS.items():
-            if not covers(smooth, norm):
-                continue
-            missing = [
-                c for c in consumers
-                if not any(covers(pattern, c) for pattern in balances)
-            ]
-            if missing:
+        for index, kind in enumerate(layer_types):
+            for norm, consumers in NORM_CONSUMERS[kind].items():
+                if not covers(smooth, index, norm):
+                    continue
+                missing = tuple(
+                    c for c in consumers
+                    if not any(covers(pattern, index, c) for pattern in balances)
+                )
+                # One report per layer type, not per layer: 48 copies of the
+                # same sentence says nothing 1 does not.
+                if not missing or (smooth, kind, missing) in seen:
+                    continue
+                seen.add((smooth, kind, missing))
                 problems.append(
-                    f"{smooth} is smoothed but {', '.join(missing)} would not"
-                    " receive the scale, which changes the function"
+                    f"{smooth} is smoothed on {kind} layers but"
+                    f" {', '.join(missing)} would not receive the scale,"
+                    " which changes the function"
                 )
     return problems
 
@@ -182,12 +219,9 @@ def gdn_in_proj_plan(precision: str) -> dict[str, Any]:
     if precision == "source":
         plan["ignore"] = GDN_IN_PROJ_TARGETS
     elif precision == "int4":
-        # AWQ's mappings do not cover these projections, so folding them in here
-        # quantizes them without the activation-aware rescaling the MLP and
-        # attention paths get. That is also true of the third-party checkpoints
-        # that quantize them to four bits, so it is the same shape, not a
-        # shortcut -- but it is the reason this mode is not simply "int4 like
-        # everything else".
+        # The same treatment the third-party checkpoints that quantize these
+        # projections give them: four bits on the same grid as the rest of the
+        # body, smoothed by the GDN input_layernorm mapping.
         plan["four_bit"] = GDN_IN_PROJ_TARGETS
     elif precision == "nvfp4":
         # Sixteen-element blocks with an e4m3 scale, which is why it beats a

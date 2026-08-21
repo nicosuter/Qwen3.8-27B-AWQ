@@ -20,9 +20,8 @@
 # --fp8-gdn boolean, which could only express the two ends of what turned out to
 # be a choice between four, eight and source precision, all weight-only. It
 # defaults to int8:
-# the AWQ mappings do not reach this path, so four bits here would be bare
-# round-to-nearest where every other four-bit tensor gets activation-aware
-# rescaling. Activations are BF16 in every mode and are not a flag. See
+# these projections feed a recurrent state whose errors carry rather than being
+# re-read each step. Activations are BF16 in every mode and are not a flag. See
 # gdn_in_proj.py.
 #
 # Every build writes to its own directory so they can all exist while they are

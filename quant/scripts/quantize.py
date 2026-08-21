@@ -37,6 +37,7 @@ from gdn_in_proj import (
     GDN_IN_PROJ_PRECISIONS,
     GDN_IN_PROJ_TARGETS,
     gdn_in_proj_plan,
+    input_layernorm_pattern,
     unbalanced_norm_mappings,
 )
 from preserve_mtp import (
@@ -460,17 +461,40 @@ def main() -> None:
             plan["own_group"], list(GDN_IN_PROJ_TARGETS)
         ).model_copy(update={"input_activations": None})
     # AWQ equalization is only function-preserving when every consumer of a
-    # smoothed norm receives the scale. Neither mapping here smooths
-    # input_layernorm, so the Gated DeltaNet input projections get no AWQ
-    # rescaling at all and there is nothing to propagate -- which is also why
-    # quantizing them to four bits is a blunter operation than quantizing the
-    # MLP. Adding that mapping later means listing all four consumers,
-    # in_proj_a and in_proj_b included, even though no mode quantizes them.
+    # smoothed norm receives the scale, and input_layernorm feeds a different
+    # set in each layer type, so it takes one mapping per type. The layer index
+    # is the only thing telling them apart in a module path, so the index sets
+    # come off the config rather than being written down.
+    text_config = getattr(model.config, "text_config", model.config)
+    layer_types = list(text_config.layer_types)
+    attention_layers = [i for i, t in enumerate(layer_types) if t == "full_attention"]
+    gdn_layers = [i for i, t in enumerate(layer_types) if t == "linear_attention"]
     mapping_spec = [
+        (
+            input_layernorm_pattern(attention_layers),
+            [
+                "re:.*self_attn\\.q_proj$",
+                "re:.*self_attn\\.k_proj$",
+                "re:.*self_attn\\.v_proj$",
+            ],
+        ),
+        (
+            # in_proj_a and in_proj_b are listed although no mode quantizes
+            # them: they read the same normalized input, so an equalization
+            # that skipped them would rescale the decay and write-strength
+            # inputs and change the function.
+            input_layernorm_pattern(gdn_layers),
+            [
+                "re:.*linear_attn\\.in_proj_qkv$",
+                "re:.*linear_attn\\.in_proj_z$",
+                "re:.*linear_attn\\.in_proj_a$",
+                "re:.*linear_attn\\.in_proj_b$",
+            ],
+        ),
         ("re:.*post_attention_layernorm$", ["re:.*gate_proj$", "re:.*up_proj$"]),
         ("re:.*up_proj$", ["re:.*down_proj$"]),
     ]
-    problems = unbalanced_norm_mappings(mapping_spec)
+    problems = unbalanced_norm_mappings(mapping_spec, layer_types)
     if problems:
         raise SystemExit("AWQ mappings would change the function:\n  " + "\n  ".join(problems))
     mappings = [AWQMapping(smooth, balances) for smooth, balances in mapping_spec]
