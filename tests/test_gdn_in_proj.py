@@ -24,6 +24,7 @@ from quant.scripts.gdn_in_proj import (
 ROOT = Path(__file__).resolve().parent.parent
 MODULE = ROOT / "quant" / "scripts" / "gdn_in_proj.py"
 SUBMIT = ROOT / "quant" / "scripts" / "submit_quantize.sh"
+QUANTIZE = ROOT / "quant" / "scripts" / "quantize.py"
 
 
 class PlacementTests(unittest.TestCase):
@@ -274,16 +275,24 @@ class AWQEqualizationTests(unittest.TestCase):
                  r"re:.*self_attn\.k_proj$",
                  r"re:.*self_attn\.v_proj$"],
             ),
-            (
-                input_layernorm_pattern(self.GDN_LAYERS),
-                [r"re:.*linear_attn\.in_proj_qkv$",
-                 r"re:.*linear_attn\.in_proj_z$",
-                 r"re:.*linear_attn\.in_proj_a$",
-                 r"re:.*linear_attn\.in_proj_b$"],
-            ),
             (r"re:.*post_attention_layernorm$", [r"re:.*gate_proj$", r"re:.*up_proj$"]),
             (r"re:.*up_proj$", [r"re:.*down_proj$"]),
         ]
+
+    def gdn_mapping(self) -> tuple[str, list[str]]:
+        """The mapping the recipe does not ship, kept here because the guard
+        still has to accept it: AWQ cannot re-run a Gated DeltaNet block for
+        its grid search while transformers wraps that forward without
+        functools.wraps. See the mapping spec in quantize.py."""
+        from quant.scripts.gdn_in_proj import input_layernorm_pattern
+
+        return (
+            input_layernorm_pattern(self.GDN_LAYERS),
+            [r"re:.*linear_attn\.in_proj_qkv$",
+             r"re:.*linear_attn\.in_proj_z$",
+             r"re:.*linear_attn\.in_proj_a$",
+             r"re:.*linear_attn\.in_proj_b$"],
+        )
 
     def check(self, mappings: list[tuple[str, list[str]]]) -> list[str]:
         from quant.scripts.gdn_in_proj import unbalanced_norm_mappings
@@ -317,7 +326,7 @@ class AWQEqualizationTests(unittest.TestCase):
         and folds into the two projections a mode quantizes, leaving in_proj_a
         and in_proj_b reading a rescaled input."""
         problems = self.check(
-            [(self.shipped()[1][0],
+            [(self.gdn_mapping()[0],
               [r"re:.*linear_attn\.in_proj_qkv$", r"re:.*linear_attn\.in_proj_z$"])]
         )
         self.assertEqual(len(problems), 1)
@@ -331,7 +340,7 @@ class AWQEqualizationTests(unittest.TestCase):
         attention_norm = self.shipped()[0][0]
         balances = [r"re:.*self_attn\.(q|k|v)_proj$"]
         self.assertEqual(self.check([(attention_norm, balances)]), [])
-        problems = self.check([(self.shipped()[1][0], balances)])
+        problems = self.check([(self.gdn_mapping()[0], balances)])
         self.assertEqual(len(problems), 1)
         self.assertIn("linear_attn.in_proj_qkv", problems[0])
 
@@ -375,6 +384,23 @@ class AWQEqualizationTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             input_layernorm_pattern([])
+
+    def test_the_recipe_smooths_the_attention_path(self) -> None:
+        """The one thing separating our builds from the third-party ones that
+        are not verbose: q/k/v on the full-attention layers went to four bits
+        with no activation-aware rescaling."""
+        text = QUANTIZE.read_text(encoding="utf-8")
+        self.assertIn("input_layernorm_pattern(attention_layers)", text)
+        for projection in ("q_proj", "k_proj", "v_proj"):
+            self.assertIn(f"re:.*self_attn\\\\.{projection}$", text)
+
+    def test_the_recipe_says_why_the_gdn_norm_is_not_smoothed(self) -> None:
+        """It is an upstream signature bug, not a judgement about the path, and
+        the next person to notice the gap should find that out here rather than
+        by spending a reservation on it."""
+        text = QUANTIZE.read_text(encoding="utf-8")
+        self.assertNotIn("input_layernorm_pattern(gdn_layers)", text)
+        self.assertIn("force_accelerate_hooks", text)
 
     def test_the_index_set_does_not_match_a_longer_index(self) -> None:
         """(3|7) must not match layers.31 through its leading 3."""

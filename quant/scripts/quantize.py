@@ -465,10 +465,19 @@ def main() -> None:
     # set in each layer type, so it takes one mapping per type. The layer index
     # is the only thing telling them apart in a module path, so the index sets
     # come off the config rather than being written down.
+    #
+    # Only the full-attention half of that is here. Smoothing the norm in a
+    # Gated DeltaNet layer needs AWQ to re-run the block for its grid search,
+    # and it reconstructs the call from `inspect.signature(module.forward)`.
+    # transformers wraps Qwen3_5GatedDeltaNet.forward in force_accelerate_hooks
+    # without functools.wraps, so that signature reads (*args, **kwargs), the
+    # cached arguments come back as one positional blob and the re-run drops
+    # hidden_states. Qwen3_5Attention and Qwen3_5MLP are undecorated and bind
+    # normally, which is why the other three mappings work. Adding the GDN
+    # mapping means restoring that signature first.
     text_config = getattr(model.config, "text_config", model.config)
     layer_types = list(text_config.layer_types)
     attention_layers = [i for i, t in enumerate(layer_types) if t == "full_attention"]
-    gdn_layers = [i for i, t in enumerate(layer_types) if t == "linear_attention"]
     mapping_spec = [
         (
             input_layernorm_pattern(attention_layers),
@@ -476,19 +485,6 @@ def main() -> None:
                 "re:.*self_attn\\.q_proj$",
                 "re:.*self_attn\\.k_proj$",
                 "re:.*self_attn\\.v_proj$",
-            ],
-        ),
-        (
-            # in_proj_a and in_proj_b are listed although no mode quantizes
-            # them: they read the same normalized input, so an equalization
-            # that skipped them would rescale the decay and write-strength
-            # inputs and change the function.
-            input_layernorm_pattern(gdn_layers),
-            [
-                "re:.*linear_attn\\.in_proj_qkv$",
-                "re:.*linear_attn\\.in_proj_z$",
-                "re:.*linear_attn\\.in_proj_a$",
-                "re:.*linear_attn\\.in_proj_b$",
             ],
         ),
         ("re:.*post_attention_layernorm$", ["re:.*gate_proj$", "re:.*up_proj$"]),

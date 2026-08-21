@@ -219,9 +219,11 @@ def gdn_in_proj_plan(precision: str) -> dict[str, Any]:
     if precision == "source":
         plan["ignore"] = GDN_IN_PROJ_TARGETS
     elif precision == "int4":
-        # The same treatment the third-party checkpoints that quantize these
-        # projections give them: four bits on the same grid as the rest of the
-        # body, smoothed by the GDN input_layernorm mapping.
+        # Four bits on the same grid as the rest of the body. The GDN norm is
+        # not smoothed -- see the mapping spec in quantize.py for why -- so
+        # these land without the activation-aware rescaling q/k/v and the MLP
+        # get, which is the reason this mode is not simply "int4 like
+        # everything else".
         plan["four_bit"] = GDN_IN_PROJ_TARGETS
     elif precision == "nvfp4":
         # Sixteen-element blocks with an e4m3 scale, which is why it beats a
