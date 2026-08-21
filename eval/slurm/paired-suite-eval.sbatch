@@ -61,13 +61,20 @@ else
 fi
 
 RUN_DIR="${PAIRED_RUN_DIR:-$RUN_BASE/v2/paired-1}"
-CONFIG="${PAIRED_CONFIG:-$PROJECT_DIR/eval/eval-suite-v1.json}"
 # A batch selects from the protocol; eval/scripts/eval_suite.py refuses a name the
 # definition does not contain. Empty means every suite in it. Resolving here
 # rather than trusting the string is the point: a typo, or a suite the protocol
 # never contained, used to reach the comparator and enter the macro silently.
 SUITES="${PAIRED_SUITES:-}"
 EVAL_SUITE_VERSION="${PAIRED_EVAL_SUITE:-v2}"
+# The same versioned file has to supply the run commands as supplies the suite
+# list. This defaulted to v1 while the list defaulted to v2, so every run picked
+# v2's suites and executed v1's commands under a header reading eval-suite=v2.
+# RULER is the only suite whose lines differ between the two, and it ran under
+# the 131072-token cap v1 sets rather than the unlimited budget v2 asks for.
+# Assigned after the version, not before: expanded above it this names
+# eval-suite-.json.
+CONFIG="${PAIRED_CONFIG:-$PROJECT_DIR/eval/eval-suite-$EVAL_SUITE_VERSION.json}"
 # PAIRED_BATCH names a plan entry from eval/batches.json, which is the recorded
 # way to run part of the protocol. PAIRED_SUITES stays for one-off lists.
 BATCH="${PAIRED_BATCH:-}"

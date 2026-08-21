@@ -405,3 +405,56 @@ class WindowBudgetTests(unittest.TestCase):
         note = self._v2()["rationale"]["token_budget"]
         self.assertIn("ruler", note.lower())
         self.assertIn("0", note)
+
+
+class ProtocolFileSelectionTests(unittest.TestCase):
+    """The run commands must come from the same versioned file as the suite list.
+
+    They did not. The suite list defaulted to v2 and the commands to a
+    hard-coded v1, so every run selected v2's suites and executed v1's, under a
+    header that printed eval-suite=v2. ruler is the only suite whose lines
+    differ between the two files, which is why nothing else drifted -- and why
+    the WindowBudgetTests decision above, that ruler defers to the window, had
+    never once executed. Every ruler row on disk was measured under v1's 131072
+    cap, and 20 of its 105 items finished at length with an empty answer.
+    """
+
+    SBATCH = ROOT / "eval" / "slurm" / "paired-suite-eval.sbatch"
+
+    def resolve(self, **overrides: str) -> str:
+        """CONFIG as the sbatch's own prologue sets it, run rather than parsed.
+
+        Reading the two assignments out and evaluating them checks the order
+        they appear in as well as what they say: expanded before the version is
+        set, the default names eval-suite-.json.
+        """
+        lines = [
+            line
+            for line in self.SBATCH.read_text(encoding="utf-8").splitlines()
+            if line.startswith(("CONFIG=", "EVAL_SUITE_VERSION="))
+        ]
+        script = "\n".join(["PROJECT_DIR=/repo", *lines, 'echo "$CONFIG"'])
+        environment = {k: v for k, v in os.environ.items() if k != "PAIRED_EVAL_SUITE"}
+        result = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True, text=True, check=True,
+            env={**environment, **overrides},
+        )
+        return result.stdout.strip()
+
+    def test_the_commands_come_from_the_version_the_suites_come_from(self) -> None:
+        self.assertEqual(self.resolve(), "/repo/eval/eval-suite-v2.json")
+
+    def test_asking_for_an_older_protocol_gets_all_of_it(self) -> None:
+        # Pinning the default to the current version instead of deriving it
+        # would pass the test above and still strand anyone re-running v1.
+        self.assertEqual(
+            self.resolve(PAIRED_EVAL_SUITE="v1"), "/repo/eval/eval-suite-v1.json"
+        )
+
+    def test_the_file_it_names_exists(self) -> None:
+        # test -s "$CONFIG" is an hour into a queue; this is not.
+        for version in ("v1", "v2"):
+            with self.subTest(version=version):
+                named = self.resolve(PAIRED_EVAL_SUITE=version)
+                self.assertTrue((ROOT / "eval" / Path(named).name).is_file(), named)
