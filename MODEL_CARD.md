@@ -75,12 +75,6 @@ than 4-bit. Everything else that is a `Linear` gets W4A16.
 
 ## Calibration data
 
-256 samples, deterministically selected at seed 38027, every source pinned to a
-dataset revision. The blend targets agent trajectories, native tool calls,
-code, math, STEM, vision, and long-context material. All 48 Cauldron records
-run through the model with their real pixels, calibrating the quantized decoder
-on visual embeddings while the vision tower itself remains source precision.
-
 | Samples | Source | Config / split |
 |---:|---|---|
 | 52 | `nvidia/Open-SWE-Traces` | `openhands` / `qwen35_122b` |
@@ -97,73 +91,75 @@ on visual embeddings while the vision tower itself remains source precision.
 Revisions: Open-SWE `ad4805a`, Lambda `b92885e`, Nemotron `74e23eb`, Cauldron
 `847a98a`, FineWeb-Edu `87f0914`.
 
-Cauldron aggregates upstream datasets under their own licenses. If you
-redistribute this calibration set, attribute each subset separately.
-
 ## Evaluation
 
-On the four suites scored so far, nothing separates this checkpoint from
-`Qwen/Qwen3.8-27B-FP8` at a resolution of about one point. The suite set is not
-final and will grow; nothing here covers executable coding or agentic use.
+Across six suites this checkpoint is within a quarter of a point of
+`Qwen/Qwen3.8-27B-FP8` overall, and two points behind it on MMMU-Pro. The
+suites cover executable coding, tool calls, long context and two kinds of
+multimodal input. Nothing here tests agentic use. This model card will be
+expanded with further evals in the near future.
 
-These numbers come from a paired comparison against the FP8 release on the same
-items in the same order. Recovery is candidate/baseline, averaged across suites
-with the geometric mean; intervals are an item-clustered bootstrap. Scored on
-4x H200 NVL, four replicates per suite per checkpoint. The protocol is in
+Both checkpoints were scored on the same items in the same order. Recovery is
+the AWQ score divided by the FP8 one, averaged across suites with the geometric
+mean. Intervals are a bootstrap over 20,000 resamples, clustered by item. Each
+suite ran once per checkpoint over its whole item set, on 4x H200 NVL: at a
+fixed budget, more items are worth more than repeat passes. The protocol is in
 [`EVAL.md`](https://github.com/nicosuter/Qwen3.8-27B-AWQ/blob/master/EVAL.md).
 
-| suite | items x reps | FP8 | AWQ | delta | recovery (95% CI) |
+| suite | items | FP8 | AWQ | delta | recovery (95% CI) |
 | --- | ---: | ---: | ---: | ---: | --- |
-| BFCL v3 | 1240 x 4 | 87.42 | 87.74 | +0.32 | 100.37% [99.50, 101.27] |
-| GPQA Diamond | 198 x 4 | 88.89 | 89.77 | +0.88 | 100.99% [98.84, 103.30] |
-| MathArena 2026-06 | 77 x 4 | 80.52 | 79.87 | -0.65 | 99.19% [94.74, 104.02] |
-| Multimodal | 600 x 4 | 86.75 | 86.95 | +0.20 | 100.23% [99.19, 101.30] |
-| **macro** | 4 suites | **85.89** | **86.08** | **+0.19** | **100.20%** [98.89, 101.53] |
+| BFCL | 3486 | 81.27 | 81.33 | +0.06 | 100.07% [98.99, 101.16] |
+| GPQA Diamond | 198 | 89.90 | 88.89 | -1.01 | 98.88% [95.05, 102.82] |
+| LiveCodeBench v6 | 175 | 88.00 | 88.57 | +0.57 | 100.65% [96.18, 105.41] |
+| MMMU-Pro | 1730 | 77.17 | 75.20 | -1.97 | 97.45% [95.53, 99.40] |
+| Multimodal | 600 | 86.08 | 86.34 | +0.26 | 100.31% [98.76, 101.88] |
+| RULER | 200 | 92.17 | 92.90 | +0.72 | 100.79% [98.00, 103.68] |
+| **macro** | 6 suites | **85.76** | **85.54** | **-0.23** | **99.68%** [98.50, 100.88] |
 
-Multimodal is DocVQA, ChartQA and TextVQA at 200 items apiece, scored with their
-own published metrics. MathArena is AIME 2026 plus the Apex shortlist. BFCL is
-the v3 static split, simple through parallel-multiple plus irrelevance; the
-executable, live, multi-turn and web-search categories need the Gorilla
-simulators or a live network and are excluded.
+BFCL is the static split of
+`gorilla-llm/Berkeley-Function-Calling-Leaderboard`: simple through
+parallel-multiple, irrelevance, and their six `live` counterparts, which are
+real user-submitted prompts shipped as static data. The executable, REST,
+multi-turn and chatable categories need the Gorilla simulators, so they are
+excluded, and the Java, JavaScript and SQL splits have answers this Python
+matcher cannot read. Tools are passed to the model natively. Neither checkpoint
+produced a malformed tool call.
 
-The pre-registered rule was macro geometric-mean recovery of at least 99% on the
-point estimate. It measured 100.20%. No individual suite's interval excludes
-zero.
+LiveCodeBench v6 is pass@1: an item counts only if it passes every public and
+private test. Multimodal is DocVQA, ChartQA and TextVQA, 200 items each, scored
+with their published metrics. MMMU-Pro is the ten-option config across thirty
+subjects. RULER is synthesized here at 4k, 32k and 128k rather than the
+upstream benchmark, so its scores compare these two checkpoints and nothing
+else.
 
-Qwen publishes GPQA Diamond 89.2 for this model. The FP8 baseline measured 88.89,
-95% CI [87.99, 89.79] across its four replicates, and the AWQ checkpoint 89.77,
-[88.19, 91.36]. Both intervals contain the published value, which the protocol
-requires before any delta is interpreted.
+MMMU-Pro is the only suite whose interval excludes zero.
 
 ### What this does not cover
 
-- No executable coding or agentic suite has run. LiveCodeBench v6 and
-  Terminal-Bench 2.1 are both pending, and those are the workloads where 4-bit
-  weights are most likely to cost something.
-- MathArena cannot resolve its own effect at 77 items. Its interval is ±3.7
-  points against a measured -0.65.
-- Around 83% of items score identically on both checkpoints, mostly at ceiling,
-  so the effective sample is smaller than the item counts suggest.
-- No suite here resolves to a tenth of a point. Two draws of BFCL v3 under
-  identical conditions differed by 0.7, and the FP8 baseline's own four GPQA
-  replicates spanned 2.0 points without any quantization involved.
-
-Third-party quantizations of this model were scored under the same protocol.
-They are not reported here: one replicate each is too few to publish.
+- No agentic suite.
+- MMMU-Pro is the only suite that separates the checkpoints. It is also the
+  hardest one here, and the one where an image feeds the quantized decoder. A
+  single comparison cannot say which of those explains the gap.
+- 92% of items score the same on both checkpoints, mostly at ceiling, so the
+  effective sample is far smaller than the item counts suggest. On BFCL, 124
+  items improve and 122 regress, and the +0.06 is what is left once they
+  cancel.
+- Nothing here resolves to a tenth of a point, and the small suites resolve
+  worst: GPQA Diamond's interval is +/-3.5 points around a measured -1.01, and
+  LiveCodeBench's +/-4.0 around +0.57.
+- RULER truncated 15 baseline and 12 candidate items at the 262,144-token
+  window even with the output cap removed. Its 128k counting task is left out:
+  one pass over the word list needs more output than the window leaves, and it
+  scored zero on both checkpoints.
 
 ### What this cost
 
-The four-suite comparison above took **48 H200-hours**: two jobs on 4x H200, of
-2h43 and 9h22. Most of that is replicates and one slow suite.
+The six-suite comparison took **25 H200-hours**: one job on 4x H200, 6h13, both
+checkpoints and every suite.
 
-Scoring a different quantization of this model against the same FP8 baseline,
-three suites at one replicate, including re-running the baseline half on the
-same hardware, took **5 to 7 A100-hours** per checkpoint.
-
-That second figure is the one worth knowing. A paired quality check against the
-model you quantized is a few GPU-hours on four cards. If you publish a
-quantization, you can afford to measure it rather than inherit the upstream
-model's numbers.
+Note to other quantizers: a paired quality check against another model is a few
+GPU hours on four cards. If you publish a quantization, you can afford to
+measure it rather than inherit the upstream model's numbers.
 
 ## Usage
 
@@ -193,20 +189,22 @@ a dedicated BF16 shard after AWQ serialization. Native speculation can be
 enabled with:
 
 ```bash
---speculative-config '{"method":"mtp","num_speculative_tokens":1}'
+--speculative-config '{"method":"mtp","num_speculative_tokens":3}'
 ```
 
 ## Limitations
 
-- Long context is unmeasured. The recurrent path is quantized, at 8 bits, and
-  error in a recurrent state accumulates along the sequence instead of being
-  bounded per token, so if it costs anything that is where it would show.
-- An unquantized vision tower does not mean multimodal output is safe: image
-  tokens still pass through a quantized decoder. The multimodal suite above is
-  the check for that, on document, chart and scene text, and it found no
-  difference.
+- Long context is only tested synthetically. RULER at 4k, 32k and 128k found no
+  difference. But the recurrent path is quantized at 8 bits, and error in a
+  recurrent state builds up along the sequence instead of staying bounded per
+  token, so finding a planted string in generated text is a weak check for
+  that.
+- An unquantized vision tower does not make multimodal output safe: image
+  tokens still pass through a quantized decoder. On document, chart and scene
+  text the multimodal suite found no difference. On MMMU-Pro, where the
+  reasoning after perception runs through the quantized path, this checkpoint is
+  1.97 points behind the FP8 release. That is the largest gap measured here.
 
 ## License
 
-Apache 2.0, following the upstream model. Calibration datasets keep their own
-licenses; see the linked sources above.
+Apache 2.0, following the upstream model.
