@@ -290,9 +290,24 @@ class RulerItemBudgetTests(unittest.TestCase):
     RULER is the one suite whose items are synthesized, so its size is a dial
     and not a fixed pool. Each item seeds from its own id, so raising the dial
     adds indices without disturbing the ones already scored.
+
+    Ten per task, not twenty. The dial buys informative items -- only cwe and
+    fwe discriminate, the fifteen niah/vt categories score 1.0000 for both arms
+    -- so 200 items carry 50 of them against the 105-item set's 30, and the
+    projected recovery halfwidth falls from 3.68 to about 2.85 points. Twenty
+    would carry 100 and reach about 2.02.
+
+    What decides it is that the lane is throughput-bound rather than bound by
+    its longest item. Measured on the baseline arm, ruler emitted 3.10M tokens
+    in 7042 s, and the server sustains 440-772 tok/s on work of this shape at
+    the 19-26 concurrent streams the KV budget allows; GPUs sit at 100% and 96%
+    of board power throughout, so there is no idle capacity for more items to
+    fill. Uncapped, 200 items is 6.27M tokens and 400 is 12.54M, which is
+    2.3-4.0 h against 4.5-7.9 h per arm. The second 50 informative items cost
+    as much as the first 200 items do.
     """
 
-    EXPECTED_ITEMS = 400
+    EXPECTED_ITEMS = 200
 
     def _ruler(self, config: str) -> dict:
         raw = json.loads((ROOT / "eval" / config).read_text())

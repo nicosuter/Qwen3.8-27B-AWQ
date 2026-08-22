@@ -186,7 +186,7 @@
         "--tokenizer",
         "${EVAL_TOKENIZER}",
         "--items-per-task",
-        "20",
+        "10",
         "--exclude",
         "128k/cwe"
       ],
