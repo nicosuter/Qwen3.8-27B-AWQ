@@ -1,0 +1,66 @@
+schema: spec-driven
+
+context: |
+  qwen38-awq — reproducible W4A16 AWQ quantization of the language path in
+  `Qwen/Qwen3.8-27B`, and the paired evaluation that decides whether the result
+  may be published and what its model card is allowed to claim.
+
+  The repository is two halves that meet at one artifact. `quant/` produces a
+  checkpoint; `eval/` measures it against `Qwen/Qwen3.8-27B-FP8` and returns a
+  verdict. `common/` is what both need. Cross-bucket use is one-directional:
+  `eval/` reads the quantization side's description of the MTP artifact, never
+  the reverse.
+
+  The recipe has exactly one axis. `--gdn-in-proj` selects what happens to the
+  Gated DeltaNet input projections `in_proj_qkv` and `in_proj_z` — 4.0B
+  parameters across 48 linear-attention layers, roughly 15% of the model and
+  most of the checkpoint's size. Everything else is W4A16 in every mode, and
+  every build comes from the same calibration, so modes compare directly.
+
+  Hardware: quantization and evaluation run on 4-8 H200 NVL per job through
+  Slurm. Deferred LiveCodeBench execution runs in a network-denied Kubernetes
+  namespace. The published checkpoint is served elsewhere on consumer Ampere,
+  which is why FP8 activation paths are not a free choice.
+
+  What makes this repository unusual, and what most of the specs below defend:
+
+    - A result is only a result if you can say what produced it. Dataset,
+      harness, verifier and adapter are pinned per suite; the checkpoint is
+      fingerprinted; the eval code is a checkout of a pushed commit. Anything
+      whose provenance cannot be established is not reusable.
+    - The measurement is paired. Both arms see byte-identical materialized
+      items in one frozen order under one served model name, so no harness
+      behaviour can branch on which checkpoint is loaded.
+    - Noise is the adversary, not the baseline. Item sets are exhausted on
+      nearly every suite, so the remaining variance is generation noise, and
+      the protocol spends replicates rather than pretending repeated
+      generations are independent questions.
+    - Gates are pre-registered and separate. Whether the checkpoint ships and
+      what the model card may say are two different decisions with two
+      different thresholds.
+
+  Scope discipline:
+    - Do not change a threshold after seeing a result it would have failed.
+      Thresholds move on simulation under the null, and the simulation is
+      committed (`eval/scripts/simulate_gates.py`).
+    - Do not split a weak category into several suite labels to dilute it in
+      the macro average.
+    - Bootstrap settings cannot manufacture statistical power. If a margin is
+      too tight for the item bank, enlarge the bank.
+
+rules:
+  proposal:
+    - Name the failure the change prevents, and say whether it has already happened here.
+    - A measurement change must state what it does to the existing results on disk: still comparable, or superseded.
+  tasks:
+    - Any task touching the comparator or a gate names the simulation or run that justifies the threshold.
+    - Any task touching an adapter says whether the pin changes, and if it does, whether old rows stay reusable.
+
+operations:
+  apply:
+    guidance:
+      - Prefer failing closed over warning. A rule that is written down and not checked is the same as not having it.
+      - When a check refuses something legitimate, add the declared exception with its evidence rather than loosening the check.
+  archive:
+      guidance:
+        - Record the job IDs and run directories the change was verified against, not just that tests passed.
