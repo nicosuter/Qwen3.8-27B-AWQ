@@ -1,0 +1,26 @@
+{
+  "_comment": [
+    "Adapter pins declared to produce identical scores for a suite, so that rows",
+    "recorded under one may be reused when another is running.",
+    "",
+    "An adapter pin is sha256 over the suite adapter and _common.py together, and",
+    "most of _common.py is the generation path: streaming, retries, admission. A",
+    "change there moves the pin without changing how an existing row was scored.",
+    "The reuse check cannot tell those apart, so it refuses by default and reads",
+    "this file for the cases somebody has actually established.",
+    "",
+    "A group is a set of pins whose scores are identical FOR THAT SUITE. Membership",
+    "is a claim about evidence, not a convenience: state what was compared. Nothing",
+    "belongs here because rescoring it would be expensive."
+  ],
+  "livecodebench_v6": [
+    {
+      "why": "livecodebench.py is git blob 7811a91915 in all three, so the code that extracts and executes the program is the same file. The only _common.py change reaching score_response is unpack_choice reading reasoning through reasoning_field, which additionally accepts a 'reasoning' key; the stored responses carry 'reasoning_content' only, so split_reasoning receives the same string and the extracted block is the same. Verified by diffing 6706f52..87a0a86..148e667.",
+      "pins": [
+        "sha256:ad54b2b8db0294b793faa940c5a01915da0087f493937cabeeb7efac2f2469f5",
+        "sha256:cebcb7f8b9b54e4d30fe13b2887bb724ff88953446d5d1b40b53eef3e95f0c03",
+        "sha256:e77adfa532be834b7612bffa4c2e4e1222888a73ed14bbdad936e761b3ae80d9"
+      ]
+    }
+  ]
+}

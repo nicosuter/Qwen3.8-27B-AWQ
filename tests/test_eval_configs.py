@@ -7,6 +7,7 @@ they are tracked, which only works if the deployment-specific paths in them
 resolve from the environment rather than being spelled out.
 """
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -458,3 +459,98 @@ class ProtocolFileSelectionTests(unittest.TestCase):
             with self.subTest(version=version):
                 named = self.resolve(PAIRED_EVAL_SUITE=version)
                 self.assertTrue((ROOT / "eval" / Path(named).name).is_file(), named)
+
+
+class AdapterReuseTests(unittest.TestCase):
+    """A row scored by a different adapter must not be reused as current.
+
+    It was. Streaming landed in _common.py without carrying delta.tool_calls,
+    so BFCL recorded 2193 of 3486 items as empty answers -- and the reuse check
+    compared checkpoint, cap and timeouts, all of which matched, so the rows
+    passed as current across later jobs and read as a 32.07 model rather than a
+    broken harness. The adapter that produced a row was recorded in its
+    metadata the whole time and never looked at.
+    """
+
+    SBATCH = ROOT / "eval" / "slurm" / "paired-suite-eval.sbatch"
+    HEREDOC = (
+        '"$PYTHON" - "$CONFIG" "$suite" "$meta" "$TIMEOUT_SCALE" "$want_fp"'
+        ' "${EQUIVALENCE:-}" <<\'PY\'\n'
+    )
+    ADAPTERS = ROOT / "eval" / "scripts" / "adapters"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        # The shipped check, not a copy of it: a reimplementation here would
+        # pass while the sbatch kept doing whatever it does.
+        body = cls.SBATCH.read_text(encoding="utf-8")
+        cls.check = body.split(cls.HEREDOC, 1)[1].split("\nPY\n", 1)[0]
+
+    def pin(self, adapter: str) -> str:
+        """self_pin() as the adapters compute it, over the adapter and _common."""
+        digest = hashlib.sha256()
+        for path in sorted((self.ADAPTERS / adapter, self.ADAPTERS / "_common.py")):
+            digest.update(path.name.encode())
+            digest.update(path.read_bytes())
+        return "sha256:" + digest.hexdigest()
+
+    def verdict(self, adapter_pin, equivalence=None) -> int:
+        fingerprint = "sha256:" + "0" * 64
+        metadata = {
+            "checkpoint": {"fingerprint": fingerprint},
+            "max_tokens": 131072,
+            "timeouts": 0,
+        }
+        if adapter_pin is not None:
+            metadata["adapter"] = adapter_pin
+        with tempfile.TemporaryDirectory() as work:
+            check = Path(work) / "check.py"
+            check.write_text(self.check)
+            meta = Path(work) / "meta.json"
+            meta.write_text(json.dumps(metadata))
+            equivalence_file = Path(work) / "equivalence.json"
+            equivalence_file.write_text(json.dumps(equivalence or {}))
+            return subprocess.run(
+                [sys.executable, str(check), str(ROOT / "eval" / "eval-suite-v2.json"),
+                 "bfcl_v4", str(meta), "1.0", fingerprint, str(equivalence_file)],
+                capture_output=True, text=True, cwd=ROOT,
+            ).returncode
+
+    def test_rows_from_the_running_adapter_are_reusable(self) -> None:
+        self.assertEqual(self.verdict(self.pin("bfcl.py")), 0)
+
+    def test_rows_from_another_adapter_are_not(self) -> None:
+        self.assertEqual(self.verdict("sha256:" + "1" * 64), 1)
+
+    def test_rows_that_do_not_say_what_scored_them_are_not(self) -> None:
+        # Everything written before the pin was recorded. Missing is not a match.
+        self.assertEqual(self.verdict(None), 1)
+
+    def test_a_declared_equivalence_is_honoured(self) -> None:
+        stale = "sha256:" + "1" * 64
+        self.assertEqual(
+            self.verdict(stale, {"bfcl_v4": [
+                {"why": "test", "pins": [stale, self.pin("bfcl.py")]}]}),
+            0,
+        )
+
+    def test_an_equivalence_declared_for_another_suite_is_not(self) -> None:
+        # Two adapters scoring alike on ruler says nothing about bfcl.
+        stale = "sha256:" + "1" * 64
+        self.assertEqual(
+            self.verdict(stale, {"ruler": [
+                {"why": "test", "pins": [stale, self.pin("bfcl.py")]}]}),
+            1,
+        )
+
+    def test_the_shipped_equivalences_name_their_evidence(self) -> None:
+        declared = json.loads(
+            (ROOT / "eval" / "adapter-equivalence.json").read_text(encoding="utf-8")
+        )
+        for suite, groups in declared.items():
+            if suite.startswith("_"):
+                continue
+            for group in groups:
+                with self.subTest(suite=suite):
+                    self.assertGreater(len(group["pins"]), 1)
+                    self.assertGreaterEqual(len(group["why"]), 80, group["why"])

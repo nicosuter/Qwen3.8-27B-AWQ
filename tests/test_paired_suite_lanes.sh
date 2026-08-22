@@ -78,9 +78,19 @@ setup() {
     LANE_TRACE="$WORK/trace"; rm -rf "$LANE_TRACE"; mkdir -p "$LANE_TRACE"
     export LANE_TRACE
     CONFIG="$WORK/config.json"
-    cat > "$CONFIG" <<'JSON'
+    # suite_is_current pins a result to the adapter that produced it, and reads
+    # which adapter that is out of the run command, so the fixture suite needs a
+    # real file to hash rather than the bare "x" the lane runner was happy with.
+    mkdir -p "$WORK/adapters"
+    printf 'stub common\n' > "$WORK/adapters/_common.py"
+    printf 'stub alpha\n'  > "$WORK/adapters/alpha.py"
+    ALPHA_PIN="$(python3 "$ROOT/tests/adapter_pin.py" "$WORK/adapters/alpha.py")"
+    # The real prologue sets this; the cases that declare an equivalence
+    # overwrite the file.
+    EQUIVALENCE="$WORK/equivalence.json"; echo "{}" > "$EQUIVALENCE"
+    cat > "$CONFIG" <<JSON
 {"suites":[
-  {"name":"alpha","run":["x","run","--max-tokens","1000","--request-timeout","60"]},
+  {"name":"alpha","run":["$WORK/adapters/alpha.py","run","--max-tokens","1000","--request-timeout","60"]},
   {"name":"beta","run":["x","run","--max-tokens","2000"]},
   {"name":"failsuite","run":["x","run"]}]}
 JSON
@@ -272,8 +282,8 @@ echo "== case 4: an already-scored replicate is reused, not rerun =="
 setup; SUITES="alpha"; REPLICATES=2; PARALLEL=0
 mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
 echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
-cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"timeouts":0,"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:bbb"}}
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<JSON
+{"adapter":"$ALPHA_PIN","timeouts":0,"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:bbb"}}
 JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
@@ -281,12 +291,42 @@ check "r0 reused" 1 "$(grep -c 'alpha r0 (candidate) already scored' <<<"$out")"
 check "r1 still scored" 1 "$(grep -c 'rep=1' <<<"$out")"
 check "only one lane left to run" 1 "$(grep -c 'across 1 lane' <<<"$out")"
 
+echo "== case 4b: rows scored by another adapter are not reused =="
+# Streaming landed without carrying delta.tool_calls, so BFCL scored 2193 of
+# 3486 items as empty answers. Checkpoint, cap and timeouts all matched, so the
+# rows passed as current and were reused across later jobs.
+setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
+mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
+echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<JSON
+{"adapter":"sha256:notthepinwerunning","timeouts":0,"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:bbb"}}
+JSON
+out="$(score_variant candidate 2>&1)"; rc=$?
+check "exit 0" 0 "$rc"
+check "not reused" 0 "$(grep -c 'already scored' <<<"$out")"
+check "rescored" 1 "$(grep -c 'rep=0' <<<"$out")"
+check "said which adapter" 1 "$(grep -c 'scored by adapter sha256:notthepinwerunning' <<<"$out")"
+
+echo "== case 4c: an adapter declared equivalent is reused =="
+setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
+mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
+echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<JSON
+{"adapter":"sha256:olderbutsamescores","timeouts":0,"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:bbb"}}
+JSON
+cat > "$EQUIVALENCE" <<JSON
+{"alpha":[{"why":"test","pins":["sha256:olderbutsamescores","$ALPHA_PIN"]}]}
+JSON
+out="$(score_variant candidate 2>&1)"; rc=$?
+check "exit 0" 0 "$rc"
+check "reused" 1 "$(grep -c 'alpha r0 (candidate) already scored' <<<"$out")"
+
 echo "== case 5: stale cap invalidates the reuse =="
 setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
 mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
 echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
-cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"timeouts":0,"max_tokens":512,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:bbb"}}
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<JSON
+{"adapter":"$ALPHA_PIN","timeouts":0,"max_tokens":512,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:bbb"}}
 JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
@@ -304,8 +344,8 @@ setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0; TIMEOUT_SCALE="2.5"
 mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
 echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
 # config asks 60 * 2.5 = 150s; this run had 60s but nothing timed out.
-cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"max_tokens":1000,"request_timeout_seconds":60,"timeouts":0,"checkpoint":{"fingerprint":"sha256:bbb"}}
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<JSON
+{"adapter":"$ALPHA_PIN","max_tokens":1000,"request_timeout_seconds":60,"timeouts":0,"checkpoint":{"fingerprint":"sha256:bbb"}}
 JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
@@ -320,8 +360,8 @@ echo "== case 7b: an unrecorded timeout that never fired is still reusable =="
 setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0; TIMEOUT_SCALE="2.5"
 mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
 echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
-cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"max_tokens":1000,"timeouts":0,"checkpoint":{"fingerprint":"sha256:bbb"}}
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<JSON
+{"adapter":"$ALPHA_PIN","max_tokens":1000,"timeouts":0,"checkpoint":{"fingerprint":"sha256:bbb"}}
 JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
@@ -331,8 +371,8 @@ echo "== case 7c: an unrecorded timeout that DID fire is not reusable =="
 setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0; TIMEOUT_SCALE="2.5"
 mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
 echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
-cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"max_tokens":1000,"timeouts":38,"checkpoint":{"fingerprint":"sha256:bbb"}}
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<JSON
+{"adapter":"$ALPHA_PIN","max_tokens":1000,"timeouts":38,"checkpoint":{"fingerprint":"sha256:bbb"}}
 JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
@@ -342,8 +382,8 @@ echo "== case 7d: no timeout count at all establishes nothing =="
 setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0; TIMEOUT_SCALE="2.5"
 mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
 echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
-cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"max_tokens":1000,"checkpoint":{"fingerprint":"sha256:bbb"}}
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<JSON
+{"adapter":"$ALPHA_PIN","max_tokens":1000,"checkpoint":{"fingerprint":"sha256:bbb"}}
 JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
@@ -353,8 +393,8 @@ echo "== case 8: a shorter timeout that DID fire is not reusable =="
 setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0; TIMEOUT_SCALE="2.5"
 mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
 echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
-cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"max_tokens":1000,"request_timeout_seconds":60,"timeouts":5,"checkpoint":{"fingerprint":"sha256:bbb"}}
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<JSON
+{"adapter":"$ALPHA_PIN","max_tokens":1000,"request_timeout_seconds":60,"timeouts":5,"checkpoint":{"fingerprint":"sha256:bbb"}}
 JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
@@ -371,8 +411,8 @@ echo "== case 9: a timeout is contamination now, however generous the clock =="
 setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0; TIMEOUT_SCALE="1.0"
 mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
 echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
-cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"max_tokens":1000,"request_timeout_seconds":9999,"timeouts":3,"checkpoint":{"fingerprint":"sha256:bbb"}}
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<JSON
+{"adapter":"$ALPHA_PIN","max_tokens":1000,"request_timeout_seconds":9999,"timeouts":3,"checkpoint":{"fingerprint":"sha256:bbb"}}
 JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
@@ -382,8 +422,8 @@ echo "== case 9b: a clean run under a generous clock is still reusable =="
 setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0; TIMEOUT_SCALE="1.0"
 mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
 echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
-cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"max_tokens":1000,"request_timeout_seconds":9999,"timeouts":0,"checkpoint":{"fingerprint":"sha256:bbb"}}
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<JSON
+{"adapter":"$ALPHA_PIN","max_tokens":1000,"request_timeout_seconds":9999,"timeouts":0,"checkpoint":{"fingerprint":"sha256:bbb"}}
 JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
@@ -407,8 +447,8 @@ echo "== case 11: results from a different checkpoint are not reused =="
 setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
 mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
 echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
-cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"timeouts":0,"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:SOMEONE_ELSE"}}
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<JSON
+{"adapter":"$ALPHA_PIN","timeouts":0,"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:SOMEONE_ELSE"}}
 JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
@@ -419,8 +459,8 @@ echo "== case 12: results with no recorded provenance are not reused =="
 setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
 mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
 echo '{}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
-cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"timeouts":0,"max_tokens":1000,"request_timeout_seconds":60}
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<JSON
+{"adapter":"$ALPHA_PIN","timeouts":0,"max_tokens":1000,"request_timeout_seconds":60}
 JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
@@ -430,8 +470,8 @@ echo "== case 13: the baseline is checked against the baseline checkpoint =="
 setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
 mkdir -p "$RUN_DIR/raw/baseline" "$RUN_DIR/metadata"
 echo '{}' > "$RUN_DIR/raw/baseline/alpha-r0.jsonl"
-cat > "$RUN_DIR/metadata/alpha-baseline-r0.json" <<'JSON'
-{"timeouts":0,"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:aaa"}}
+cat > "$RUN_DIR/metadata/alpha-baseline-r0.json" <<JSON
+{"adapter":"$ALPHA_PIN","timeouts":0,"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:aaa"}}
 JSON
 out="$(score_variant baseline 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
@@ -527,19 +567,19 @@ echo '{"id":"b"}' > "$RUN_DIR/raw/baseline/alpha-r0.jsonl"
 echo '{"id":"c"}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
 # alpha is configured at --max-tokens 1000. The candidate was scored there; the
 # baseline is left over from a run at 512.
-cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"timeouts":0,"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:bbb"}}
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<JSON
+{"adapter":"$ALPHA_PIN","timeouts":0,"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:bbb"}}
 JSON
-cat > "$RUN_DIR/metadata/alpha-baseline-r0.json" <<'JSON'
-{"timeouts":0,"max_tokens":512,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:aaa"}}
+cat > "$RUN_DIR/metadata/alpha-baseline-r0.json" <<JSON
+{"adapter":"$ALPHA_PIN","timeouts":0,"max_tokens":512,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:aaa"}}
 JSON
 out="$(stale_suites 2>&1)"
 check "the suite is named stale" "alpha" "$(stale_suites 2>/dev/null)"
 check "and says which arm" 1 "$(grep -c 'its baseline arm was not scored' <<<"$out")"
 
 echo "== case 19b: both arms current leaves the comparison alone =="
-cat > "$RUN_DIR/metadata/alpha-baseline-r0.json" <<'JSON'
-{"timeouts":0,"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:aaa"}}
+cat > "$RUN_DIR/metadata/alpha-baseline-r0.json" <<JSON
+{"adapter":"$ALPHA_PIN","timeouts":0,"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:aaa"}}
 JSON
 check "nothing excluded" "" "$(stale_suites 2>/dev/null)"
 
@@ -551,8 +591,8 @@ echo "== case 20: a suite that only timed out resumes from its archived rows =="
 setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
 mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
 echo '{"id":"x"}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
-cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"timeouts":7,"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:bbb"}}
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<JSON
+{"adapter":"$ALPHA_PIN","timeouts":7,"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:bbb"}}
 JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"
@@ -565,8 +605,8 @@ echo "== case 20b: a stale suite is rerun whole, never resumed =="
 setup; SUITES="alpha"; REPLICATES=1; PARALLEL=0
 mkdir -p "$RUN_DIR/raw/candidate" "$RUN_DIR/metadata"
 echo '{"id":"x"}' > "$RUN_DIR/raw/candidate/alpha-r0.jsonl"
-cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<'JSON'
-{"timeouts":7,"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:OTHER"}}
+cat > "$RUN_DIR/metadata/alpha-candidate-r0.json" <<JSON
+{"adapter":"$ALPHA_PIN","timeouts":7,"max_tokens":1000,"request_timeout_seconds":60,"checkpoint":{"fingerprint":"sha256:OTHER"}}
 JSON
 out="$(score_variant candidate 2>&1)"; rc=$?
 check "exit 0" 0 "$rc"

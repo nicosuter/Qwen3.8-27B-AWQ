@@ -75,6 +75,9 @@ EVAL_SUITE_VERSION="${PAIRED_EVAL_SUITE:-v2}"
 # Assigned after the version, not before: expanded above it this names
 # eval-suite-.json.
 CONFIG="${PAIRED_CONFIG:-$PROJECT_DIR/eval/eval-suite-$EVAL_SUITE_VERSION.json}"
+# Which adapter pins the reuse check may treat as scoring the same. Absent, it
+# compares pins exactly, which is the safe direction to fail.
+EQUIVALENCE="${PAIRED_ADAPTER_EQUIVALENCE:-$PROJECT_DIR/eval/adapter-equivalence.json}"
 # PAIRED_BATCH names a plan entry from eval/batches.json, which is the recorded
 # way to run part of the protocol. PAIRED_SUITES stays for one-off lists.
 BATCH="${PAIRED_BATCH:-}"
@@ -689,10 +692,13 @@ suite_is_current() {
     [[ -s "$out" && -s "$meta" ]] || return 1
     local want_fp
     if [[ "$variant" == "baseline" ]]; then want_fp="$BASELINE_FP"; else want_fp="$CANDIDATE_FP"; fi
-    "$PYTHON" - "$CONFIG" "$suite" "$meta" "$TIMEOUT_SCALE" "$want_fp" <<'PY'
-import json, sys
+    # Defaulted rather than required: unset means no declared equivalences, so
+    # pins are compared exactly, which is the direction that fails safe.
+    "$PYTHON" - "$CONFIG" "$suite" "$meta" "$TIMEOUT_SCALE" "$want_fp" "${EQUIVALENCE:-}" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
 
-config_path, suite, meta_path, timeout_scale, want_fingerprint = sys.argv[1:6]
+config_path, suite, meta_path, timeout_scale, want_fingerprint, equivalence_path = sys.argv[1:7]
 run = next(
     (s["run"] for s in json.load(open(config_path))["suites"] if s["name"] == suite),
     None,
@@ -714,6 +720,47 @@ if have_fingerprint != want_fingerprint:
         file=sys.stderr,
     )
     sys.exit(1)
+
+# The adapter decides what a row means, and a row scored by different code is a
+# different measurement however well-formed it looks. This check exists because
+# it was missing: streaming landed without carrying delta.tool_calls, so BFCL
+# recorded 2193 of 3486 items as empty answers, and every check above passed
+# them -- same checkpoint, same cap, no timeouts -- so they were reused as
+# current and read as a 32.07 model instead of a broken harness.
+#
+# Most of _common.py is the generation path, so a pin can move without changing
+# how an existing row was scored, and refusing every such row would rescore an
+# inherited baseline for nothing. That judgement is not one this check can make
+# from a hash, so it refuses and defers to adapter-equivalence.json, where the
+# comparison somebody actually did is written down next to the pins it covers.
+recorded_adapter = recorded.get("adapter")
+adapter_file = next((token for token in run if token.endswith(".py")), None)
+if adapter_file is None:
+    print(f"{suite}: no adapter in the run command; cannot establish what scored it",
+          file=sys.stderr)
+    sys.exit(1)
+digest = hashlib.sha256()
+try:
+    for path in sorted(Path(name).resolve()
+                       for name in (adapter_file, Path(adapter_file).parent / "_common.py")):
+        digest.update(path.name.encode())
+        digest.update(path.read_bytes())
+except OSError as error:
+    # Nothing to compare against, so nothing establishes the rows. Rescoring
+    # them is wrong too, but that failure arrives with the adapter's own error.
+    print(f"{suite}: cannot read the running adapter ({error})", file=sys.stderr)
+    sys.exit(1)
+want_adapter = "sha256:" + digest.hexdigest()
+if recorded_adapter != want_adapter:
+    groups = json.load(open(equivalence_path)).get(suite, []) if Path(equivalence_path).exists() else []
+    if not any(recorded_adapter in group["pins"] and want_adapter in group["pins"]
+               for group in groups):
+        print(
+            f"{suite}: scored by adapter {recorded_adapter}, running {want_adapter}; "
+            f"declare them equivalent in {equivalence_path} if they score the same",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 # The cap decides what was measured, so it has to match exactly.
 #
