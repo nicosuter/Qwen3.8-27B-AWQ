@@ -159,20 +159,26 @@ class RulerPriorFloorTests(unittest.TestCase):
     a stale value under-reserves every request in flight -- the failure that
     left the cache holding 2.27x what the budget believed it had booked.
 
-    Two changes moved it at once. Narrowing RULER to the five categories that
-    separated a checkpoint dropped the cheap niah_* items that were holding the
-    mean down, and `--max-tokens 0` removed the ceiling those items were hitting.
-    Measured over the surviving categories in the 2026-08-19 baseline and
-    candidate arms, still under the old 131072 cap: mean output 86,767 and
-    89,961 tokens against a shipped prior of 20,207.
+    `--max-tokens 0` is what moved it. RULER keeps all twenty categories --
+    narrowing to the five that separated a checkpoint was rejected, because
+    selecting on the outcome moves ruler from 96.67% to 80.00% -- so the mean is
+    not the problem. The tail is. As the lane drains, every request still in
+    flight is cwe or fwe, so a prior sized on the mean falls short on all of
+    them at once, which is the one shape the preemption controller cannot claw
+    back.
 
-    That measurement is a floor, not the answer -- it was taken with the cap
-    still in place, and the 32k items that were truncating have 229,517 tokens
-    of room without it. Re-measure with build_token_priors.py once the narrowed
-    suite has run, and let this floor stop a silent regression meanwhile.
+    So the floor is not a measured mean at all; it is what the window allows.
+    Uncapped, a request can occupy prompt + (window - prompt) = the whole
+    window, and a 32k item reserving on the 66,210 prompt floor therefore needs
+    an output prior of at least window - 66,210 to book what it can hold. Below
+    that the budget admits 34 long requests where 21 fit. An 80,000 floor, which
+    is what this test used to assert, passes a prior of 100,000 that
+    over-commits by 1.57x.
     """
 
-    MEASURED_FLOOR = 80_000
+    WINDOW = 262_144
+    PROMPT_FLOOR = 66_210
+    MEASURED_FLOOR = WINDOW - PROMPT_FLOOR
 
     def test_the_ruler_output_prior_covers_the_narrowed_suite(self) -> None:
         priors = json.loads(

@@ -26,7 +26,7 @@
     },
     "ruler": {
       "prompt": 66210,
-      "output": 100000
+      "output": 195934
     }
   },
   "default": {
@@ -35,6 +35,6 @@
   },
   "note": "Median prompt and mean output tokens per suite, measured by eval/scripts/build_token_priors.py. Admission control reserves max(prompt estimate, prompt) + output. Rebuild after a checkpoint changes how long it reasons, or after a suite changes what it sends.",
   "notes": {
-    "ruler": "Interim, not measured under the configuration it describes. RULER runs twenty categories with --max-tokens 0: every length and task except 128k/cwe, at ten items each. Narrowing to the five that discriminate was considered and rejected, because selecting categories by how they scored moves ruler from 96.67% to 80.00%. Over those categories in the 2026-08-19 arms, still under the old 131072 cap, mean prompt was 66,210 and mean output 86,767 (baseline) and 89,961 (candidate). Without the cap the 32k items that were truncating have 229,517 tokens of room, so 100000 is that floor rounded up rather than a measurement. Re-run build_token_priors.py over the first narrowed run directory and replace this. Over-reserving idles the pool; under-reserving preempts, which is the more expensive mistake here."
+    "ruler": "Interim, not measured under the configuration it describes. RULER runs twenty categories with --max-tokens 0: every length and task except 128k/cwe, at ten items each. Narrowing to the five that discriminate was considered and rejected, because selecting categories by how they scored moves ruler from 96.67% to 80.00%. Over those categories in the 2026-08-19 arms, still under the old 131072 cap, mean prompt was 66,210 and mean output 86,767 (baseline) and 89,961 (candidate). Without the cap the 32k items that were truncating can reach the full 262,144 window, and 100000 was that floor rounded up rather than a measurement -- correctly sized for the 131072 cap it was taken under, where a 32k item's peak is 163,670 against 166,210 reserved, and 1.58x short of the truth once the cap is gone. 195934 is the window minus the 66,210 prompt floor, so a 32k item reserves exactly what it can occupy. The tail is what forces this: as the lane drains, every request in flight is cwe or fwe, and at 166,210 the budget admits 34 of them where 21 fit -- a shortfall on every request at once, which is the one thing the preemption controller cannot claw back. Re-run build_token_priors.py over the first narrowed run directory and replace this. Over-reserving idles the pool; under-reserving preempts, which is the more expensive mistake here."
   }
 }
