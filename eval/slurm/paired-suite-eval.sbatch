@@ -1118,13 +1118,17 @@ STALE="$(stale_suites)"
 # so that a job with no GPU can also produce a comparison: LiveCodeBench defers
 # execution, and its verdict is produced later on a CPU node. Two copies of the
 # call would mean two copies of the baseline floors.
+#
+# tee -a, not tee: under Slurm /dev/stderr resolves to the job log, and tee
+# without -a opens it with O_TRUNC. Every completed run lost its whole log at
+# this last step, leaving only the lines the comparator printed after it.
 COMPARISON="$(
     RUN_DIR="$RUN_DIR" PYTHON="$PYTHON" \
     EVAL_SUITE_VERSION="$EVAL_SUITE_VERSION" RUN_STAMP="$RUN_STAMP" \
     COMPARISON_TAG="${SLURM_JOB_ID:-manual}" \
     EXCLUDE_SUITES="${FAILED_SUITES[*]-} $STALE" \
     ALLOW_PARTIAL="$( [[ -n "${PAIRED_SUITES:-}${PAIRED_BATCH:-}" ]] && echo 1 || echo 0 )" \
-    ./eval/scripts/compare_run_dir.sh | tee /dev/stderr | sed -n 's/^comparison=//p' || true
+    ./eval/scripts/compare_run_dir.sh | tee -a /dev/stderr | sed -n 's/^comparison=//p' || true
 )"
 
 # Generating the rows and comparing them are separate claims. LiveCodeBench

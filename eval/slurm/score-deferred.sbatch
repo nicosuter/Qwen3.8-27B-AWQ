@@ -90,12 +90,16 @@ echo "scored=$scored skipped=$skipped"
 # Rebuilt over the whole run directory, not just this suite: the comparator
 # needs both arms complete, and the point of executing here is to let the
 # suites that were already scored finally produce a verdict alongside this one.
+#
+# tee -a, not tee: under Slurm /dev/stderr resolves to the job log, and tee
+# without -a opens it with O_TRUNC. Every completed run lost its whole log at
+# this last step, leaving only the lines the comparator printed after it.
 COMPARISON="$(
     RUN_DIR="$RUN_DIR" PYTHON="$PYTHON" \
     EVAL_SUITE_VERSION="$EVAL_SUITE_VERSION" \
     COMPARISON_TAG="${SLURM_JOB_ID:-manual}" \
     ALLOW_PARTIAL="${PAIRED_ALLOW_PARTIAL:-0}" \
-    ./eval/scripts/compare_run_dir.sh | tee /dev/stderr | sed -n 's/^comparison=//p' || true
+    ./eval/scripts/compare_run_dir.sh | tee -a /dev/stderr | sed -n 's/^comparison=//p' || true
 )"
 
 # This job exists to produce the verdict, so failing to produce one is its
