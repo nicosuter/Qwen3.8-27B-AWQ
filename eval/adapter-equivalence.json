@@ -13,6 +13,24 @@
     "is a claim about evidence, not a convenience: state what was compared. Nothing",
     "belongs here because rescoring it would be expensive."
   ],
+  "bfcl_v4": [
+    {
+      "why": "Both versions run the same scoring code on any row that did not time out. score_response is byte-identical between them, and run_item differs only by an `if response is None:` branch that the newer version drops -- that branch is reachable only when request_with_retries exhausts its retries. Verified structurally rather than by reading: parsing both, removing that one If node from the older run_item, and comparing the ASTs gives equality. The remaining textual differences are the fallback import path and a docstring path, both from the 2026-08-17 move of scripts/ under eval/. Rows carrying a timeout are independently refused by suite_is_current, so the dropped branch cannot have run on anything this group admits; every arm on disk records timeouts=0. Recorded pin is commit 0054003, running pin is HEAD.",
+      "pins": [
+        "sha256:218c075b89fb78f36e88b1ac95fca29f78bcf03387cb63ab3047abb3190f28fe",
+        "sha256:24d3dc96229acc546eeba3ec997866444a3d718e747b872ea6eeb222b86df890"
+      ]
+    }
+  ],
+  "gpqa_diamond": [
+    {
+      "why": "Both versions run the same scoring code on any row that did not time out. score_response is byte-identical between them, and run_item differs only by an `if response is None:` branch that the newer version drops -- that branch is reachable only when request_with_retries exhausts its retries. Verified structurally rather than by reading: parsing both, removing that one If node from the older run_item, and comparing the ASTs gives equality. The remaining textual differences are the fallback import path and a docstring path, both from the 2026-08-17 move of scripts/ under eval/. Rows carrying a timeout are independently refused by suite_is_current, so the dropped branch cannot have run on anything this group admits; every arm on disk records timeouts=0. Recorded pin is commit 0054003, running pin is HEAD.",
+      "pins": [
+        "sha256:b864ae05c34d8f07579cff3ba2a81a61bcb91435600380b92a9a3442d6f9f206",
+        "sha256:2e4b5964f452864bff6756f46e1177c3a9bbfe0aa6dbf3d58c8800478ec58766"
+      ]
+    }
+  ],
   "livecodebench_v6": [
     {
       "why": "livecodebench.py is git blob 7811a91915 in all three, so the code that extracts and executes the program is the same file. The only _common.py change reaching score_response is unpack_choice reading reasoning through reasoning_field, which additionally accepts a 'reasoning' key; the stored responses carry 'reasoning_content' only, so split_reasoning receives the same string and the extracted block is the same. Verified by diffing 6706f52..87a0a86..148e667.",
@@ -20,6 +38,24 @@
         "sha256:ad54b2b8db0294b793faa940c5a01915da0087f493937cabeeb7efac2f2469f5",
         "sha256:cebcb7f8b9b54e4d30fe13b2887bb724ff88953446d5d1b40b53eef3e95f0c03",
         "sha256:e77adfa532be834b7612bffa4c2e4e1222888a73ed14bbdad936e761b3ae80d9"
+      ]
+    }
+  ],
+  "mmmu_pro": [
+    {
+      "why": "Both versions run the same scoring code on any row that did not time out. score_response is byte-identical between them, and run_item differs only by an `if response is None:` branch that the newer version drops -- that branch is reachable only when request_with_retries exhausts its retries. Verified structurally rather than by reading: parsing both, removing that one If node from the older run_item, and comparing the ASTs gives equality. The remaining textual differences are the fallback import path and a docstring path, both from the 2026-08-17 move of scripts/ under eval/. Rows carrying a timeout are independently refused by suite_is_current, so the dropped branch cannot have run on anything this group admits; every arm on disk records timeouts=0. Recorded pin is commit 0054003, running pin is HEAD.",
+      "pins": [
+        "sha256:ff7f4bf4707d6ec31abd6f89f9c32382f74da2c0162ef4149d0e6e4ab728e7f3",
+        "sha256:cba7e672b354bef12819adff29fe47bd9ddb26d9ed89f53aad761a1309ef8ffb"
+      ]
+    }
+  ],
+  "multimodal": [
+    {
+      "why": "Both versions run the same scoring code on any row that did not time out. score_response is byte-identical between them, and run_item differs only by an `if response is None:` branch that the newer version drops -- that branch is reachable only when request_with_retries exhausts its retries. Verified structurally rather than by reading: parsing both, removing that one If node from the older run_item, and comparing the ASTs gives equality. The remaining textual differences are the fallback import path and a docstring path, both from the 2026-08-17 move of scripts/ under eval/. Rows carrying a timeout are independently refused by suite_is_current, so the dropped branch cannot have run on anything this group admits; every arm on disk records timeouts=0. Recorded pin is commit 0054003, running pin is HEAD.",
+      "pins": [
+        "sha256:2a52fa156a668ce9c040f06a4993ca530576f642bcec62de1aefaa49fc5b39aa",
+        "sha256:401b0c7db55cb41a2b7165a55ccd04c1504c2daff09f3401f1b47acb97e97907"
       ]
     }
   ]
